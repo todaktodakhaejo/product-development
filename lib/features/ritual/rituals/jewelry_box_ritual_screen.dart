@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart' show Ticker;
 
 import '../../../core/haptics.dart';
 import '../../../state/session.dart';
@@ -20,8 +21,9 @@ class _JewelryBoxRitualScreenState extends State<JewelryBoxRitualScreen>
     with TickerProviderStateMixin {
   late final AnimationController _lid; // 0(열림) → 1(닫힘)
   late final AnimationController _halo; // 후광
-  late final AnimationController _ticker; // 파티클 60fps 구동
+  late final Ticker _ticker; // 파티클 60fps 구동
   late final Animation<double> _lidCurve; // 스프링 닫힘(easeOutBack)
+  Duration _lastTick = Duration.zero; // dt 산출용
   final _field = ParticleField(maxParticles: 120); // sparkle는 적게
   final _repaint = ValueNotifier(0);
   double _drag = 0; // 종이를 아래로 끈 거리
@@ -41,13 +43,20 @@ class _JewelryBoxRitualScreenState extends State<JewelryBoxRitualScreen>
     _halo.addStatusListener((s) {
       if (s == AnimationStatus.completed) _complete();
     });
-    // 파티클 갱신용 틱(다른 의식 화면과 동일 패턴).
-    _ticker = AnimationController.unbounded(vsync: this)
-      ..addListener(() {
-        _field.update(1 / 60);
-        _repaint.value++;
-      })
-      ..repeat(period: const Duration(seconds: 1));
+    // 파티클 갱신용 틱(burn·shredder와 동일하게 Ticker 사용).
+    // ※ AnimationController.unbounded + repeat()는 lowerBound가 -∞라
+    //   '_initialT >= 0.0' assertion으로 크래시 → Ticker로 직접 구동한다.
+    _ticker = createTicker(_onTick)..start();
+  }
+
+  /// 매 프레임 파티클 적분 + 리페인트. dt는 직전 프레임과의 실제 경과.
+  void _onTick(Duration elapsed) {
+    final dt = _lastTick == Duration.zero
+        ? 0.016
+        : (elapsed - _lastTick).inMicroseconds / 1e6;
+    _lastTick = elapsed;
+    _field.update(dt.clamp(0.0, 0.05));
+    _repaint.value++;
   }
 
   double get _approachT => (_drag / _approach).clamp(0.0, 1.0);
