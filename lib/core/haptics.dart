@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/animation.dart';
 import 'package:flutter/services.dart';
@@ -113,6 +114,72 @@ class Haptics {
     fire(level, throttle: false);
   }
 
+  // ── 파쇄기(shredder) 전용 햅틱 ──────────────────────────────────────
+  // 명세 §5.3/§5.4. rumble과 형제이지만 grinding 고유의 '고조 곡선·말미
+  // 촘촘함·모터 지터'를 내장한 별도 드라이버다(기존 rumble은 그대로 유지).
+  //
+  // ⚠️ 연속 진동은 OS 네이티브 미배선 → 짧은 임팩트를 타이머로 반복하는
+  // **근사**가 전부다. 실제 '도는 모터' 질감 튜닝은 실기기에서만 검증 가능.
+  // 미지원/웹에서는 [fire]가 HapticFeedback 무음 통과 → 예외 없이 무동작.
+
+  /// 파쇄기 연속 그라인드(§5.3). 시작 즉시 모터 질감 연속 펄스가 돌기 시작한다.
+  ///
+  /// 3초 동안 ~45ms 간격(말미 35ms)으로 임팩트를 반복해 '그르렁대는 모터'를
+  /// 흉내낸다. 강도는 자체 경과시간 기반 기본 곡선(0.55→0.82)으로도 동작하며,
+  /// [GrindHandle.setProgress]로 화면 진행도(0~1)를 주입하면 그 곡선을 따른다.
+  ///
+  /// 반환된 [GrindHandle.stop]을 **bursting 진입·dispose에서 반드시 호출**한다
+  /// (무한 진동·타이머 누수 방지). 안전장치로 4초 후 자동 stop된다.
+  GrindHandle startShredGrind() {
+    final handle = GrindHandle._(this);
+    handle._start();
+    return handle;
+  }
+
+  /// [GrindHandle]이 1펄스 발사할 때 사용(throttle 우회).
+  ///
+  /// grind 강도(0~1)를 레벨로 양자화한다: 낮으면 light, 중간 이상이면 medium,
+  /// 최말미 고조 구간(≥0.78)은 가끔 heavy를 섞어 폭죽 직전 텐션을 만든다.
+  void _grindPulse(double intensity, {bool spikeHeavy = false}) {
+    final HapticLevel level;
+    if (spikeHeavy && intensity >= 0.78) {
+      level = HapticLevel.heavy;
+    } else if (intensity >= 0.62) {
+      level = HapticLevel.medium;
+    } else {
+      level = HapticLevel.light;
+    }
+    fire(level, throttle: false);
+  }
+
+  /// 폭죽 연쇄 팝(§5.4). 호출 즉시 내부 지연 타이머로 전체 시퀀스를 발사한다.
+  ///
+  /// 강한 1발(heavy+success 겹침) 후 흩어지는 다수 팝(medium/light)이 ~380ms에
+  /// 걸쳐 잦아든다. 모두 `throttle:false`. 화면은 bursting 진입 순간 1회만 호출하고,
+  /// 시각 폭죽과 같은 프레임에 호출하면 동기된다.
+  ///
+  /// 외부 상태를 참조하지 않으므로 화면이 도중에 dispose돼도 무해하다
+  /// (엔진 싱글톤·짧은 시퀀스). 미지원/웹에서는 무음 통과.
+  void burstPop() {
+    // ms 시퀀스(bursting 진입=0 기준): §5.4 그대로.
+    // 0ms: heavy + success(겹침) → 묵직한 임팩트 두께.
+    fire(HapticLevel.heavy, throttle: false);
+    fire(HapticLevel.success, throttle: false);
+    // 흩어지는 팝들. 각 지연마다 1발씩(외부 상태 참조 없음).
+    Future<void>.delayed(const Duration(milliseconds: 70),
+        () => fire(HapticLevel.medium, throttle: false)); // 첫 흩어짐
+    Future<void>.delayed(const Duration(milliseconds: 130),
+        () => fire(HapticLevel.light, throttle: false));
+    Future<void>.delayed(const Duration(milliseconds: 190),
+        () => fire(HapticLevel.light, throttle: false));
+    Future<void>.delayed(const Duration(milliseconds: 220),
+        () => fire(HapticLevel.medium, throttle: false)); // sparkle 2차 동기
+    Future<void>.delayed(const Duration(milliseconds: 300),
+        () => fire(HapticLevel.light, throttle: false));
+    Future<void>.delayed(const Duration(milliseconds: 380),
+        () => fire(HapticLevel.light, throttle: false)); // 마지막 잔향
+  }
+
   // ── P3 신규: 의식별 타임라인/스텝 큐 빌더 ────────────────────────
   // playTimeline(controller, cues)에 그대로 넣을 수 있는 List<HapticCue> 생성.
 
@@ -221,4 +288,113 @@ class RumbleHandle {
 
   /// [stop]의 별칭 — dispose 흐름에서 의도가 드러나도록.
   void dispose() => stop();
+}
+
+/// [Haptics.startShredGrind]가 반환하는 파쇄기 연속 그라인드 제어 핸들(§5.3).
+///
+/// [RumbleHandle]의 형제격이지만, grinding 고유의 '강도 고조 곡선(0.55→0.82)·
+/// 말미 촘촘함(35ms)·모터 지터'를 내장한다. 시작 시점에 ~45ms 타이머가 돌며,
+/// [stop]을 호출하면 즉시 멈춘다.
+///
+/// **bursting 진입·화면 dispose에서 반드시 [stop]을 호출**해야 무한 진동·타이머
+/// 누수를 막는다. [stop]은 중복 호출해도 안전하다(idempotent). 안전장치로 시작
+/// 후 [_safety] 경과 시 자동 [stop]된다(호출측 stop 누락 대비).
+class GrindHandle {
+  GrindHandle._(this._engine);
+
+  final Haptics _engine;
+
+  /// 그라인드 명목 길이(§4.2 GRIND_DURATION과 동일한 3초).
+  static const Duration _duration = Duration(milliseconds: 3000);
+
+  /// stop 누락 대비 자동 종료 시한(명목 3초 + 여유).
+  static const Duration _safety = Duration(milliseconds: 4000);
+
+  Timer? _timer;
+  bool _stopped = false;
+
+  /// 시작 시각 — setProgress 미호출 시 자체 경과시간으로 기본 곡선을 만든다.
+  final Stopwatch _watch = Stopwatch();
+
+  /// 외부 주입 진행도(0~1). null이면 [_watch] 경과 기반 기본 곡선을 쓴다.
+  double? _externalT;
+
+  void _start() {
+    if (_stopped) return;
+    _watch.start();
+    _engine._grindPulse(_curveIntensity()); // 즉시 첫 펄스(반응 지연 최소화)
+    _schedule();
+    // 안전장치: 시한 경과 시 자동 종료.
+    Future<void>.delayed(_safety, stop);
+  }
+
+  /// 현재 진행도(0~1) — 주입값 우선, 없으면 경과시간 기반.
+  double _progress() {
+    final ext = _externalT;
+    if (ext != null) return ext.clamp(0.0, 1.0);
+    return (_watch.elapsedMilliseconds / _duration.inMilliseconds).clamp(0.0, 1.0);
+  }
+
+  /// 진행도 t(0~1) → 강도. §5.3 키프레임을 선형 보간한 0.55→0.82 상승 곡선에
+  /// '도는 모터'용 미세 sin 변조(±0.06)를 얹는다.
+  double _curveIntensity() {
+    final t = _progress();
+    // 키프레임: 0.0→0.55, 0.33→0.60, 0.66→0.68, 0.80→0.75, 1.0→0.82.
+    final double base;
+    if (t < 0.33) {
+      base = _lerp(0.55, 0.60, t / 0.33);
+    } else if (t < 0.66) {
+      base = _lerp(0.60, 0.68, (t - 0.33) / 0.33);
+    } else if (t < 0.80) {
+      base = _lerp(0.68, 0.75, (t - 0.66) / 0.14);
+    } else {
+      base = _lerp(0.75, 0.82, (t - 0.80) / 0.20);
+    }
+    // 모터 회전감: 약 3Hz로 강도를 흔든다(t를 위상으로 사용).
+    final wobble = 0.06 * math.sin(t * 2 * math.pi * 3);
+    return (base + wobble).clamp(0.0, 1.0);
+  }
+
+  /// 진행도에 따른 펄스 간격. 기본 ~45ms, 말미(t≥0.9)는 35ms로 촘촘.
+  /// '도는 모터'감을 위해 ±8ms 지터를 얹는다.
+  Duration _nextInterval() {
+    final t = _progress();
+    final baseMs = t >= 0.9 ? 35 : 45;
+    // 경과 ms 기반 의사난수 지터(±8ms) — 외부 의존 없이 결정적·가벼움.
+    final jitter = (_watch.elapsedMicroseconds % 17) - 8; // -8..+8
+    final ms = (baseMs + jitter).clamp(28, 60);
+    return Duration(milliseconds: ms);
+  }
+
+  /// 매 펄스마다 간격을 재계산해 1발 발사하고 다음 펄스를 예약(가변 간격).
+  void _schedule() {
+    if (_stopped) return;
+    _timer = Timer(_nextInterval(), () {
+      if (_stopped) return;
+      final t = _progress();
+      // 최말미(≥0.9) 순간엔 heavy를 가끔 섞어 폭죽 직전 텐션.
+      _engine._grindPulse(_curveIntensity(), spikeHeavy: t >= 0.9);
+      _schedule();
+    });
+  }
+
+  /// 매 프레임 진행도(0~1) 주입 — 강도 고조·말미 촘촘함을 화면 컨트롤러에 동조.
+  /// 선택 사항(미호출 시 자체 경과시간 기반 기본 곡선으로 동작).
+  void setProgress(double t) {
+    if (_stopped) return;
+    _externalT = t.clamp(0.0, 1.0);
+    // 강도/간격은 다음 펄스 예약 시점에 자동 반영되므로 타이머 재설정 불필요.
+  }
+
+  /// 연속 그라인드 중지(+타이머 해제). 중복 호출 안전.
+  void stop() {
+    if (_stopped) return;
+    _stopped = true;
+    _timer?.cancel();
+    _timer = null;
+    _watch.stop();
+  }
+
+  static double _lerp(double a, double b, double t) =>
+      a + (b - a) * t.clamp(0.0, 1.0);
 }
