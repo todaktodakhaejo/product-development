@@ -30,11 +30,14 @@ class _ShredderRitualScreenState extends State<ShredderRitualScreen>
   bool _finished = false;
   Offset _slot = Offset.zero;
 
+  RumbleHandle? _rumble; // 투입 중 '갈리는' 연속 진동(드래그 동안만)
+  double _lastFeed = 0; // strip 방출 기준점
+
   static const _palette = [
     AppColors.ballCore,
     AppColors.emberYellow,
-    Color(0xFFFF8AB3),
-    Color(0xFF8FE3B0),
+    kConfettiPink,
+    kConfettiMint,
     AppColors.ballGlow,
   ];
 
@@ -51,24 +54,65 @@ class _ShredderRitualScreenState extends State<ShredderRitualScreen>
     _repaint.value++;
   }
 
+  // 투입 시작: 연속 rumble 시작('갈리는' 질감). 드래그 동안만 울리고 끝에서 멈춘다.
+  void _onDragStart(DragStartDetails d) {
+    if (_bursting) return;
+    _rumble ??= Haptics.instance.rumble(intensity: 0.4);
+  }
+
   void _onDrag(DragUpdateDetails d) {
     if (_bursting) return;
-    final prev = _feed;
     _feed = (_feed + d.primaryDelta! / _paperSize.height).clamp(0.0, 1.0);
-    if (_feed > prev) Haptics.instance.fire(HapticLevel.light); // 투입 진동
+
+    // 투입 속도(px/s)를 0~1로 정규화해 rumble 강도에 반영(빠를수록 강·촘촘).
+    final speed = d.primaryDelta!.abs() * 60; // delta/frame → 대략 px/s
+    final norm = (speed / 2000).clamp(0.0, 1.0);
+    _rumble?.setIntensity(norm);
+
+    // 투입량 증가분이 임계를 넘으면 슬릿에서 세로 스트립 조각 낙하.
+    final df = _feed - _lastFeed;
+    if (df > 0.015) {
+      _lastFeed = _feed;
+      final strips = (2 + df * 30).round().clamp(2, 8);
+      _field.emitStrip(
+        origin: _slot,
+        width: _paperSize.width,
+        count: strips,
+        palette: const [AppColors.paper, AppColors.paperShadow],
+      );
+    }
+
     setState(() {});
     if (_feed >= 1.0) _burst();
   }
 
   void _onDragEnd(DragEndDetails d) {
-    if (_bursting || _feed >= 1.0) return;
-    setState(() => _feed = 0); // 덜 넣으면 되돌아옴
+    // 끝까지 안 넣고 떼면 rumble을 멈추고 종이 리셋(강요 없음).
+    if (_bursting || _feed >= 1.0) {
+      _rumble?.stop();
+      _rumble = null;
+      return;
+    }
+    _rumble?.stop();
+    _rumble = null;
+    setState(() {
+      _feed = 0;
+      _lastFeed = 0;
+    });
   }
 
   void _burst() {
     if (_bursting) return;
     _bursting = true;
-    Haptics.instance.fire(HapticLevel.heavy, throttle: false);
+    // 투입 rumble 종료.
+    _rumble?.stop();
+    _rumble = null;
+    // 완료 더블탭: medium 즉시 + success 살짝 뒤(폭죽감).
+    Haptics.instance.fire(HapticLevel.medium, throttle: false);
+    Future.delayed(const Duration(milliseconds: 80), () {
+      Haptics.instance.fire(HapticLevel.success, throttle: false);
+    });
+    // 1차 폭죽(기존 유지, 다색 강화).
     _field.emitBurst(
       origin: _slot,
       count: 120,
@@ -77,6 +121,23 @@ class _ShredderRitualScreenState extends State<ShredderRitualScreen>
       spread: 2.4,
       gravity: 900,
     );
+    // 색종이 삼각 조각 추가(조금 더 크고 천천히).
+    _field.emitBurst(
+      origin: _slot,
+      count: 40,
+      palette: const [kConfettiPink, kConfettiMint, AppColors.emberYellow],
+      speed: 600,
+      sizeMin: 6,
+      sizeMax: 14,
+      spread: 2.0,
+      gravity: 700,
+      shape: ParticleShape.triangle,
+    );
+    // 2차 잔입자 반짝이: 220ms 뒤.
+    Future.delayed(const Duration(milliseconds: 220), () {
+      if (!mounted) return;
+      _field.emitBurstSparkle(origin: _slot, count: 50, speed: 480);
+    });
     Future.delayed(const Duration(milliseconds: 900), _complete);
   }
 
@@ -90,6 +151,7 @@ class _ShredderRitualScreenState extends State<ShredderRitualScreen>
 
   @override
   void dispose() {
+    _rumble?.stop(); // 드래그 중 화면 이탈 대비(무한 진동·타이머 누수 방지)
     _ticker.dispose();
     _repaint.dispose();
     super.dispose();
@@ -114,6 +176,7 @@ class _ShredderRitualScreenState extends State<ShredderRitualScreen>
                     top: paperTop,
                     width: _paperSize.width,
                     child: GestureDetector(
+                      onVerticalDragStart: _onDragStart,
                       onVerticalDragUpdate: _onDrag,
                       onVerticalDragEnd: _onDragEnd,
                       child: ClipRect(
