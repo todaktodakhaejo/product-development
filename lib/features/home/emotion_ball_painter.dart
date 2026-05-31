@@ -3,18 +3,18 @@ import 'package:flutter/material.dart';
 import '../../theme/app_theme.dart';
 import 'emotion_ball.dart';
 
-/// 공 오브제 + 물결(누르기) + 꽉쥐기 발광을 그린다.
+/// 공 오브제 + 물결(누르기) + 쓰다듬기 발광을 그린다.
 class EmotionBallPainter extends CustomPainter {
   EmotionBallPainter({
     required this.ball,
     required this.ripples,
-    required this.squeeze, // 폰 꽉 쥐기(GST-05) 충전도 0~1
+    required this.strokeEnergy, // 쓰다듬기(GST-04) 누적 0~1
     required this.repaint,
   }) : super(repaint: repaint);
 
   final EmotionBall ball;
   final List<Ripple> ripples;
-  final double squeeze;
+  final double strokeEnergy;
   final Listenable repaint;
 
   @override
@@ -33,12 +33,15 @@ class EmotionBallPainter extends CustomPainter {
     canvas.translate(ball.pos.dx, ball.pos.dy);
     canvas.scale(scale.dx, scale.dy);
 
-    // 꽉쥐기 충전 글로우 (임계 다가갈수록 강해짐)
-    if (squeeze > 0.01) {
-      final glow = Paint()
-        ..color = AppColors.emberYellow.withValues(alpha: 0.5 * squeeze)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, 24 * squeeze);
-      canvas.drawCircle(Offset.zero, ball.radius * (1 + 0.25 * squeeze), glow);
+    // 쓰다듬기 글로우 (GST-04) — 폭신하게 번지는 발광. 또렷한 링 금지.
+    // alpha 0.2~0.4 * strokeEnergy 범위(§8), 부드러운 maskFilter blur.
+    // 공 본체 뒤/주위에 깔리도록 외곽 발광보다 먼저, 더 넓게 그린다.
+    final e = strokeEnergy.clamp(0.0, 1.0);
+    if (e > 0.01) {
+      final stroke = Paint()
+        ..color = AppColors.ballGlow.withValues(alpha: (0.2 + 0.2 * e) * e)
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, 22 + 16 * e);
+      canvas.drawCircle(Offset.zero, ball.radius * (1.18 + 0.22 * e), stroke);
     }
 
     // 외곽 발광

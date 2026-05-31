@@ -13,6 +13,7 @@ pubspec.lock
 
 # Generated native folders (run `flutter create .` to regenerate)
 # (keep these tracked if you customize them)
+/web/
 
 # macOS
 .DS_Store
@@ -24,3 +25,6 @@ pubspec.lock
 # 하네스
 .claude/
 CLAUDE.md
+# 에이전트 작업 산출물(중간 산출물 — 로컬 보존, PR 제외)
+_workspace/
+_workspace_prev/

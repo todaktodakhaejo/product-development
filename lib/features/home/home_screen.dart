@@ -12,19 +12,24 @@ import '../writing/writing_screen.dart';
 import 'emotion_ball.dart';
 import 'emotion_ball_painter.dart';
 
-/// 2단계 첫 화면(홈). 감정 오브제(공)와 5개 제스처 인터랙션의 무대.
+/// 2단계 첫 화면(홈). 감정 오브제(공)와 4종 제스처 인터랙션의 무대.
 ///
-///  - GST-01 흔들기 : userAccelerometer 임펄스 + 세기별 햅틱, 벽 충돌 진동
-///  - GST-02 굴리기 : accelerometer 기울기 중력, 시작/충돌 진동
+///  - GST-01 흔들기 : 자이로 각속도 세기 비례 임펄스 + 세기별 햅틱, 벽 충돌 진동
+///  - GST-02 굴리기 : 손가락 드래그 추종 → 놓으면 관성 fling + 벽 튕김
 ///  - GST-03 누르기 : 탭 → 물결 + 뗄 때 'selection' 진동
-///  - GST-04 문지르기: 드래그 → 젤리 출렁임 + 지속 약진동
-///  - GST-05 꽉쥐기 : 공 위 정지 유지 → 충전 진동 점증 → 임계 돌파 시 팡(종이 등장)
+///  - GST-04 쓰다듬기: 제자리 왕복 드래그 → 표면 출렁임 + 글로우 + 연속 약진동
+///
+/// 굴리기·쓰다듬기는 둘 다 단일 포인터 드래그라, 드래그 메트릭(직진성·방향전환)
+/// 으로 모드를 자동 판별한다(히스테리시스, [_onPointerMove] 참고).
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
+
+/// 단일 포인터 드래그의 자동 판별 모드.
+enum _DragMode { none, roll, stroke }
 
 class _HomeScreenState extends State<HomeScreen>
     with SingleTickerProviderStateMixin {
@@ -34,30 +39,49 @@ class _HomeScreenState extends State<HomeScreen>
   EmotionBall? _ball;
   final List<Ripple> _ripples = [];
 
-  // 센서
-  StreamSubscription? _accelSub;
-  StreamSubscription? _userAccelSub;
-  Offset _gravity = Offset.zero; // 기울기에서 온 가속도
-  bool _rolling = false;
+  // 센서: 흔들기(GST-01)용 자이로 각속도 1개만 구독.
+  StreamSubscription? _gyroSub;
+  bool _shakeArmed = true; // 재발동 게이트(연속 폭주 방지)
+  DateTime _lastShake = DateTime.fromMillisecondsSinceEpoch(0);
 
-  // 포인터 상태 (누르기/문지르기/꽉쥐기 통합)
+  // 흔들기 임펄스 방향용 난수(State 당 1개만 보유).
+  final Random _rng = Random();
+
+  // 포인터 상태 (누르기 / 굴리기 / 쓰다듬기 통합)
   int? _pointerId;
   Offset _downPos = Offset.zero;
   Offset _lastPos = Offset.zero;
   Duration _lastMoveTime = Duration.zero;
   Offset _flingVel = Offset.zero;
   bool _moved = false;
-  bool _onBall = false;
-  double _squeeze = 0; // GST-05 충전 0~1
-  static const double _squeezeTime = 1.4; // 초
+
+  // 드래그 판별 상태머신(§4.2 / §6.2)
+  _DragMode _dragMode = _DragMode.none;
+  double _pathLen = 0; // 누적 경로 길이(px)
+  int _turnCount = 0; // 방향 전환 횟수
+  Offset _lastMoveDir = Offset.zero;
+  double _strokeEnergy = 0; // 쓰다듬기 누적(0~1) → wobble/글로우 구동
 
   bool _showComfort = true;
   late final String _comfort = randomComfortMessage();
 
   Duration _lastTick = Duration.zero;
 
-  static const double _gravityScale = 55;
   static const double _slop = 14;
+
+  // 흔들기(GST-01) 자이로 각속도 임계(rad/s)
+  static const double kShakeOn = 3.5; // 발동 임계
+  static const double kShakeOff = 2.0; // 해제(재발동 허용) 임계
+  static const double kShakeMax = 12.0; // 정규화 상한
+  static const Duration _shakeCooldown = Duration(milliseconds: 120);
+
+  // 드래그 판별 임계(§6.2)
+  static const double kTurnDot = -0.1; // 방향전환 인정 내적(약 95°)
+  static const double kStrokeStraight = 0.45; // 미만 + 잦은 전환 → stroke
+  static const double kRollStraight = 0.65; // 초과 + 큰 net → roll
+  static const double kRollNetFactor = 0.8; // net > radius * 0.8
+  static const int kStrokeTurns = 2; // 전환 횟수 임계
+  static const double kMinStep = 2.0; // px, 노이즈 컷
 
   @override
   void initState() {
@@ -67,40 +91,45 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   void _listenSensors() {
-    // 굴리기(GST-02): 기기 기울기 → 중력 벡터
-    _accelSub = accelerometerEventStream().listen(
+    // 흔들기(GST-01): 자이로 각속도. 미지원 기기/웹에서는 onError로 무시되어
+    // 흔들기만 비활성화되고 터치 제스처는 정상 동작한다.
+    _gyroSub = gyroscopeEventStream().listen(
       (e) {
-        // 화면 좌표: x 오른쪽+, y 아래+. 기기 기울기를 굴림 방향으로 매핑.
-        // (부호는 기기/OS에 따라 튜닝 필요)
-        _gravity = Offset(e.x, -e.y) * _gravityScale;
-        final mag = _gravity.distance;
-        if (!_rolling && mag > 90) {
-          _rolling = true;
-          Haptics.instance.fire(HapticLevel.light); // 굴리기 시작 알림
-        } else if (_rolling && mag < 45) {
-          _rolling = false;
+        final w = sqrt(e.x * e.x + e.y * e.y + e.z * e.z); // 각속도 크기(rad/s)
+        if (w < kShakeOff) {
+          _shakeArmed = true; // 충분히 잦아들면 다음 흔들기 허용
+          return;
         }
+        if (w < kShakeOn || !_shakeArmed) return;
+        // 쿨다운(연속 발사 폭주 방지)
+        final now = DateTime.now();
+        if (now.difference(_lastShake) < _shakeCooldown) return;
+        _lastShake = now;
+        _shakeArmed = false;
+
+        final strength =
+            ((w - kShakeOn) / (kShakeMax - kShakeOn)).clamp(0.0, 1.0);
+        _ball?.addImpulse(_randomUnitVector(), strength);
+        // 임펄스가 발사된(=kShakeOn 각속도 게이트를 통과한) 흔들기는 반드시 손에
+        // 느껴져야 한다. strength 원값은 임계 부근에서 0에 수렴해 impactByStrength의
+        // 하한(0.12)에 걸려 무발동 → 시각은 튀는데 진동은 없는 desync가 생긴다.
+        // 발사된 흔들기는 light(0.12) 이상이 보장되도록 바닥을 깔고, 셀수록 강하게
+        // medium·heavy로 단계 상승시킨다(throttle은 120ms 쿨다운이 이미 담당).
+        Haptics.instance.impactByStrength(
+          (0.18 + strength * 0.82).clamp(0.0, 1.0),
+          throttle: false,
+        );
+        if (_showComfort) setState(() => _showComfort = false);
       },
       onError: (_) {}, // 센서 미지원 기기에서도 터치는 동작
       cancelOnError: false,
     );
+  }
 
-    // 흔들기(GST-01): 중력 제외 사용자 가속도
-    _userAccelSub = userAccelerometerEventStream().listen(
-      (e) {
-        final mag = sqrt(e.x * e.x + e.y * e.y + e.z * e.z);
-        if (mag > 12) {
-          final strength = ((mag - 12) / 22).clamp(0.0, 1.0);
-          final dir = Offset(e.x, -e.y);
-          final n = dir.distance;
-          if (n > 0.001) _ball?.addImpulse(dir / n, strength);
-          Haptics.instance.impactByStrength(strength.toDouble());
-          if (_showComfort) setState(() => _showComfort = false);
-        }
-      },
-      onError: (_) {},
-      cancelOnError: false,
-    );
+  /// 흔들기 임펄스용 랜덤 단위벡터(사방으로 튀는 손맛).
+  Offset _randomUnitVector() {
+    final a = _rng.nextDouble() * 2 * pi;
+    return Offset(cos(a), sin(a));
   }
 
   void _onTick(Duration elapsed) {
@@ -112,20 +141,10 @@ class _HomeScreenState extends State<HomeScreen>
     if (ball == null) return;
     final clampedDt = dt.clamp(0.0, 0.05);
 
-    // 꽉쥐기(GST-05): 공 위에서 정지 유지 시 충전
-    if (_pointerId != null && _onBall && !_moved) {
-      _squeeze = (_squeeze + clampedDt / _squeezeTime).clamp(0.0, 1.0);
-      // 충전될수록 더 잦고 센 진동
-      Haptics.instance.fire(
-        _squeeze < 0.5 ? HapticLevel.light : HapticLevel.medium,
-      );
-      if (_squeeze >= 1.0) {
-        _pop();
-        return;
-      }
-    }
+    // 쓰다듬기 에너지 시간 감쇠(멈추면 ~1.5s 내 잦아듦). stroke 중엔 move에서 증가.
+    _strokeEnergy = (_strokeEnergy - clampedDt * 0.7).clamp(0.0, 1.0);
 
-    ball.update(clampedDt, _gravity);
+    ball.update(clampedDt, Offset.zero); // 중력 굴리기 폐기 → gravity 0
 
     // 벽 충돌 햅틱
     if (ball.lastImpact > 0) {
@@ -149,8 +168,11 @@ class _HomeScreenState extends State<HomeScreen>
     _downPos = _lastPos = e.localPosition;
     _lastMoveTime = e.timeStamp;
     _moved = false;
-    _onBall = ball.hitTest(e.localPosition);
-    _squeeze = 0;
+    // 드래그 메트릭 초기화
+    _dragMode = _DragMode.none;
+    _pathLen = 0;
+    _turnCount = 0;
+    _lastMoveDir = Offset.zero;
     if (_showComfort) setState(() => _showComfort = false); // HOME-04
   }
 
@@ -159,14 +181,53 @@ class _HomeScreenState extends State<HomeScreen>
     final ball = _ball;
     if (ball == null) return;
     final pos = e.localPosition;
+    final step = pos - _lastPos;
+    final stepLen = step.distance;
+
     if (!_moved && (pos - _downPos).distance > _slop) {
       _moved = true;
-      _squeeze = 0; // 움직였으면 꽉쥐기 아님 → 문지르기
+      // 잠정 roll로 시작(공이 손가락을 따라오는 즉각 반응이 직관적).
+      _dragMode = _DragMode.roll;
+      Haptics.instance.fire(HapticLevel.light); // 굴리기 모드 진입 알림 1회
     }
-    if (_moved && _onBall) {
-      ball.grab(pos); // 문지르기(GST-04)
-      Haptics.instance.rubTick(); // throttle 내장
+
+    if (_moved) {
+      // 드래그 메트릭 누적
+      _pathLen += stepLen;
+      if (stepLen > kMinStep) {
+        final stepDir = step / stepLen;
+        if (_lastMoveDir != Offset.zero &&
+            _lastMoveDir.dx * stepDir.dx + _lastMoveDir.dy * stepDir.dy <
+                kTurnDot) {
+          _turnCount++; // ~95° 이상 꺾임 = 방향 전환
+        }
+        _lastMoveDir = stepDir;
+      }
+      final net = (pos - _downPos).distance;
+      final straightness = net / max(_pathLen, 1);
+
+      // 히스테리시스 판정: 0.45~0.65 데드존으로 모드 떨림 방지.
+      if (_dragMode != _DragMode.stroke &&
+          straightness < kStrokeStraight &&
+          _turnCount >= kStrokeTurns) {
+        _dragMode = _DragMode.stroke; // 경로는 긴데 시작점 근처를 맴돔
+      } else if (_dragMode != _DragMode.roll &&
+          straightness > kRollStraight &&
+          net > ball.radius * kRollNetFactor) {
+        _dragMode = _DragMode.roll; // 확실히 한 방향으로 멀리 끌고 감
+      }
+
+      // 모드별 동작
+      if (_dragMode == _DragMode.stroke) {
+        ball.stroke(step); // 제자리 출렁임
+        _strokeEnergy = (_strokeEnergy + stepLen / ball.radius * 0.4)
+            .clamp(0.0, 1.0); // step 비례 증가
+        Haptics.instance.rubTick(); // 연속 약진동(throttle 내장)
+      } else if (_dragMode == _DragMode.roll) {
+        ball.grab(pos); // 손가락 추종
+      }
     }
+
     // 플링 속도 추정
     final dtMs = (e.timeStamp - _lastMoveTime).inMicroseconds / 1e6;
     if (dtMs > 0) _flingVel = (pos - _lastPos) / dtMs;
@@ -178,27 +239,20 @@ class _HomeScreenState extends State<HomeScreen>
     if (e.pointer != _pointerId) return;
     final ball = _ball;
     _pointerId = null;
-    _squeeze = 0;
 
     if (ball == null) return;
     if (!_moved) {
       // 누르기(GST-03): 물결 + 뗄 때 진동
       _ripples.add(Ripple(e.localPosition));
       Haptics.instance.fire(HapticLevel.selection, throttle: false);
-    } else if (_onBall) {
+    } else if (_dragMode == _DragMode.roll) {
       ball.release();
-      ball.vel = _flingVel; // 던진 손맛
+      ball.vel = _flingVel; // 던진 손맛(관성 fling)
+    } else if (_dragMode == _DragMode.stroke) {
+      ball.release(); // grabbed 해제만, vel 부여 안 함(날아가지 않음)
     }
     _moved = false;
-    _onBall = false;
-  }
-
-  /// GST-05 임계 돌파: 팡 → 종이가 튀어나오듯 글쓰기로 전환(HOME-05).
-  void _pop() {
-    _squeeze = 0;
-    _pointerId = null;
-    Haptics.instance.fire(HapticLevel.heavy, throttle: false);
-    _goToWriting();
+    _dragMode = _DragMode.none;
   }
 
   void _goToWriting() {
@@ -210,8 +264,7 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void dispose() {
     _ticker.dispose();
-    _accelSub?.cancel();
-    _userAccelSub?.cancel();
+    _gyroSub?.cancel();
     _frame.dispose();
     super.dispose();
   }
@@ -243,7 +296,7 @@ class _HomeScreenState extends State<HomeScreen>
                         painter: EmotionBallPainter(
                           ball: _ball!,
                           ripples: _ripples,
-                          squeeze: _squeeze,
+                          strokeEnergy: _strokeEnergy,
                           repaint: _frame,
                         ),
                       ),
@@ -272,27 +325,20 @@ class _HomeScreenState extends State<HomeScreen>
                     ),
                   ),
 
-                  // 글쓰기 전환 힌트 + 접근성 대체 버튼 (HOME-05)
+                  // 글쓰기 진입 단일 경로 (HOME-05). 자동 강제 전환 없음.
                   Positioned(
                     bottom: 24,
                     left: 0,
                     right: 0,
-                    child: Column(
-                      children: [
-                        const Text(
-                          '공을 꾹 쥐면 종이가 나와요',
-                          style: TextStyle(color: Colors.white38, fontSize: 13),
+                    child: Center(
+                      child: TextButton.icon(
+                        onPressed: _goToWriting,
+                        icon: const Icon(Icons.edit_note, size: 18),
+                        label: const Text('바로 글쓰기'),
+                        style: TextButton.styleFrom(
+                          foregroundColor: Colors.white60,
                         ),
-                        const SizedBox(height: 8),
-                        TextButton.icon(
-                          onPressed: _goToWriting,
-                          icon: const Icon(Icons.edit_note, size: 18),
-                          label: const Text('바로 글쓰기'),
-                          style: TextButton.styleFrom(
-                            foregroundColor: Colors.white60,
-                          ),
-                        ),
-                      ],
+                      ),
                     ),
                   ),
                 ],
