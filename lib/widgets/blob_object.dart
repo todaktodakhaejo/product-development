@@ -6,10 +6,13 @@ import '../theme/app_colors.dart';
 
 /// 살아있는 젤리 오브제 (PRODUCT_SPEC 4.1).
 ///
-/// 현재는 idle breathing(숨쉬듯 부풂)과 탭/길게누르기 콜백만 갖춘 골격이다.
-/// TODO(motion): 닫힌 베지어 제어점 N개로 젤리 윤곽 고도화, 드래그 일그러짐,
-///               꼬집기 늘이기, 흔들기 팅김 등 제스처별 변형.
-/// TODO(haptics): pressHum/rubTexture 연속 햅틱 + 제스처별 시그니처 사운드.
+/// 인터랙션(웹/데스크톱에서 동작):
+///  - 탭: 톡 눌렸다가 탄성 복원
+///  - 끌기(드래그): 손가락 따라 이동 + 속도에 따라 늘어남, 놓으면 탄성 복원
+///  - 길게 누르기: 분출 단계로 전환([onOpen])
+///
+/// TODO(motion): 베지어 제어점 기반 윤곽 변형, 꼬집기/회전.
+/// TODO(haptics): 끌기 중 rubTexture 연속 햅틱, 기울여 굴리기(sensors_plus, 실기기).
 class BlobObject extends StatefulWidget {
   const BlobObject({
     super.key,
@@ -31,33 +34,98 @@ class BlobObject extends StatefulWidget {
 }
 
 class _BlobObjectState extends State<BlobObject>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   late final AnimationController _breath = AnimationController(
     vsync: this,
     duration: const Duration(seconds: 4),
   )..repeat(reverse: true);
 
+  late final AnimationController _press = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 220),
+  );
+
+  // 드래그 후 제자리로 돌아오는 탄성 복원.
+  late final AnimationController _return = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 800),
+  );
+
+  Offset _offset = Offset.zero; // 현재 변위
+  Offset _springFrom = Offset.zero; // 복원 시작점
+  Offset _dragDelta = Offset.zero; // 최근 드래그 델타(늘이기용)
+
+  @override
+  void initState() {
+    super.initState();
+    _return.addListener(() {
+      final t = Curves.elasticOut.transform(_return.value);
+      setState(() => _offset = Offset.lerp(_springFrom, Offset.zero, t)!);
+    });
+  }
+
   @override
   void dispose() {
     _breath.dispose();
+    _press.dispose();
+    _return.dispose();
     super.dispose();
+  }
+
+  void _handleTap() {
+    widget.onTap?.call();
+    _press.forward(from: 0).then((_) {
+      if (mounted) _press.reverse();
+    });
+  }
+
+  void _onPanStart(DragStartDetails _) => _return.stop();
+
+  void _onPanUpdate(DragUpdateDetails d) {
+    setState(() {
+      _offset += d.delta;
+      _dragDelta = d.delta;
+    });
+  }
+
+  void _onPanEnd(DragEndDetails _) {
+    setState(() => _dragDelta = Offset.zero);
+    _springFrom = _offset;
+    _return.forward(from: 0);
   }
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: widget.onTap,
+      onTap: _handleTap,
       onLongPress: widget.onOpen,
+      onPanStart: _onPanStart,
+      onPanUpdate: _onPanUpdate,
+      onPanEnd: _onPanEnd,
       child: AnimatedBuilder(
-        animation: _breath,
+        animation: Listenable.merge([_breath, _press]),
         builder: (context, _) {
-          final t = Curves.easeInOut.transform(_breath.value);
-          final scale = 0.96 + t * 0.08; // 숨쉬는 스케일
-          return Transform.scale(
-            scale: scale,
-            child: CustomPaint(
-              size: Size.square(widget.size),
-              painter: _BlobPainter(phase: t),
+          final breath = Curves.easeInOut.transform(_breath.value);
+          final breathScale = 0.96 + breath * 0.08;
+          final press = Curves.easeOut.transform(_press.value);
+          final pressScale = 1 - 0.12 * press;
+
+          // 드래그 속도에 따른 방향성 늘이기(미세).
+          final speed = _dragDelta.distance;
+          final k = (speed / 36).clamp(0.0, 0.16);
+          final horizontal = _dragDelta.dx.abs() >= _dragDelta.dy.abs();
+          final sx = breathScale * pressScale * (1 + (horizontal ? k : -k * 0.6));
+          final sy = breathScale * pressScale * (1 + (horizontal ? -k * 0.6 : k));
+
+          return Transform.translate(
+            offset: _offset,
+            child: Transform(
+              alignment: Alignment.center,
+              transform: Matrix4.diagonal3Values(sx, sy, 1),
+              child: CustomPaint(
+                size: Size.square(widget.size),
+                painter: _BlobPainter(phase: breath),
+              ),
             ),
           );
         },

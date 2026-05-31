@@ -59,7 +59,7 @@ class _SoothePageState extends State<SoothePage> {
               Padding(
                 padding: const EdgeInsets.only(bottom: 28),
                 child: Text(
-                  '오브제를 길게 누르면 마음을 적을 수 있어요',
+                  '오브제를 만지고 끌어보세요 · 길게 누르면 마음을 적을 수 있어요',
                   style: Theme.of(context).textTheme.labelSmall,
                 ),
               ),

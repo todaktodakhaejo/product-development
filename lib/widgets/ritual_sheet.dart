@@ -118,7 +118,7 @@ class _RitualCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  enabled ? ritual.matchedEmotion : '곧 추가돼요',
+                  enabled ? ritual.hint : '곧 추가돼요',
                   style: TextStyle(
                     color: Colors.white.withValues(alpha: 0.8),
                     fontSize: 12,

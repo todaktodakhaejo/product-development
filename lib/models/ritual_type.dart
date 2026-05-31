@@ -2,25 +2,28 @@
 ///
 /// ①~⑦은 "없애는" 의식, ⑧⑨는 "간직하는" 의식.
 /// availability로 MVP/2차/확장을 구분해 단계적으로 구현한다.
+///
+/// 주의: 의식은 특정 감정에 고정되지 않는다. 사용자가 자유롭게 선택하며,
+/// UI에 감정을 라벨로 노출하지 않는다([hint]는 동작 설명일 뿐).
 enum RitualType {
   // MVP (필수)
-  shred('파쇄기로 갈기', '분노 · 억울함', RitualKind.release, RitualAvailability.mvp),
-  crumple('구겨서 던지기', '답답함', RitualKind.release, RitualAvailability.mvp),
-  bonfire('모닥불에 태우기', '슬픔 · 후회', RitualKind.release, RitualAvailability.mvp),
-  tear('종이 찢기', '짜증', RitualKind.release, RitualAvailability.mvp),
+  shred('파쇄기로 갈기', '잘게 갈아 날리기', RitualKind.release, RitualAvailability.mvp),
+  crumple('구겨서 던지기', '구겨서 멀리 던지기', RitualKind.release, RitualAvailability.mvp),
+  bonfire('모닥불에 태우기', '천천히 태워 보내기', RitualKind.release, RitualAvailability.mvp),
+  tear('종이 찢기', '여러 번 찢어 흩기', RitualKind.release, RitualAvailability.mvp),
 
   // 2차
-  shuffle('글자 뒤섞기', '혼란', RitualKind.release, RitualAvailability.secondary),
-  unravel('엉킨 실 풀기', '미련', RitualKind.release, RitualAvailability.secondary),
+  shuffle('글자 뒤섞기', '흔들어 부수기', RitualKind.release, RitualAvailability.secondary),
+  unravel('엉킨 실 풀기', '매듭 하나씩 풀기', RitualKind.release, RitualAvailability.secondary),
 
   // 확장
-  airplane('비행기 접어 날리기', '훌훌 털기', RitualKind.release, RitualAvailability.extended),
-  jewelry('보석함에 넣기', '소중히 간직', RitualKind.keep, RitualAvailability.extended),
-  savings('저금 · 골드바', '성취 · 설렘', RitualKind.keep, RitualAvailability.extended);
+  airplane('비행기 접어 날리기', '접어서 멀리 날리기', RitualKind.release, RitualAvailability.extended),
+  jewelry('보석함에 넣기', '소중히 담아두기', RitualKind.keep, RitualAvailability.extended),
+  savings('저금 · 골드바', '차곡차곡 모으기', RitualKind.keep, RitualAvailability.extended);
 
   const RitualType(
     this.label,
-    this.matchedEmotion,
+    this.hint,
     this.kind,
     this.availability,
   );
@@ -28,8 +31,8 @@ enum RitualType {
   /// 카드에 표시되는 의식 이름.
   final String label;
 
-  /// 대응 감정 (카드 보조 표시).
-  final String matchedEmotion;
+  /// 동작 설명 (카드 보조 표시). 감정이 아니라 "무엇을 하는지"를 담는다.
+  final String hint;
 
   /// 없애기 / 간직하기.
   final RitualKind kind;
