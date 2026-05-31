@@ -13,6 +13,8 @@ dependencies:
   # 흔들기(GST-01) / 굴리기(GST-02) 용 기기 센서
   sensors_plus: ^6.0.1
   cupertino_icons: ^1.0.8
+  # 온보딩 완료 여부 등 작은 설정을 기기에 영구 저장 (영구화 레이어)
+  shared_preferences: ^2.3.2
 
 dev_dependencies:
   flutter_lints: ^4.0.0
