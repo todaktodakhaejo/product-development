@@ -16,3 +16,11 @@ pubspec.lock
 
 # macOS
 .DS_Store
+# Android Studio will place build artifacts here
+/android/app/debug
+/android/app/profile
+/android/app/release
+
+# 하네스
+.claude/
+CLAUDE.md
