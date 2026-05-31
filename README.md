@@ -1,90 +1,115 @@
-# 감정 오브제 명상 앱 (emotion_relief)
+# 감정 해소 앱 (Emotion Resolution App)
 
-> 살아있는 디지털 감정 오브제를 만지며 진정시키고(**Soothe**) → 떠오르는 생각을 종이에 쏟아낸 뒤(**Pour**) → 나만의 의식으로 감정을 해소한다(**Release**) → 다시 나에게 돌아온다(**Closing**).
+> 감정을 '기록'하는 것이 아니라 **'흘려보내며 해소'** 하는 앱.
+> 감정을 **오브제화**하여 직면하고, **의식(분출 행위)** 으로 시각적으로 흘려보낸다.
 
-📄 **전체 기획·디자인 명세는 [`docs/PRODUCT_SPEC.md`](docs/PRODUCT_SPEC.md)** 를 읽어주세요. (톤앤매너, 컬러 토큰, 햅틱 패턴, 화면별 상세)
-
-이 저장소는 **팀 협업용 골격(skeleton)** 입니다. 외부 패키지 없이도 바로 컴파일·실행되며, 세부 인터랙션은 `TODO` 지점에서 각자 채웁니다.
+Flutter로 구현한 MVP. 기능명세서의 **우선순위 '필수'** 기능을 우선 구현했습니다.
 
 ---
 
 ## 실행 방법
 
-Windows(PowerShell)에서는 매 셸마다 Flutter/Git PATH를 먼저 잡아야 합니다:
+> ⚠️ 이 저장소에는 `lib/`, `pubspec.yaml` 등 **소스만** 들어 있습니다.
+> iOS/Android 네이티브 폴더는 `flutter create`로 생성해야 합니다.
 
-```powershell
-$env:Path = "C:\Program Files\Git\cmd;C:\src\flutter\bin;" + $env:Path
+```bash
+# 0) Flutter SDK 설치 (3.27+ / Dart 3.6+ 필요: Color.withValues 사용)
+flutter --version
+
+# 1) 네이티브 플랫폼 폴더 생성 (pubspec.yaml / lib/main.dart 를 덮어씀)
+flutter create . --project-name emotion_resolution_app --org com.emotion --platforms=android,ios
+
+# 2) 덮어쓰인 내 소스 복구 (이 저장소가 git 관리 중일 때)
+git checkout -- pubspec.yaml lib/main.dart
+
+# 3) 의존성 설치 후 실행 (실기기 권장: 햅틱·센서)
 flutter pub get
-flutter run -d chrome     # 웹에서 빠르게 확인 (Chrome/Edge/Windows 데스크톱 가능)
+flutter run
 ```
 
-> 햅틱·센서는 **실기기**에서만 실제로 동작합니다. 웹/에뮬레이터에서는 폴백(무해)으로 흐릅니다.
-
-검증:
-```powershell
-flutter analyze
-flutter test
-```
+> 햅틱과 가속도 센서는 **실제 기기**에서만 제대로 동작합니다. 시뮬레이터는 진동/센서가 제한적입니다.
 
 ---
 
-## 프로젝트 구조
+## 폴더 구조
 
 ```
 lib/
-  main.dart / app.dart            # 진입점 · 세션/서비스 주입 · 진정 화면으로 시작
-  theme/
-    app_colors.dart               # 디자인 컬러 토큰 (SPEC 2.2) — HEX 직접 사용 금지
-    app_theme.dart                # 타이포·테마
-  models/
-    ritual_phase.dart             # 단계 enum (soothe/pour/releaseSelect/...)
-    ritual_type.dart              # 의식 종류 enum (파쇄/구김/모닥불/찢기/...) + MVP 구분
-    ritual_session.dart           # 세션 상태 (ChangeNotifier) — 화면 간 데이터는 이걸로 통일
-  state/
-    ritual_scope.dart             # RitualSession을 트리에 노출 (InheritedNotifier)
-    app_services.dart             # 햅틱·사운드·센서·설정 묶음 + Scope
-  routing/
-    route_transitions.dart        # 페이드/모프 전환
-  screens/
-    soothe_page.dart              # 진정 (오브제 교감)
-    pour_page.dart                # 분출 (글쓰기 + 3초 정지 시 의식 시트)
-    release_ritual_page.dart      # 해소 (선택된 의식 수행)
-    closing_page.dart             # 마무리
-  widgets/
-    app_background.dart           # 파스텔 그라데이션 + 글로우
-    blob_object.dart              # 젤리 오브제 (idle breathing) — CustomPainter
-    ritual_sheet.dart             # 의식 선택 시트 (카드 그리드)
-    particle_field.dart           # 재사용 파티클 유틸 (의식 효과용)
-    rituals/                      # 의식별 인터랙션 위젯 (현재 placeholder)
-      ritual_stage.dart           #   공통 골격 (안내 + 완료 버튼)
-      shredder/crumple/bonfire/tear_ritual.dart   # MVP 4종
-      placeholder_ritual.dart     #   2차/확장 의식 임시 화면
-      ritual_interactions.dart    #   RitualType → 위젯 분기
-  services/
-    haptics/                      # Haptics 추상 API + FallbackHaptics + Factory
-    sensors/                      # SensorService 추상 + Noop 폴백
-    audio/                        # SoundService 추상 + Noop 폴백
-    settings/                     # 햅틱/사운드 ON·OFF · 모션 민감도
+  main.dart, app.dart            # 진입점 / MaterialApp·세션 주입
+  theme/app_theme.dart           # 색·그라데이션·배경
+  core/
+    haptics.dart                 # ⭐ 햅틱 엔진 (세기 매핑 + 타임라인 큐)
+    strings.dart                 # 위로/완료 멘트
+  state/session.dart             # 세션 상태(글·의식) + Ritual 정의
+  features/
+    onboarding/                  # ONB-01
+    home/                        # ⭐ 공 오브제 물리 + 5개 제스처
+      emotion_ball.dart          #   물리/변형 모델
+      emotion_ball_painter.dart  #   렌더링
+      home_screen.dart           #   센서·포인터·루프 통합
+    writing/                     # WRT-01/02
+    ritual/                      # RIT 의식 선택 + 4종
+      widgets/                   #   PaperCard, 파티클 시스템
+      rituals/                   #   태우기·파쇄기·종이비행기·보석함
+    complete/                    # END-01/03/04
 ```
 
 ---
 
-## 팀원이 채울 곳 (`TODO`)
+## 필수 기능 ↔ 구현 매핑
 
-코드에 `// TODO(역할):` 주석으로 확장점을 표시해 두었습니다. 역할별 진입점:
+| 기능 ID | 기능 | 구현 위치 / 방식 |
+|---|---|---|
+| ONB-01 | 온보딩 | `onboarding_screen.dart` — '기록이 아닌 해소' 3페이지 |
+| HOME-03 | 위로 멘트 | `home_screen.dart` — 진입 노출, 첫 터치 시 페이드아웃 |
+| HOME-04 | 공 오브제 터치 | 공 물리 오브제(`emotion_ball.dart`), 터치가 매개 |
+| HOME-05 | 화면 전환 | 공을 **꾹 쥐면**(GST-05) 종이 등장 → 글쓰기 (+대체 버튼) |
+| GST-01 | 흔들기 | `userAccelerometerEventStream` 임펄스, 세기별 햅틱, 벽 충돌 진동 |
+| GST-02 | 굴리기 | `accelerometerEventStream` 기울기 중력, 시작/충돌 진동 |
+| GST-03 | 누르기 | 탭 → 물결(Ripple) + 뗄 때 `selectionClick` |
+| GST-04 | 잡고 문지르기 | 드래그 추종 + 젤리 출렁임 + 지속 약진동 |
+| GST-05 | 폰 꽉 쥐기 | 공 위 정지 유지 → 진동 점증 → 임계 돌파 시 팡 |
+| WRT-01 | 감정 글쓰기 | `writing_screen.dart` — 비공개 자유 입력 |
+| WRT-02 | 글쓰기 진입 | 홈 전환(꾹 쥐기) / 바로 글쓰기 버튼 |
+| RIT-01 | 태우기 | 드래그로 불 끌어올림, 아래→위 햅틱, 불씨 파티클, 촛불 마무리 |
+| RIT-04 | 파쇄기 | 종이 투입(진동) → 종잇조각 폭죽 분출 |
+| RIT-09 | 종이비행기 | 탭 접기(단계별 햅틱) → 던지기(velocity)로 비행 |
+| RIT-10 | 보석함 보관 | 종이 투입 → 뚜껑 닫힘 → 후광 (간직형) |
+| END-01 | 의식별 마무리 | 각 의식 완료 시 고유 잔상(촛불/폭죽/비행기/후광) |
+| END-03 | 완료 멘트 | '다 보냈어요' |
+| END-04 | 홈 리셋 | 세션 초기화 후 첫 화면 복귀 |
 
-| 역할 | 주로 보는 곳 | 할 일 |
-|------|-------------|------|
-| **모션/비주얼** | `widgets/blob_object.dart`, `widgets/rituals/*`, `app_background.dart` | blob 베지어 변형·제스처, 의식별 애니메이션(연소/파쇄/찢기), morph 전환 |
-| **햅틱/센서/사운드** | `services/haptics/*`, `services/sensors/*`, `services/audio/*` | iOS Core Haptics 채널 / Android amplitude 구현, `sensors_plus` 연결, ASMR 사운드 |
-| **화면/상태** | `screens/*`, `state/*`, `models/*` | 화면 로직 보강, 설정 영구화, 라우팅 |
-
-새 의식을 추가하려면: ① `RitualType`에 항목 추가 → ② `widgets/rituals/`에 전용 위젯 → ③ `ritual_interactions.dart` 분기에 등록.
-
-확장용 패키지(`sensors_plus`, `vibration`, `audioplayers` 등)는 `pubspec.yaml`에 주석으로 안내되어 있습니다.
+> 미구현(2차 스펙/권장): HOME-01/02/06, RIT-02/03/05/06/07/08. 구조상 쉽게 확장 가능.
 
 ---
 
-## 개발 하네스 (선택)
+## 핵심 설계 포인트
 
-`.claude/`에 기능 개발용 에이전트 하네스가 구성되어 있습니다(기획→구현→디자인·QA 검증). Claude Code에서 *"모닥불 의식 구현해줘"* 처럼 요청하면 `emotion-app-dev` 오케스트레이터가 작동합니다. 자세한 내용은 `CLAUDE.md` 참조.
+### 햅틱 ↔ 모션 동기화 (`core/haptics.dart`)
+의식 연출은 단발 진동이 아니라 **애니메이션 진행도(0~1)의 키프레임에 햅틱 큐를 부착**합니다.
+```dart
+Haptics.instance.playTimeline(controller, const [
+  HapticCue(0.3, HapticLevel.light),
+  HapticCue(0.6, HapticLevel.medium),
+  HapticCue(0.98, HapticLevel.success),
+]);
+```
+드래그로 진행도를 직접 제어하면(태우기·파쇄기) **손동작 속도 → 모션 → 진동**이 한 축에서 움직입니다.
+
+### 제스처 충돌 회피 (`home_screen.dart`)
+누르기/문지르기/꽉쥐기를 `GestureDetector` 여러 개로 두면 gesture arena가 충돌하므로,
+**`Listener`(raw pointer) 하나**로 받아 이동 거리·정지 시간으로 분기합니다.
+
+### 햅틱 한계와 다음 단계
+현재는 Flutter 내장 `HapticFeedback`(고정 단계)만 사용합니다. 질감 있는 파형(태우기 지글거림 등)은
+- iOS: **Core Haptics**(AHAP) — `core/haptics.dart`의 `fire()`만 교체하면 됨
+- Android: `vibration` 패키지 amplitude 패턴
+로 확장하세요.
+```
+
+---
+
+## 알려진 한계 / TODO
+- 센서 부호(굴리기 방향)는 기기/OS에 따라 튜닝 필요 (`home_screen.dart` 주석 참고).
+- `flutter analyze`로 정적 점검 후 실기기 테스트 권장 (작성 환경에 Flutter 미설치로 컴파일 미검증).
+- 종이 디졸브/태우기 질감은 향후 `FragmentShader` 또는 Rive로 고도화 가능.
