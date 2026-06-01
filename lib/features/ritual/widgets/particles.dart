@@ -192,6 +192,48 @@ class ParticleField {
     _cap();
   }
 
+  /// 흰 재 스노폴(emitSnowAsh): 연소선에서 떠오른 하얀 재가 **눈처럼** 천천히
+  /// 살랑이며 내려온다. emitAsh(검은 kAshGray)와 달리 ① gravity 28~40(아주 느린
+  /// 하강) ② sway 40~70(크게 살랑) ③ life 3.0~4.5(오래 떠 있음) ④ 흰 팔레트로
+  /// "정화된 눈" 무드를 만든다. shape는 ashFlake 재사용.
+  ///
+  /// [width]>0이면 origin 좌우로 width만큼 가로 분산(연소선 전폭 살포).
+  /// emitAsh 시그니처는 그대로 보존(다른 호출처 회귀 0) — 흰 재는 이 전용 메서드로.
+  void emitSnowAsh({
+    required Offset origin,
+    int count = 2,
+    double width = 0,
+    // TODO(P1-token): 흰 재 스노폴 팔레트(따뜻·정화 톤). app_theme 승격 대상.
+    List<Color> palette = const [
+      Color(0xFFF5F5F7),
+      Color(0xFFFFFFFF),
+      Color(0xFFE8E8EC),
+    ],
+  }) {
+    for (var i = 0; i < count; i++) {
+      // 가로 분산: width>0이면 전폭, 아니면 origin 주변 좁게.
+      final dx = width > 0
+          ? (_rng.nextDouble() - 0.5) * width
+          : (_rng.nextDouble() - 0.5) * 40;
+      // 살짝 위로 떴다 곧 느린 중력으로 하강(연소선에서 피어오르는 느낌).
+      final angle = -pi / 2 + (_rng.nextDouble() - 0.5) * 1.8;
+      final v = 16 + _rng.nextDouble() * 30;
+      particles.add(Particle(
+        pos: origin + Offset(dx, 0),
+        vel: Offset(cos(angle), sin(angle)) * v,
+        color: palette[_rng.nextInt(palette.length)],
+        size: 2.5 + _rng.nextDouble() * 2.5, // 2.5~5
+        life: 3.0 + _rng.nextDouble() * 1.5, // 3.0~4.5: 오래 떠 있음
+        gravity: 28 + _rng.nextDouble() * 12, // 28~40: 눈처럼 아주 느린 하강
+        sway: 40 + _rng.nextDouble() * 30, // 40~70: 크게 살랑
+        rotation: _rng.nextDouble() * pi,
+        spin: (_rng.nextDouble() - 0.5) * 2.4, // 천천히 회전
+        shape: ParticleShape.ashFlake,
+      ));
+    }
+    _cap();
+  }
+
   /// 연기(smoke): 연소 경계 위로 천천히 떠오르며 커지고 옅어지는 큰 회색 원.
   void emitSmoke({
     required Offset origin,

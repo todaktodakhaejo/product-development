@@ -149,6 +149,48 @@ class Haptics {
     fire(level, throttle: false);
   }
 
+  // ── 태우기(burn) 전용 햅틱 ──────────────────────────────────────────
+  // 명세 §4(햅틱). 파쇄기 [startShredGrind]의 **형제** 드라이버다 — 같은
+  // '타이머로 짧은 임팩트를 반복하는 연속 진동 근사' 구조에, 태우기 고유의
+  // '아래→위 화력 고조 곡선(0.55→1.0)·말미 촘촘함(35ms)·불 일렁임 지터'를
+  // 내장한다(기존 [rumble]/[startShredGrind]는 그대로 유지).
+  //
+  // ⚠️ 연속 진동은 OS 네이티브 미배선 → 짧은 임팩트를 타이머로 반복하는
+  // **근사**가 전부다. 실제 '타오르는 불' 질감(점점 강해지는 연속 진동)
+  // 튜닝은 실기기에서만 검증 가능. 미지원/웹에서는 [fire]가 HapticFeedback
+  // 무음 통과 → 예외 없이 무동작(§9 폴백).
+
+  /// 태우기 연속 연소(§4 햅틱). 점화 시 시작, 불이 커질수록 강해지는 연속 진동.
+  ///
+  /// 3초 동안 ~45ms 간격(말미 35ms)으로 임팩트를 반복해 '아래→위로 활활 번지는
+  /// 불길'을 흉내낸다. 강도는 자체 경과시간 기반 기본 곡선(medium→heavy 고조)으로도
+  /// 동작하며, [BlazeHandle.setProgress]로 화면 `_burnCtrl.value`(0~1)를 매 프레임
+  /// 주입하면 그 화력 곡선을 따른다.
+  ///
+  /// 반환된 [BlazeHandle.stop]을 **전소(softSuccess 직전)·dispose에서 반드시 호출**
+  /// 한다(무한 진동·타이머 누수 방지). 안전장치로 4초 후 자동 stop된다.
+  /// ⚠️ 마무리는 호출측이 [BlazeHandle.stop]을 [softSuccess]보다 **먼저** 부른다
+  /// (겹침 방지) — 이 드라이버는 [softSuccess]를 직접 호출하지 않는다.
+  BlazeHandle startBurnBlaze() {
+    final handle = BlazeHandle._(this);
+    handle._start();
+    return handle;
+  }
+
+  /// [BlazeHandle]이 1펄스 발사할 때 사용(throttle 우회).
+  ///
+  /// blaze 강도(0~1)를 레벨로 양자화한다. 파쇄기 [_grindPulse]와 **동일 철학·
+  /// 동일 임계**(2026-06-01 실기기 피드백 반영) — 태우기도 **light를 쓰지 않고**
+  /// medium을 바닥, 중반 이후(≥0.62)와 최말미 정점 구간은 heavy를 상시 사용해
+  /// 약하지 않게 묵직한 화력감을 낸다.
+  /// (HapticFeedback의 천장은 heavyImpact. 더 센 '연속' 진동은 Core Haptics 필요.)
+  void _blazePulse(double intensity, {bool spikeHeavy = false}) {
+    final level = (intensity >= 0.62 || spikeHeavy)
+        ? HapticLevel.heavy
+        : HapticLevel.medium;
+    fire(level, throttle: false);
+  }
+
   /// 폭죽 연쇄 팝(§5.4). 호출 즉시 내부 지연 타이머로 전체 시퀀스를 발사한다.
   ///
   /// 강한 1발(heavy+success 겹침) 후 흩어지는 다수 팝(medium/light)이 ~380ms에
@@ -392,6 +434,124 @@ class GrindHandle {
     _timer = null;
     _watch.stop();
   }
+
+  static double _lerp(double a, double b, double t) =>
+      a + (b - a) * t.clamp(0.0, 1.0);
+}
+
+/// [Haptics.startBurnBlaze]가 반환하는 태우기 연속 연소 제어 핸들(§4 햅틱).
+///
+/// [GrindHandle]의 **형제**격이지만, 태우기 고유의 '아래→위 화력 고조 곡선
+/// (0.55→1.0)·말미 촘촘함(35ms)·불 일렁임 지터'를 내장한다. 시작 시점에 ~45ms
+/// 타이머가 돌며, [stop]을 호출하면 즉시 멈춘다.
+///
+/// **전소(softSuccess 직전)·화면 dispose에서 반드시 [stop]을 호출**해야 무한
+/// 진동·타이머 누수를 막는다. [stop]은 중복 호출해도 안전하다(idempotent).
+/// 안전장치로 시작 후 [_safety] 경과 시 자동 [stop]된다(호출측 stop 누락 대비).
+///
+/// ⚠️ 연속 진동은 OS 네이티브 미배선 → 짧은 임팩트의 타이머 반복 **근사**가
+/// 전부다. '점점 강해지는 연속 진동' 손맛 튜닝은 실기기에서만 검증 가능.
+class BlazeHandle {
+  BlazeHandle._(this._engine);
+
+  final Haptics _engine;
+
+  /// 연소 명목 길이(화면 `_kBurnDuration`과 동일한 3초).
+  static const Duration _duration = Duration(milliseconds: 3000);
+
+  /// stop 누락 대비 자동 종료 시한(명목 3초 + 여유).
+  static const Duration _safety = Duration(milliseconds: 4000);
+
+  Timer? _timer;
+  bool _stopped = false;
+
+  /// 시작 시각 — setProgress 미호출 시 자체 경과시간으로 기본 곡선을 만든다.
+  final Stopwatch _watch = Stopwatch();
+
+  /// 외부 주입 진행도(0~1). null이면 [_watch] 경과 기반 기본 곡선을 쓴다.
+  double? _externalT;
+
+  void _start() {
+    if (_stopped) return;
+    _watch.start();
+    _engine._blazePulse(_curveIntensity()); // 즉시 첫 펄스(점화 반응 지연 최소화)
+    _schedule();
+    // 안전장치: 시한 경과 시 자동 종료.
+    Future<void>.delayed(_safety, stop);
+  }
+
+  /// 현재 진행도(0~1) — 주입값 우선, 없으면 경과시간 기반.
+  double _progress() {
+    final ext = _externalT;
+    if (ext != null) return ext.clamp(0.0, 1.0);
+    return (_watch.elapsedMilliseconds / _duration.inMilliseconds).clamp(0.0, 1.0);
+  }
+
+  /// 진행도 t(0~1) → 강도. §4(햅틱) 키프레임을 선형 보간한 0.55→1.0 상승 곡선에
+  /// '타오르는 불 일렁임'용 미세 sin 변조(±0.06)를 얹는다.
+  ///
+  /// 파쇄기 [GrindHandle._curveIntensity](0.60→1.0)보다 점화 직후가 살짝 낮게(0.55)
+  /// 출발하지만 medium 대역(≥0.62 미만)이라 톤은 일치 — '활활 고조'라 후반 가속이
+  /// 좀 더 가파르다(t=0.4→0.72, 0.7→0.88, 1.0→1.00).
+  double _curveIntensity() {
+    final t = _progress();
+    // 키프레임(실기기 medium~heavy 톤): 0.0→0.55, 0.4→0.72, 0.7→0.88, 1.0→1.00.
+    // medium에서 출발해 heavy(≥0.62)로 올라 전소 직전 최고조.
+    final double base;
+    if (t < 0.4) {
+      base = _lerp(0.55, 0.72, t / 0.4);
+    } else if (t < 0.7) {
+      base = _lerp(0.72, 0.88, (t - 0.4) / 0.3);
+    } else {
+      base = _lerp(0.88, 1.00, (t - 0.7) / 0.3);
+    }
+    // 불 일렁임: 약 4.5Hz로 강도를 흔든다(t를 위상으로 사용 — '타오르는 떨림').
+    final wobble = 0.06 * math.sin(t * 2 * math.pi * 4.5);
+    return (base + wobble).clamp(0.0, 1.0);
+  }
+
+  /// 진행도에 따른 펄스 간격. 기본 ~45ms, 말미(t≥0.9)는 35ms로 촘촘(전소 직전 텐션).
+  /// '불 일렁임'을 위해 ±8ms 지터를 얹는다.
+  Duration _nextInterval() {
+    final t = _progress();
+    final baseMs = t >= 0.9 ? 35 : 45;
+    // 경과 ms 기반 의사난수 지터(±8ms) — 외부 의존 없이 결정적·가벼움.
+    final jitter = (_watch.elapsedMicroseconds % 17) - 8; // -8..+8
+    final ms = (baseMs + jitter).clamp(28, 60);
+    return Duration(milliseconds: ms);
+  }
+
+  /// 매 펄스마다 간격을 재계산해 1발 발사하고 다음 펄스를 예약(가변 간격).
+  void _schedule() {
+    if (_stopped) return;
+    _timer = Timer(_nextInterval(), () {
+      if (_stopped) return;
+      final t = _progress();
+      // 최말미(≥0.9) 순간엔 heavy를 상시 섞어 전소 직전 정점 텐션.
+      _engine._blazePulse(_curveIntensity(), spikeHeavy: t >= 0.9);
+      _schedule();
+    });
+  }
+
+  /// 매 프레임 진행도(0~1) 주입 — 화력 고조·말미 촘촘함을 화면 `_burnCtrl`에 동조.
+  /// 선택 사항(미호출 시 자체 경과시간 기반 기본 곡선으로 동작).
+  void setProgress(double t) {
+    if (_stopped) return;
+    _externalT = t.clamp(0.0, 1.0);
+    // 강도/간격은 다음 펄스 예약 시점에 자동 반영되므로 타이머 재설정 불필요.
+  }
+
+  /// 연속 연소 중지(+타이머 해제). 중복 호출 안전.
+  void stop() {
+    if (_stopped) return;
+    _stopped = true;
+    _timer?.cancel();
+    _timer = null;
+    _watch.stop();
+  }
+
+  /// [stop]의 별칭 — dispose 흐름에서 의도가 드러나도록(계약 §4).
+  void dispose() => stop();
 
   static double _lerp(double a, double b, double t) =>
       a + (b - a) * t.clamp(0.0, 1.0);
