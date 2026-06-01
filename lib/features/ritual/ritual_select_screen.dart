@@ -67,7 +67,7 @@ class RitualSelectScreen extends StatelessWidget {
                     crossAxisCount: 2,
                     mainAxisSpacing: 16,
                     crossAxisSpacing: 16,
-                    childAspectRatio: 0.95,
+                    childAspectRatio: 0.88,
                     children: [
                       for (final r in Ritual.values)
                         _RitualCard(
@@ -111,21 +111,29 @@ class _RitualCard extends StatelessWidget {
           mainAxisAlignment: MainAxisAlignment.center,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(emoji, style: const TextStyle(fontSize: 44)),
+            Text(emoji, style: const TextStyle(fontSize: 40)),
             const Spacer(),
             Row(
               children: [
-                Text(ritual.label,
-                    style: const TextStyle(
-                        fontSize: 18, fontWeight: FontWeight.w600)),
+                Flexible(
+                  child: Text(ritual.label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 18, fontWeight: FontWeight.w600)),
+                ),
                 const SizedBox(width: 6),
                 if (keep)
                   const Icon(Icons.bookmark, size: 14, color: Colors.white38),
               ],
             ),
             const SizedBox(height: 4),
-            Text(ritual.tagline,
-                style: const TextStyle(color: Colors.white54, fontSize: 13)),
+            Flexible(
+              child: Text(ritual.tagline,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.white54, fontSize: 13)),
+            ),
           ],
         ),
       ),
