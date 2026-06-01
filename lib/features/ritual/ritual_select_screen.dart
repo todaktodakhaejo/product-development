@@ -58,7 +58,7 @@ class RitualSelectScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 6),
                 const Text(
-                  '마음에 드는 방식으로 흘려보내거나 간직하세요.',
+                  '마음 가는 방식으로 골라보세요.',
                   style: TextStyle(color: Colors.white60),
                 ),
                 const SizedBox(height: 24),
@@ -162,12 +162,16 @@ class _RitualCardState extends State<_RitualCard> {
         onTapUp: (_) => _setPressed(false),
         onTapCancel: () => _setPressed(false),
         borderRadius: BorderRadius.circular(20),
-        child: Container(
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 110),
+          curve: Curves.easeOut,
           padding: const EdgeInsets.all(18),
           decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.06),
+            // 누르면 흰 카드로 반전 → 선택이 시각적으로 또렷하게.
+            color: _pressed ? Colors.white : Colors.white.withValues(alpha: 0.06),
             borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: Colors.white12),
+            border: Border.all(
+                color: _pressed ? Colors.transparent : Colors.white12),
           ),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
@@ -178,13 +182,17 @@ class _RitualCardState extends State<_RitualCard> {
               Text(widget.ritual.label,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                      fontSize: 18, fontWeight: FontWeight.w600)),
+                  style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600,
+                      color: _pressed ? AppColors.ink : Colors.white)),
               const SizedBox(height: 4),
               Text(_wrapByWord(widget.ritual.tagline),
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: Colors.white54, fontSize: 13)),
+                  style: TextStyle(
+                      color: _pressed ? Colors.black54 : Colors.white54,
+                      fontSize: 13)),
             ],
           ),
         ),
