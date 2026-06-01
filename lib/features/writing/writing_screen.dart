@@ -88,7 +88,9 @@ class _WritingScreenState extends State<WritingScreen> {
                 onPressed: canProceed ? _next : null,
                 style: FilledButton.styleFrom(
                   backgroundColor: AppColors.ink,
+                  foregroundColor: AppColors.paper,
                   disabledBackgroundColor: Colors.black12,
+                  disabledForegroundColor: Colors.black26,
                   padding: const EdgeInsets.symmetric(vertical: 16),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(16),
