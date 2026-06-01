@@ -125,7 +125,7 @@ class Haptics {
   /// 파쇄기 연속 그라인드(§5.3). 시작 즉시 모터 질감 연속 펄스가 돌기 시작한다.
   ///
   /// 3초 동안 ~45ms 간격(말미 35ms)으로 임팩트를 반복해 '그르렁대는 모터'를
-  /// 흉내낸다. 강도는 자체 경과시간 기반 기본 곡선(0.55→0.82)으로도 동작하며,
+  /// 흉내낸다. 강도는 자체 경과시간 기반 기본 곡선(medium→heavy 고조)으로도 동작하며,
   /// [GrindHandle.setProgress]로 화면 진행도(0~1)를 주입하면 그 곡선을 따른다.
   ///
   /// 반환된 [GrindHandle.stop]을 **bursting 진입·dispose에서 반드시 호출**한다
@@ -138,17 +138,14 @@ class Haptics {
 
   /// [GrindHandle]이 1펄스 발사할 때 사용(throttle 우회).
   ///
-  /// grind 강도(0~1)를 레벨로 양자화한다: 낮으면 light, 중간 이상이면 medium,
-  /// 최말미 고조 구간(≥0.78)은 가끔 heavy를 섞어 폭죽 직전 텐션을 만든다.
+  /// grind 강도(0~1)를 레벨로 양자화한다. 실기기 피드백(2026-06-01: 분쇄 진동이
+  /// 너무 약함)으로 한 단계 끌어올렸다 — grinding엔 **light를 쓰지 않고** medium을
+  /// 바닥, 중반 이후(≥0.62)와 최말미 고조 구간은 heavy를 상시 사용해 묵직하게 한다.
+  /// (HapticFeedback의 천장은 heavyImpact. 더 센 '연속' 진동은 Core Haptics 필요.)
   void _grindPulse(double intensity, {bool spikeHeavy = false}) {
-    final HapticLevel level;
-    if (spikeHeavy && intensity >= 0.78) {
-      level = HapticLevel.heavy;
-    } else if (intensity >= 0.62) {
-      level = HapticLevel.medium;
-    } else {
-      level = HapticLevel.light;
-    }
+    final level = (intensity >= 0.62 || spikeHeavy)
+        ? HapticLevel.heavy
+        : HapticLevel.medium;
     fire(level, throttle: false);
   }
 
@@ -292,7 +289,7 @@ class RumbleHandle {
 
 /// [Haptics.startShredGrind]가 반환하는 파쇄기 연속 그라인드 제어 핸들(§5.3).
 ///
-/// [RumbleHandle]의 형제격이지만, grinding 고유의 '강도 고조 곡선(0.55→0.82)·
+/// [RumbleHandle]의 형제격이지만, grinding 고유의 '강도 고조 곡선(0.60→1.0)·
 /// 말미 촘촘함(35ms)·모터 지터'를 내장한다. 시작 시점에 ~45ms 타이머가 돌며,
 /// [stop]을 호출하면 즉시 멈춘다.
 ///
@@ -335,20 +332,21 @@ class GrindHandle {
     return (_watch.elapsedMilliseconds / _duration.inMilliseconds).clamp(0.0, 1.0);
   }
 
-  /// 진행도 t(0~1) → 강도. §5.3 키프레임을 선형 보간한 0.55→0.82 상승 곡선에
+  /// 진행도 t(0~1) → 강도. §5.3 키프레임을 선형 보간한 0.60→1.0 상승 곡선에
   /// '도는 모터'용 미세 sin 변조(±0.06)를 얹는다.
   double _curveIntensity() {
     final t = _progress();
-    // 키프레임: 0.0→0.55, 0.33→0.60, 0.66→0.68, 0.80→0.75, 1.0→0.82.
+    // 키프레임(실기기 강화 2026-06-01): 0.0→0.60, 0.33→0.72, 0.66→0.85,
+    // 0.80→0.93, 1.0→1.00. medium에서 출발해 빠르게 heavy로 올라 폭죽 직전 최고조.
     final double base;
     if (t < 0.33) {
-      base = _lerp(0.55, 0.60, t / 0.33);
+      base = _lerp(0.60, 0.72, t / 0.33);
     } else if (t < 0.66) {
-      base = _lerp(0.60, 0.68, (t - 0.33) / 0.33);
+      base = _lerp(0.72, 0.85, (t - 0.33) / 0.33);
     } else if (t < 0.80) {
-      base = _lerp(0.68, 0.75, (t - 0.66) / 0.14);
+      base = _lerp(0.85, 0.93, (t - 0.66) / 0.14);
     } else {
-      base = _lerp(0.75, 0.82, (t - 0.80) / 0.20);
+      base = _lerp(0.93, 1.00, (t - 0.80) / 0.20);
     }
     // 모터 회전감: 약 3Hz로 강도를 흔든다(t를 위상으로 사용).
     final wobble = 0.06 * math.sin(t * 2 * math.pi * 3);
