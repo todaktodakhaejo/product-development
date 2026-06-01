@@ -69,7 +69,7 @@ class RitualSelectScreen extends StatelessWidget {
                       crossAxisCount: 2,
                       mainAxisSpacing: 16,
                       crossAxisSpacing: 16,
-                      mainAxisExtent: 172, // 카드 높이 고정: 설명 2줄 온전히 표시
+                      mainAxisExtent: 210, // 카드 높이 고정: 설명 2줄 + 여유
                     ),
                     children: [
                       for (final r in Ritual.values)
