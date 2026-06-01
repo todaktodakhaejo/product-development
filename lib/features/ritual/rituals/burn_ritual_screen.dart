@@ -640,7 +640,43 @@ class _BurningPaper extends StatelessWidget {
       },
       child: Stack(
         children: [
-          PaperCard(text: text, width: size.width, height: size.height),
+          // ⚠️ shadow:false — PaperCard의 boxShadow(black54, blur24)는 종이 영역
+          // 밖으로 번지므로 ShaderMask가 잡지 못해 종이가 다 타도 어두운 사각형
+          // 후광/프레임으로 남는다. 그림자를 끄고(잔상 0), 점화 전 깊이감은
+          // 아래 _idleDepth(마스크 안쪽 inner shadow)로 대체한다.
+          // float: 점화 전(idle/igniting)엔 다른 의식처럼 흩날림, 연소 시작하면
+          // _BurningPaper 자체 tremble이 주가 되도록 끔(중복·과함 방지).
+          PaperCard(
+            text: text,
+            width: size.width,
+            height: size.height,
+            shadow: false,
+            float: !burning,
+          ),
+          // 점화 전(idle/igniting) 은은한 깊이감: 마스크 안쪽 요소라 종이와 함께
+          // 깔끔히 사라진다. 연소 시작과 함께 burn에 비례해 fade-out.
+          Positioned.fill(
+            child: IgnorePointer(
+              child: AnimatedOpacity(
+                duration: const Duration(milliseconds: 300),
+                opacity: burning ? 0.0 : 1.0,
+                child: Container(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(8),
+                    boxShadow: const [
+                      BoxShadow(
+                        color: Color(0x33000000),
+                        blurRadius: 10,
+                        offset: Offset(0, 4),
+                        spreadRadius: -4,
+                        blurStyle: BlurStyle.inner,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
           // 하단 탄자국: 따뜻한 갈탄(어둡지 않게), 연소선 근처만.
           Positioned.fill(
             child: DecoratedBox(
