@@ -24,12 +24,15 @@ const double _kIgniteCommit = 0.55;
 /// 점화 확정 후 고정 연소 시간(드래그 무관). 파쇄기 _kGrindDuration과 동일값.
 const Duration _kBurnDuration = Duration(milliseconds: 3000);
 
-/// 전소→완료 화면 전이 지연(잔불 흰재가 잦아들 여운).
-const Duration _kBurnToDone = Duration(milliseconds: 700);
+/// 전소→완료 화면 전이 지연(_kBurnToDone 대체). 전소 후 화면 전체가 흰 눈으로
+/// 가득 차도록 흩날림을 유지하는 홀드 시간. 이후 CompleteScreen으로 전이.
+const Duration _kSnowfallHold = Duration(milliseconds: 1600);
 
 // ── 흰 재 / 탄자국 로컬 색 (§8, app_theme 미수정) ──────────────────────────
 // TODO(P1-token): 따뜻한 갈탄 — 남은 종이 하단 탄자국(어둡지 않게).
 const Color _kCharWarm = Color(0xFF6E4A3A);
+// TODO(P1-token): 탄 가장자리 그을림 코어 — 종이를 파먹는 검게 탄 숯(거의 검정).
+const Color _kCharBurnt = Color(0xFF2A1C16);
 // TODO(P1-token): 흰 재 스노폴 팔레트(정화 톤). particles.emitSnowAsh 기본과 동일.
 const List<Color> _kSnowAshPalette = [
   Color(0xFFF5F5F7),
@@ -52,16 +55,23 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
     with TickerProviderStateMixin {
   // 파티클 루프(기존 유지) — 3초 연소는 별도 bounded 컨트롤러가 담당.
   late final Ticker _ticker;
-  final _field = ParticleField();
+  // 전소 후 화면 전체 눈 흩날림을 위해 cap 상향(320). 평상시엔 일부만 사용.
+  final _field = ParticleField(maxParticles: 320);
   final _repaint = ValueNotifier(0);
   Duration _last = Duration.zero;
 
   static const _paperSize = Size(250, 340);
   Rect _paperRect = Rect.zero;
 
+  // 화면 전체 크기(LayoutBuilder에서 저장) — done 단계 전폭 눈 방출 origin/width.
+  Size _screen = Size.zero;
+
   _Phase _phase = _Phase.idle;
   double _ignite = 0; // igniting 동안 드래그로만 증가(점화 트리거 판정용).
   double _burn = 0; // burning 동안 3초 컨트롤러로 0→1(드래그 무관).
+
+  // done 단계 전폭 눈 방출 throttle 누적기(초).
+  double _snowAccum = 0;
 
   // 3초 자동 연소 컨트롤러(반드시 bounded — unbounded()..repeat() 금지).
   late final AnimationController _burnCtrl;
@@ -117,6 +127,21 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
         );
         // 연기는 톤이 어두우므로 빈도 절반(후반에만 가끔).
         if (v > 0.4) _field.emitSmoke(origin: origin, count: 1);
+      }
+    }
+
+    // done 단계: 화면 상단 전폭에서 흰 눈을 지속 대량 방출 → 화면 전체를 채움.
+    // (_kSnowfallHold 동안 유지되며, 종이·불꽃은 이미 _burn=1로 사라진 상태)
+    if (_phase == _Phase.done && _screen != Size.zero) {
+      _snowAccum += dt;
+      if (_snowAccum >= 0.05) {
+        _snowAccum = 0;
+        _field.emitSnowAsh(
+          origin: Offset(_screen.width / 2, -8),
+          width: _screen.width,
+          count: 7,
+          palette: _kSnowAshPalette,
+        );
       }
     }
 
@@ -196,19 +221,35 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
     _blazeHandle = null;
     Haptics.instance.softSuccess();
 
-    // 전소 정점 흰 재 버스트 1회(연소선 전폭으로 풍성하게).
+    // 전소 지점에서 위로 솟는 큰 흰재 버스트(whoosh) 1회.
     if (_paperRect != Rect.zero) {
-      final topY = _paperRect.top;
+      _field.emitBurst(
+        origin: Offset(_paperRect.center.dx, _paperRect.top),
+        count: 70,
+        palette: _kSnowAshPalette,
+        speed: 360,
+        sizeMin: 3,
+        sizeMax: 7,
+        life: 2.6,
+        shape: ParticleShape.ashFlake,
+        gravity: 60,
+        spread: pi * 1.2,
+        baseAngle: -pi / 2,
+      );
+    }
+    // 화면 상단 전폭에서 흰 눈을 즉시 대량 1회 방출(전환 시작 임팩트).
+    if (_screen != Size.zero) {
       _field.emitSnowAsh(
-        origin: Offset(_paperRect.center.dx, topY),
-        width: _paperRect.width,
-        count: 18,
+        origin: Offset(_screen.width / 2, -8),
+        width: _screen.width,
+        count: 40,
         palette: _kSnowAshPalette,
       );
     }
 
-    // 잔불 흰재가 잦아들 시간을 두고 완료 화면 전이.
-    Future.delayed(_kBurnToDone, () {
+    // 화면 전체가 흰 눈으로 가득 차도록 홀드한 뒤 완료 화면 전이.
+    // (홀드 동안 _tick의 done 분기가 상단 전폭에서 눈을 지속 방출)
+    Future.delayed(_kSnowfallHold, () {
       if (!mounted) return;
       Navigator.of(context).pushReplacement(MaterialPageRoute(
         builder: (_) => const CompleteScreen(afterglow: _SnowAshAfterglow()),
@@ -236,10 +277,19 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
         child: SafeArea(
           child: LayoutBuilder(
             builder: (context, c) {
+              _screen = Size(c.maxWidth, c.maxHeight);
               _paperRect = Rect.fromCenter(
                 center: Offset(c.maxWidth / 2, c.maxHeight * 0.42),
                 width: _paperSize.width,
                 height: _paperSize.height,
+              );
+              // 불길은 종이 폭보다 넓게 좌우로 감싸 오른다(가장자리 envelope).
+              const flameMargin = 14.0;
+              final flameRect = Rect.fromLTWH(
+                _paperRect.left - flameMargin,
+                _paperRect.top,
+                _paperRect.width + flameMargin * 2,
+                _paperRect.height,
               );
               return Stack(
                 children: [
@@ -275,14 +325,41 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
                                 ),
                               ),
                             ),
+                            // 앰비언트 인게이지 글로우: 종이 전체가 불에 휩싸인 듯
+                            // 아래(연소선 쪽)부터 emberOrange가 _burn 비례로 짙어짐.
+                            // 텍스트 가독성 위해 alpha 상한 0.35*_burn.
+                            Positioned.fill(
+                              child: IgnorePointer(
+                                child: DecoratedBox(
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(8),
+                                    gradient: LinearGradient(
+                                      begin: Alignment.bottomCenter,
+                                      end: Alignment.topCenter,
+                                      colors: [
+                                        AppColors.emberOrange
+                                            .withValues(alpha: 0.35 * _burn),
+                                        AppColors.emberOrange
+                                            .withValues(alpha: 0.10 * _burn),
+                                        AppColors.emberOrange
+                                            .withValues(alpha: 0.0),
+                                      ],
+                                      stops: const [0.0, 0.5, 1.0],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
                           ],
                         ),
                       ),
                     ),
                   ),
-                  // 연소선(char 글로우 띠 + 큰 불꽃 혀) — 종이 위에 겹쳐 그림.
+                  // 연소선(탄 가장자리 + char 글로우 시트 + 전폭 불꽃 벽) —
+                  // 종이 폭보다 넓은 flameRect로 그려 가장자리가 종이를 감싸 오름.
+                  // z-순서: 종이 → 탄 가장자리/불꽃(여기) → 파티클.
                   Positioned.fromRect(
-                    rect: _paperRect,
+                    rect: flameRect,
                     child: IgnorePointer(
                       child: CustomPaint(
                         painter: BurnLinePainter(
@@ -354,16 +431,26 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
   }
 }
 
-/// 연소선 painter: 남은 종이 하단 경계에 char 글로우 띠 + 아주 큰 불꽃 혀.
+/// 연소선 painter: 남은 종이 하단 경계에 ① 타들어가는 ragged 탄 가장자리(숯+잿불
+/// 림+잿불 점) ② 연속 화염 시트(혀 사이 빈틈 메움) ③ 종이 폭 전체를 휘감는 3겹
+/// 불의 벽(outer orange / inner yellow / innermost 흰-노랑 코어).
 /// 진행값은 [burnValueOf]로 매 프레임 읽고, repaint는 화면 틱(_repaint)에 묶어
-/// 불꽃 혀가 항상 살아 움직이도록(idle 흔들림) 한다.
-/// 아래는 굵고(베이스 넓게) 위로 갈수록 혀가 길고 격렬(높이 40~110px).
+/// 불꽃이 항상 살아 움직이도록 한다. 불규칙성은 sin 결정적 시드로 부드럽게 일렁임.
 class BurnLinePainter extends CustomPainter {
   BurnLinePainter({required this.burnValueOf, required Listenable repaint})
       : super(repaint: repaint);
 
   /// 현재 연소 진행값(0→1)을 반환. 매 frame paint 시 최신값을 읽기 위한 콜백.
   final double Function() burnValueOf;
+
+  /// 연소선의 불규칙 ragged 변위(px). 종이 단면이 곧지 않고 울퉁불퉁 타들어가도록.
+  /// 결정적 시드(x 위치 + progress)로 매 프레임 부드럽게 일렁인다.
+  static double _ragged(double xn, double progress) {
+    final t = progress * 6.0; // 천천히 흐르는 위상(너무 튀지 않게)
+    return sin(xn * 22 + t) * 5.0 +
+        sin(xn * 47 + t * 1.7) * 3.0 +
+        sin(xn * 9 + t * 0.6) * 2.5;
+  }
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -372,33 +459,120 @@ class BurnLinePainter extends CustomPainter {
     // 아래→위로 타므로 연소선 Y = 남은 종이의 하단 경계.
     final y = size.height * (1 - progress);
 
-    // 1) char 글로우 띠: emberOrange→emberYellow 가로 그라데이션 + 큰 blur(14).
-    final glow = Paint()
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 14)
+    // 가장자리가 종이를 감싸 오르도록 x 범위를 좌우로 약간 넘치게 그린다.
+    const ov = 10.0;
+    const x0 = -ov;
+    final x1 = size.width + ov;
+    final w = x1 - x0;
+
+    // ── B-① ragged 탄 char 밴드: 연소선을 따라 검게 그을린 숯이 종이를 파먹음.
+    //    위(잿불 쪽)는 _kCharWarm, 아래(탄 종이)로 _kCharBurnt. scalloped 경계.
+    const seg = 28;
+    Path raggedEdge(double extra) {
+      final p = Path()..moveTo(x0, y + extra);
+      for (var i = 0; i <= seg; i++) {
+        final xn = i / seg;
+        final x = x0 + w * xn;
+        final yy = y + extra + _ragged(xn, progress);
+        p.lineTo(x, yy);
+      }
+      return p;
+    }
+
+    // char 밴드: ragged 상단 경계 ~ 아래로 18px 채움(종이를 파먹은 그을림).
+    final charPath = raggedEdge(0)
+      ..lineTo(x1, y + 18)
+      ..lineTo(x0, y + 18)
+      ..close();
+    final charPaint = Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          _kCharBurnt.withValues(alpha: 0.0),
+          _kCharBurnt.withValues(alpha: 0.78),
+          _kCharWarm.withValues(alpha: 0.55),
+        ],
+        stops: const [0.0, 0.45, 1.0],
+      ).createShader(Rect.fromLTWH(x0, y - 4, w, 22));
+    canvas.drawPath(charPath, charPaint);
+
+    // ── B-② glowing 잿불 림: 타는 접점이 빨갛게 달아오름(emberYellow→orange).
+    final rimGlow = Paint()
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6)
+      ..strokeWidth = 5
+      ..style = PaintingStyle.stroke
       ..shader = const LinearGradient(
         colors: [
           AppColors.emberOrange,
           AppColors.emberYellow,
           AppColors.emberOrange,
         ],
-      ).createShader(Rect.fromLTWH(0, y - 8, size.width, 16));
-    canvas.drawRect(Rect.fromLTWH(0, y - 7, size.width, 14), glow);
+      ).createShader(Rect.fromLTWH(x0, y - 4, w, 8));
+    canvas.drawPath(raggedEdge(0), rimGlow);
+    // 림 코어(가늘고 밝은 선 — 달아오른 단면).
+    final rimCore = Paint()
+      ..strokeWidth = 2
+      ..style = PaintingStyle.stroke
+      ..color = AppColors.emberYellow.withValues(alpha: 0.95);
+    canvas.drawPath(raggedEdge(0), rimCore);
 
-    // 2) 불꽃 혀 2겹: 바깥(emberOrange, blur 큼) + 안쪽(emberYellow, 불투명).
-    //    높이 = base(40~110px) * 혀별 sin 변조. 위상 속도↑로 격렬한 일렁임.
+    // ── B-③ 잿불 점들: 가장자리에 박힌 작은 발광 점(결정적 위치).
+    final emberDot = Paint()
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3)
+      ..color = AppColors.emberYellow.withValues(alpha: 0.9);
+    for (var i = 0; i < 9; i++) {
+      final xn = (i + 0.5) / 9;
+      final dx = x0 + w * ((xn + sin(progress * 5 + i) * 0.02).clamp(0.0, 1.0));
+      final dy = y + _ragged(xn, progress) - 1;
+      final r = 1.5 + (sin(i * 2.3 + progress * 30) + 1) * 1.0;
+      canvas.drawCircle(Offset(dx, dy), r, emberDot);
+    }
+
+    // ── A 불의 벽: 연속 시트 + 혀 3겹. 높이 base 60~150px.
     const tongues = 13;
-    final base = 40 + 70 * progress; // 아래 40px → 후반 110px
-    Path buildFlame(double scale, double phase) {
-      final path = Path()..moveTo(0, y);
-      for (var i = 0; i <= tongues; i++) {
-        final x = size.width * i / tongues;
-        final phaseSeed = i * 1.9 + phase;
-        final h = base * scale *
-            (0.55 + 0.45 * sin(phaseSeed + progress * 26));
-        path.lineTo(x, y - h);
-        path.lineTo(size.width * (i + 0.5) / tongues, y);
+    final base = 60 + 90 * progress; // 아래 60px → 후반 150px
+
+    // 연속 화염 시트(낮은 채움): 혀 사이 빈틈을 메워 끊긴 혀가 아니라 이어진 불길.
+    //    혀 높이의 ~40%를 baseline warm band로 채운다.
+    Path buildSheet() {
+      final p = Path()..moveTo(x0, y);
+      for (var i = 0; i <= seg; i++) {
+        final xn = i / seg;
+        final x = x0 + w * xn;
+        final h = base * 0.42 * (0.7 + 0.3 * sin(xn * 30 + progress * 22));
+        p.lineTo(x, y - h);
       }
-      path.lineTo(size.width, y);
+      p
+        ..lineTo(x1, y)
+        ..close();
+      return p;
+    }
+
+    final sheet = Paint()
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8)
+      ..shader = LinearGradient(
+        begin: Alignment.bottomCenter,
+        end: Alignment.topCenter,
+        colors: [
+          AppColors.emberOrange.withValues(alpha: 0.85),
+          AppColors.emberOrange.withValues(alpha: 0.0),
+        ],
+      ).createShader(Rect.fromLTWH(x0, y - base, w, base));
+    canvas.drawPath(buildSheet(), sheet);
+
+    // 혀: 위로 갈수록 길고 격렬. 위상 속도↑로 일렁임.
+    Path buildFlame(double scale, double phase) {
+      final path = Path()..moveTo(x0, y);
+      for (var i = 0; i <= tongues; i++) {
+        final x = x0 + w * i / tongues;
+        final phaseSeed = i * 1.9 + phase;
+        final h =
+            base * scale * (0.55 + 0.45 * sin(phaseSeed + progress * 26));
+        path.lineTo(x, y - h);
+        path.lineTo(x0 + w * (i + 0.5) / tongues, y);
+      }
+      path.lineTo(x1, y);
       return path;
     }
 
@@ -411,6 +585,10 @@ class BurnLinePainter extends CustomPainter {
     // 안쪽 노란 혀(불투명, 약간 작게).
     final inner = Paint()..color = AppColors.emberYellow.withValues(alpha: 0.92);
     canvas.drawPath(buildFlame(0.7, 0.8), inner);
+
+    // innermost 밝은 코어(거의 흰-노랑, 작고 불투명) — 화력 강조.
+    final core = Paint()..color = const Color(0xFFFFF4C2).withValues(alpha: 0.95);
+    canvas.drawPath(buildFlame(0.4, 1.6), core);
   }
 
   @override
