@@ -14,16 +14,33 @@ class WritingScreen extends StatefulWidget {
 
 class _WritingScreenState extends State<WritingScreen> {
   final _controller = TextEditingController();
+  late SessionState _session;
+  bool _restored = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _session = SessionScope.of(context);
+    // 화면 진입 시 세션에 임시 보존된 초안을 한 번만 되살린다.
+    if (!_restored) {
+      _restored = true;
+      _controller.text = _session.text;
+      // 커서를 글 끝으로 두어 이어서 쓰기 편하게.
+      _controller.selection =
+          TextSelection.collapsed(offset: _controller.text.length);
+    }
+  }
 
   @override
   void dispose() {
+    // 화면을 떠날 때(뒤로가기 등) 작성 중인 글을 세션에 임시 보존.
+    _session.saveDraft(_controller.text);
     _controller.dispose();
     super.dispose();
   }
 
   void _next() {
-    final session = SessionScope.of(context);
-    session.writeText(_controller.text);
+    _session.writeText(_controller.text);
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const RitualSelectScreen()),
     );

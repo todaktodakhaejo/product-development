@@ -29,6 +29,13 @@ class SessionState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 작성 중인 글을 세션에 임시 보존한다.
+  /// 화면을 다시 그릴 필요가 없으므로 알림(notify)은 하지 않는다.
+  /// 의식 완료 시 [reset]이 함께 비우므로 영구 저장(기록)이 아니다.
+  void saveDraft(String value) {
+    _text = value;
+  }
+
   void chooseRitual(Ritual r) {
     _ritual = r;
     notifyListeners();
