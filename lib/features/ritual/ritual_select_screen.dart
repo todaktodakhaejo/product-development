@@ -115,7 +115,7 @@ class _RitualCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(emoji, style: const TextStyle(fontSize: 40)),
-            const Spacer(),
+            const SizedBox(height: 12),
             Row(
               children: [
                 Flexible(
@@ -131,12 +131,10 @@ class _RitualCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 4),
-            Flexible(
-              child: Text(ritual.tagline,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: Colors.white54, fontSize: 13)),
-            ),
+            Text(ritual.tagline,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.white54, fontSize: 13)),
           ],
         ),
       ),
