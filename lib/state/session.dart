@@ -2,10 +2,10 @@ import 'package:flutter/widgets.dart';
 
 /// 5단계 의식(분출/보관). 이번 범위는 우선순위 '필수' 4종.
 enum Ritual {
-  burn('태우기', '불꽃에 실어 위로 흘려보내요', RitualKind.release),
-  shredder('파쇄기', '잘게 부숴 폭죽처럼 날려요', RitualKind.release),
-  paperPlane('종이비행기', '접어서 멀리 날려 보내요', RitualKind.release),
-  jewelryBox('보석함 보관', '소중히 간직해 안치해요', RitualKind.keep);
+  burn('태우기', '불꽃에 실어 위로 날려보내요', RitualKind.release),
+  shredder('파쇄기', '잘게 부숴 위로 뿌려요', RitualKind.release),
+  paperPlane('종이비행기', '접어서 멀리 날려보내요', RitualKind.release),
+  jewelryBox('보석함 보관', '보석함에 가만히 담아요', RitualKind.keep);
 
   const Ritual(this.label, this.tagline, this.kind);
   final String label;

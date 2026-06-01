@@ -132,7 +132,7 @@ final String _wordJoiner = String.fromCharCode(0x2060);
 String _wrapByWord(String text) =>
     text.split(' ').map((w) => w.split('').join(_wordJoiner)).join(' ');
 
-class _RitualCard extends StatelessWidget {
+class _RitualCard extends StatefulWidget {
   const _RitualCard(
       {required this.emoji, required this.ritual, required this.onTap});
   final String emoji;
@@ -140,44 +140,53 @@ class _RitualCard extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
+  State<_RitualCard> createState() => _RitualCardState();
+}
+
+class _RitualCardState extends State<_RitualCard> {
+  bool _pressed = false;
+
+  void _setPressed(bool v) {
+    if (_pressed != v) setState(() => _pressed = v);
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final keep = ritual.kind == RitualKind.keep;
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(20),
-      child: Container(
-        padding: const EdgeInsets.all(18),
-        decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.06),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: Colors.white12),
-        ),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(emoji, style: const TextStyle(fontSize: 40)),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Flexible(
-                  child: Text(ritual.label,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                          fontSize: 18, fontWeight: FontWeight.w600)),
-                ),
-                const SizedBox(width: 6),
-                if (keep)
-                  const Icon(Icons.bookmark, size: 14, color: Colors.white38),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Text(_wrapByWord(ritual.tagline),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Colors.white54, fontSize: 13)),
-          ],
+    return AnimatedScale(
+      scale: _pressed ? 0.95 : 1.0,
+      duration: const Duration(milliseconds: 110),
+      curve: Curves.easeOut,
+      child: InkWell(
+        onTap: widget.onTap,
+        onTapDown: (_) => _setPressed(true),
+        onTapUp: (_) => _setPressed(false),
+        onTapCancel: () => _setPressed(false),
+        borderRadius: BorderRadius.circular(20),
+        child: Container(
+          padding: const EdgeInsets.all(18),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.06),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: Colors.white12),
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(widget.emoji, style: const TextStyle(fontSize: 40)),
+              const SizedBox(height: 12),
+              Text(widget.ritual.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      fontSize: 18, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 4),
+              Text(_wrapByWord(widget.ritual.tagline),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.white54, fontSize: 13)),
+            ],
+          ),
         ),
       ),
     );
