@@ -94,7 +94,7 @@ class _WritingScreenState extends State<WritingScreen> {
                     borderRadius: BorderRadius.circular(16),
                   ),
                 ),
-                child: const Text('흘려보내기'),
+                child: const Text('이 마음 보내기'),
               ),
             ],
           ),
