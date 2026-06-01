@@ -191,6 +191,46 @@ class Haptics {
     fire(level, throttle: false);
   }
 
+  // ── 종이비행기 비행(flight) 전용 햅틱 ───────────────────────────────
+  // 명세 §5.1 pressHum 계열. 파쇄기 [startShredGrind]·태우기 [startBurnBlaze]의
+  // **형제** 드라이버지만, 둘과 정반대 캐릭터다 — grind/blaze가 'medium~heavy로
+  // 고조하는 묵직한 연속'이라면, flight는 '진공/공중 활공'의 **가볍고 일정하게
+  // 이어지는 hum**이다. light를 바닥으로 깔고(heavy로 치지 않음), 고조 곡선 없이
+  // 등속 활공감을 유지한다. '공기 흐름'용 아주 미세한 강도/간격 변조만 얹는다.
+  //
+  // ⚠️ 연속 진동은 OS 네이티브 미배선 → 짧은 임팩트를 타이머로 반복하는
+  // **근사**가 전부다. 실제 '진공처럼 매끄럽게 이어지는 hum' 손맛 튜닝은
+  // 실기기에서만 검증 가능. 미지원/웹에서는 [fire]가 HapticFeedback 무음 통과
+  // → 예외 없이 무동작(§4 폴백).
+
+  /// 종이비행기 비행 중 연속 '진공/활공' hum(§5.1 pressHum). 던지는 순간 시작,
+  /// 착지(완료)·dispose에서 [FlightHandle.stop].
+  ///
+  /// 비행 ~4초 동안 ~60ms 간격으로 가벼운 임팩트를 끊김 없이 반복해 '진공 속을
+  /// 매끄럽게 활공하는' 느낌을 흉내낸다. grind/blaze와 달리 **고조 곡선이 없다**
+  /// — 등속 활공이라 강도가 일정하다. 바닥은 light이고, 너무 약해 실기기에서
+  /// 안 느껴지는 걸 막으려 4~5펄스마다 medium 1발을 섞어 '존재감 있는 hum'으로
+  /// 만든다(그 외엔 light). '공기 흐름'용 ±몇 ms 미세 간격 변조만 얹는다.
+  ///
+  /// 반환된 [FlightHandle.stop]을 **착지(완료)·화면 dispose에서 반드시 호출**한다
+  /// (무한 진동·타이머 누수 방지). 안전장치로 시작 후 5초 자동 stop된다
+  /// (비행 ~4초보다 길게 — 호출측 stop 누락 대비).
+  FlightHandle startFlightHum() {
+    final handle = FlightHandle._(this);
+    handle._start();
+    return handle;
+  }
+
+  /// [FlightHandle]이 1펄스 발사할 때 사용(throttle 우회).
+  ///
+  /// grind/blaze의 [_grindPulse]/[_blazePulse]와 **정반대 철학** — 묵직함이 아니라
+  /// **가벼움**이 목표다. 기본은 light로 매끄럽게 깔고, 간헐 강조([accent]=true,
+  /// 4~5펄스마다)일 때만 medium 1발로 '존재감 있는 진공 hum'을 만든다.
+  /// heavy는 쓰지 않는다(고조 없는 등속 활공감).
+  void _flightPulse({bool accent = false}) {
+    fire(accent ? HapticLevel.medium : HapticLevel.light, throttle: false);
+  }
+
   /// 폭죽 연쇄 팝(§5.4). 호출 즉시 내부 지연 타이머로 전체 시퀀스를 발사한다.
   ///
   /// 강한 1발(heavy+success 겹침) 후 흩어지는 다수 팝(medium/light)이 ~380ms에
@@ -555,4 +595,84 @@ class BlazeHandle {
 
   static double _lerp(double a, double b, double t) =>
       a + (b - a) * t.clamp(0.0, 1.0);
+}
+
+/// [Haptics.startFlightHum]이 반환하는 종이비행기 비행 hum 제어 핸들(§5.1).
+///
+/// [GrindHandle]/[BlazeHandle]의 **형제**격이지만 캐릭터가 정반대다 — grind/blaze가
+/// 'medium~heavy로 고조하는 묵직한 연속'이라면, flight는 '진공/공중 활공'의
+/// **가볍고 일정하게 이어지는 hum**이다. 고조 곡선·Stopwatch 진행도가 없고
+/// (등속 활공이라 강도 곡선이 필요 없다), 바닥 light에 4~5펄스마다 medium 1발만
+/// 섞는다. 시작 시점에 ~60ms 타이머가 돌며, [stop]을 호출하면 즉시 멈춘다.
+///
+/// **착지(완료)·화면 dispose에서 반드시 [stop]을 호출**해야 무한 진동·타이머
+/// 누수를 막는다. [stop]은 중복 호출해도 안전하다(idempotent). 안전장치로 시작
+/// 후 [_safety](5초) 경과 시 자동 [stop]된다(비행 ~4초보다 길게 — stop 누락 대비).
+///
+/// ⚠️ 연속 진동은 OS 네이티브 미배선 → 짧은 임팩트의 타이머 반복 **근사**가
+/// 전부다. '진공처럼 매끄럽게 이어지는 hum' 손맛 튜닝은 실기기에서만 검증 가능.
+class FlightHandle {
+  FlightHandle._(this._engine);
+
+  final Haptics _engine;
+
+  /// stop 누락 대비 자동 종료 시한. 비행 ~4초보다 길게 잡아 정상 비행을 가리지 않되,
+  /// 호출측 stop 누락 시 무한 진동을 막는다.
+  static const Duration _safety = Duration(milliseconds: 5000);
+
+  /// hum 기본 펄스 간격(~60ms). grind/blaze(~45ms)보다 성기게 잡아 '촘촘한 모터'가
+  /// 아니라 '매끄럽게 이어지는 가벼운 활공'으로 들리게 한다.
+  static const int _baseMs = 60;
+
+  /// 이 펄스마다 한 번 medium을 섞어 '존재감 있는 진공 hum'을 만든다(그 외 light).
+  static const int _accentEvery = 5;
+
+  Timer? _timer;
+  bool _stopped = false;
+
+  /// 발사한 펄스 카운터 — accent(중간 medium) 주기 판정·미세 간격 변조의 위상으로 쓴다.
+  int _tick = 0;
+
+  void _start() {
+    if (_stopped) return;
+    _engine._flightPulse(accent: false); // 즉시 첫 펄스(던지는 순간 반응 지연 최소화)
+    _tick = 1;
+    _schedule();
+    // 안전장치: 시한 경과 시 자동 종료.
+    Future<void>.delayed(_safety, stop);
+  }
+
+  /// 다음 펄스 간격. 기본 ~60ms에 '공기 흐름'용 ±4ms 미세 변조만 얹는다(고조 없음 —
+  /// 등속 활공이라 간격도 거의 일정하게 유지). 카운터를 위상으로 써 외부 의존 없이
+  /// 결정적·가볍게 흔든다.
+  Duration _nextInterval() {
+    // 카운터 기반 의사난수 변조(±4ms) — 미세하게만, 매끄러운 일정감 유지.
+    final jitter = (_tick * 7 % 9) - 4; // -4..+4
+    final ms = (_baseMs + jitter).clamp(48, 72);
+    return Duration(milliseconds: ms);
+  }
+
+  /// 매 펄스마다 간격을 재계산해 1발 발사하고 다음 펄스를 예약(가변 간격).
+  void _schedule() {
+    if (_stopped) return;
+    _timer = Timer(_nextInterval(), () {
+      if (_stopped) return;
+      // 4~5펄스마다 medium 1발로 존재감 강조, 그 외엔 light로 매끄럽게.
+      final accent = _tick % _accentEvery == 0;
+      _engine._flightPulse(accent: accent);
+      _tick++;
+      _schedule();
+    });
+  }
+
+  /// 비행 hum 중지(+타이머 해제). 중복 호출 안전(idempotent).
+  void stop() {
+    if (_stopped) return;
+    _stopped = true;
+    _timer?.cancel();
+    _timer = null;
+  }
+
+  /// [stop]의 별칭 — dispose 흐름에서 의도가 드러나도록(계약).
+  void dispose() => stop();
 }

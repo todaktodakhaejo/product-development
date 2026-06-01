@@ -17,8 +17,9 @@ enum _Phase { idle, folding, folded, flying, done }
 /// 접기 시퀀스 총 길이(3구간: center crease / nose / wings).
 const Duration _kFoldDuration = Duration(milliseconds: 1500);
 
-/// 비행 글라이드 길이(천천히 화면을 가로질러 구름 속으로 — 최소 3초 보장).
-const Duration _kFlyDuration = Duration(milliseconds: 3200);
+/// 비행 글라이드 길이(또렷한 궤적을 그리며 먼 하늘로 후퇴 — 최소 3.8초 보장).
+/// 길게 잡아 궤적이 충분히 펼쳐지고, 막판 원근 축소가 '머얼리' 사라지게 한다.
+const Duration _kFlyDuration = Duration(milliseconds: 4000);
 
 // (텍스트 종이 → 다트 글리프 크로스페이드는 접기 막바지 ~80ms ≈ wings 구간의
 //  마지막 ~16%를 progress 비율로 구동한다 — _FoldingPaper.glyphT 참조.)
@@ -74,10 +75,10 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
   late final AnimationController _cloudFade;
   // 구름 퍼프 결정적 시드(재현성).
   static const int _cloudSeed = 20260601;
-  // 3.2초 내내 움직임이 느껴지도록 easeInOutCubic(easeOutCubic은 초반에 거의
-  //  다 가버려 후반 2초가 멈춰 보임). 부드럽게 출발→가속→감속하며 구름 속으로.
+  // 천천히 멀어지는 느낌(easeInOutSine): 부드럽게 출발해 일정히 나아가며
+  //  후반에 급정거 없이 먼 하늘로 빠져나간다(easeOutCubic처럼 막판 정지하지 않음).
   late final Animation<double> _flyCurve =
-      CurvedAnimation(parent: _fly, curve: Curves.easeInOutCubic);
+      CurvedAnimation(parent: _fly, curve: Curves.easeInOutSine);
 
   // 접기 크리스 햅틱 fired-set 가드(playTimeline 대신 직접 fire).
   final Set<int> _firedCrease = {};
@@ -86,6 +87,10 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
   Offset _flyDir = const Offset(1, -1); // 진행 방향 단위벡터.
   double _flySpeed = 0; // 0~1 → 비행 거리.
   double _flyAngle = 0; // 다트 코를 진행 방향으로 정렬한 각.
+
+  // 비행 중 연속 '진공' 햅틱 핸들(던지는 순간 시작 → 완료/dispose에서 stop).
+  // sensory-haptics가 haptics.dart에 추가하는 startFlightHum()/FlightHandle 사용.
+  FlightHandle? _flightHandle;
 
   // 인플레이스 완료 토글.
   bool _showMessage = false;
@@ -152,6 +157,8 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     // 글리프 코는 -y이므로 진행 방향 정렬 보정각 = atan2 + π/2.
     _flyAngle = atan2(_flyDir.dy, _flyDir.dx) + pi / 2;
     Haptics.instance.impactBySpeed(dist); // 세게 던질수록 강하게.
+    // 발사 직후: 비행 동안 내내 도는 '진공' 연속 햅틱 시작(완료에 stop).
+    _flightHandle = Haptics.instance.startFlightHum();
     setState(() => _phase = _Phase.flying);
     _fly.forward(from: 0);
   }
@@ -159,8 +166,11 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
   // ── 비행 완료 → 인플레이스 완료 시퀀스(태우기 패턴) ───────────────────────
   void _complete() {
     if (_phase == _Phase.done || !mounted) return;
+    // 착지(먼 점이 되어 사라짐) — 비행 연속 햅틱 정지.
+    _flightHandle?.stop();
+    _flightHandle = null;
     setState(() => _phase = _Phase.done);
-    // 비행기는 이미 구름에 휩싸여 사라짐 — 남은 잔향 구름을 천천히 흩어지게.
+    // 비행기는 먼 하늘로 사라짐 — 경로에 피어난 잔향 구름을 천천히 흩어지게.
     _cloudFade.forward(from: 0);
 
     Future.delayed(_kMessageDelay, () {
@@ -183,6 +193,9 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
 
   @override
   void dispose() {
+    // 비행 도중 화면 이탈 시 연속 햅틱 누수 방지(stop은 idempotent).
+    _flightHandle?.stop();
+    _flightHandle = null;
     _fold
       ..removeListener(_onFoldTick)
       ..removeStatusListener(_onFoldStatus)
@@ -217,9 +230,9 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
                 ),
               ),
 
-              // ── 구름 레이어(비행 경로 따라 피어남 + 막바지 덮는 구름 뱅크) ──
-              // 비행기 Center 위에 그려져, 막바지 짙은 뱅크가 비행기를 가린다.
-              // flying/done(구름 소멸 잔향)에만 활성.
+              // ── 구름 레이어(비행 경로 따라 그림책 뭉게구름이 점점이 피어남) ──
+              // 비행기를 가리지 않고 경로 주변에 피어나며, 비행기는 그 사이를
+              // 지나 멀리 후퇴해 작은 점이 되어 사라진다. flying/done에만 활성.
               if (_phase == _Phase.flying || _phase == _Phase.done)
                 Positioned.fill(
                   child: IgnorePointer(
@@ -363,22 +376,25 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
 
   // ── 중앙 오브제 빌더: 접기 변형 / 비행 변환 / 크로스페이드 ──────────────────
   Widget _buildObject(BuildContext context, String text) {
-    // 비행 변환(flying/done): 던진 방향·세기 글라이드 + 포물선 lift + wobble.
+    // 비행 변환(flying/done): 던진 방향으로 부드러운 곡선 궤적을 그리며 멀어지고,
+    //  원근으로 작아져 먼 점이 되어 사라진다(중반 소멸 금지 — 또렷이 날아간다).
     if (_phase == _Phase.flying || _phase == _Phase.done) {
       final t = _flyCurve.value;
       final size = MediaQuery.of(context).size;
       final offset = _flightOffset(size, _flyDir, _flySpeed, t);
-      // 구름 진입과 동조한 페이드: 후반(t≥0.55)부터 덮는 구름 밀도에 맞춰 빠르게
-      // 사라져 '구름에 휩싸여' 소멸(빈 하늘 축소소멸 아님).
-      final cloudVeil = ((t - 0.55) / 0.32).clamp(0.0, 1.0);
-      final planeOpacity =
-          ((1 - t) * (1 - cloudVeil * 0.92)).clamp(0.0, 1.0);
+      // 원근 후퇴: 1→0.10까지, 후반 가속 축소(t²의 가중)로 '먼 하늘로' 빨려든다.
+      //  ease가 후반부에 더 깊이 줄어 멀어질수록 급격히 작아지는 원근감.
+      final shrink = t * (0.55 + t * 0.45); // 0→1, 후반 가속.
+      final scale = (1.0 - shrink * 0.90).clamp(0.10, 1.0);
+      // opacity는 막판(t>0.85)에만 서서히 0으로 — 중반엔 또렷이 보이며 날아간다.
+      final planeOpacity = (1.0 - ((t - 0.85) / 0.15).clamp(0.0, 1.0))
+          .clamp(0.0, 1.0);
       return Transform.translate(
         offset: offset,
         child: Transform.rotate(
           angle: _flyAngle,
           child: Transform.scale(
-            scale: 1 - t * 0.7,
+            scale: scale,
             child: Opacity(
               opacity: planeOpacity,
               child: const PaperPlaneGlyph(size: _kGlyphSize, shadow: true),
@@ -662,24 +678,32 @@ class _NoseShadePainter extends CustomPainter {
 //   - dir: 진행 단위벡터, speed: 0~1(거리), t: 비행 진행(곡선 적용 후).
 // ════════════════════════════════════════════════════════════════════════
 Offset _flightOffset(Size size, Offset dir, double speed, double t) {
-  final dist = size.longestSide * (0.7 + speed * 0.7);
+  // 거리 상향: 화면을 가로질러 '멀리'(화면 밖) 후퇴 — 먼 점이 되어 사라지게.
+  final dist = size.longestSide * (1.0 + speed * 0.8);
   final base = dir * dist * t;
-  // 살짝 떠올랐다 가라앉는 lift(3초에 맞춰 진폭 유지) + 말미로 잦아드는 wobble.
-  // 주기를 살짝 늘려(×1.6) 느린 비행 동안 좌우로 부드럽게 일렁이게.
-  final wobble = Offset(
-    sin(t * pi * 1.6) * 22 * (1 - t),
-    -sin(t * pi) * 40,
-  );
-  return base + wobble;
+  // 고도감: 던진 직후 살짝 위로 솟았다(상승) 멀리 날아가는 완만한 포물선.
+  //  -sin(t·π)은 중반에 최고로 솟았다 가라앉는 대칭형이라 '솟구쳐 멀어짐'이
+  //  덜 보인다. 대신 초반에 빨리 솟고(상승) 천천히 잦아드는 비대칭 lift를 쓴다.
+  //  진행 방향에 수직(위쪽 성분이 큰)으로 살짝 띄워 부드러운 S 곡선 궤적을 만든다.
+  final lift = -sin(t * pi * 0.82) * (70 + speed * 30) * (1 - t * 0.35);
+  // 가로 일렁임(고도와 합쳐져 완만한 S): 느린 비행 동안 부드럽게, 말미로 잦아듦.
+  final sway = sin(t * pi * 1.3) * 26 * (1 - t);
+  // perp: 진행 방향에 수직(화면상 '위쪽' 쪽으로 lift를 얹기 위한 기준).
+  final perp = Offset(-dir.dy, dir.dx);
+  return base + Offset(sway, lift) + perp * (lift * 0.18);
 }
 
 // ════════════════════════════════════════════════════════════════════════
-// 구름 레이어: 비행 경로를 따라 부드러운 흰 퍼프가 피어나고(trailing),
-// 막바지(t≳0.55)엔 비행기 진행 위치 살짝 앞에 더 크고 짙은 '덮는 구름 뱅크'가
-// 모여 비행기를 감싸 가린다. 비행기 Center 위에 그려져 occlusion 성립.
-//   - 결정적: Random(seed)로 퍼프 파라미터 고정(재현성).
+// 구름 레이어: 비행 경로를 따라 '그림책 뭉게구름(cumulus)'이 점점이 피어난다.
+//   - 한 덩이 = 여러 둥근 lobe(원호)가 겹친 뭉게구름 실루엣(아래 평평, 위는
+//     둥근 봉우리 여러 개) + 부드러운 흰 채움 + 윗면 하이라이트/아랫면 옅은 그늘.
+//     외곽은 약한 blur로 soft하되 형태가 구름으로 읽힌다.
+//   - 비행기가 궤적을 따라 지나가며 경로 주변에 피어나 천천히 커지고 떠다니다
+//     옅어진다. 멀리(후반 emit)의 구름은 작게 그려 원근감. 비행기를 가리지 않고
+//     (occlusion 뱅크 제거) 그 사이를 지나 멀리 간다.
+//   - 결정적: Random(seed)로 lobe 파라미터 고정(재현성·프레임 점프 0).
 //   - 색: 흰색~연한 라벤더(어둡지 않게), painter 로컬 const(테마 토큰 추가 X).
-//   - dissipate(0→1, done 후): 잔향 퍼프가 옅어지며 살짝 흩어짐.
+//   - dissipate(0→1, done 후): 잔향 구름이 옅어지며 살짝 위로 흩어짐.
 // ════════════════════════════════════════════════════════════════════════
 class _CloudFieldPainter extends CustomPainter {
   _CloudFieldPainter({
@@ -700,13 +724,15 @@ class _CloudFieldPainter extends CustomPainter {
   final double dissipate; // done 후 흩어짐 0→1.
   final int seed;
 
-  // 퍼프 개수: trailing(경로 따라) + 덮는 구름 뱅크.
-  static const int _trailCount = 10;
-  static const int _bankCount = 9;
+  // 경로 따라 피어나는 뭉게구름 덩이 수(occlusion 뱅크 제거 — 가리지 않음).
+  static const int _trailCount = 11;
 
   // 구름 톤(흰색~연한 라벤더). 어둡지 않게, 은은히.
   static const Color _cloudWhite = Color(0xFFFFFFFF);
   static const Color _cloudLavender = Color(0xFFEDE7FB);
+  // 그림책 명암: 윗면 하이라이트(살짝 더 흰)·아랫면 옅은 라벤더 그늘.
+  static const Color _cloudHighlight = Color(0xFFFFFFFF);
+  static const Color _cloudShade = Color(0xFFD8CEF0);
 
   // 경로 위 한 점의 화면 좌표(비행기와 동일 공식).
   Offset _pathPoint(double t) =>
@@ -715,90 +741,152 @@ class _CloudFieldPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final rnd = Random(seed);
-    // 진행 방향에 수직(lateral) 단위벡터 — 퍼프 측면 산포에 사용.
+    // 진행 방향에 수직(lateral) 단위벡터 — 구름 측면 산포에 사용.
     final perp = Offset(-dir.dy, dir.dx);
 
-    // ── ① trailing 퍼프: 경로 t∈[0.03, 0.82]에 분산 emit, 나이 들며 커지고 옅어짐 ──
+    // ── 경로를 따라 점점이 피어나는 그림책 뭉게구름 ──
+    // 경로 t∈[0.03, 0.86]에 결정적으로 분산 emit, 나이 들며 커지고 떠다니다 옅어짐.
     for (var i = 0; i < _trailCount; i++) {
       // 모든 파라미터를 먼저 결정적으로 소비(분기와 무관하게 RNG 스트림 고정 →
-      // flyT 증가에 따른 퍼프 위치 점프 방지).
+      // flyT 증가에 따른 구름 위치 점프 방지).
       final jitterT = rnd.nextDouble();
-      final lateral = (rnd.nextDouble() - 0.5) * 90; // 경로 양옆 산포.
-      final along = (rnd.nextDouble() - 0.5) * 40; // 경로 따라 미세 산포.
+      final lateral = (rnd.nextDouble() - 0.5) * 110; // 경로 양옆 산포.
+      final along = (rnd.nextDouble() - 0.5) * 44; // 경로 따라 미세 산포.
       final wobbleR = 0.85 + rnd.nextDouble() * 0.5; // 크기 변주.
       final tintPick = rnd.nextDouble();
+      final lobeSeed = rnd.nextInt(1 << 30); // 이 덩이의 lobe 배치 시드(고정).
 
-      // 결정적 emit 진행도.
-      final emitT = 0.03 + 0.79 * (i + jitterT * 0.6) / _trailCount;
+      // 결정적 emit 진행도(경로 전반에 고르게).
+      final emitT = 0.03 + 0.83 * (i + jitterT * 0.6) / _trailCount;
       if (flyT < emitT) continue; // 아직 그 지점 미도달 — 그리지 않음.
 
       // 나이(0→1): emit 직후 0 → 비행 끝/그 이후로 갈수록 1.
       final age = ((flyT - emitT) / (1.0 - emitT)).clamp(0.0, 1.0);
       // 피어남: 작게 시작→천천히 커짐(easeOut).
       final grow = Curves.easeOut.transform(age);
-      final radius = (26 + grow * 52) * wobbleR;
+
+      // 원근: 멀리(후반 emit) 피어난 구름일수록 작게(비행기 후퇴와 동조).
+      final persp = 1.0 - emitT * 0.55; // emit 0→1 : 1.0→0.45 스케일.
+      final radius = (30 + grow * 46) * wobbleR * persp;
 
       // 떠오름: 나이 들수록 살짝 위로 부유.
       final pos = _pathPoint(emitT) +
-          perp * lateral +
+          perp * lateral * persp +
           dir * along +
-          Offset(0, -grow * 26);
+          Offset(0, -grow * 24);
 
       // 불투명도: 등장(빠르게 0→peak) 후 서서히 옅어짐 + done 흩어짐.
-      final appear = (age / 0.25).clamp(0.0, 1.0);
-      final fade = (1.0 - (age - 0.4).clamp(0.0, 1.0) / 0.6);
+      final appear = (age / 0.22).clamp(0.0, 1.0);
+      final fade = (1.0 - (age - 0.45).clamp(0.0, 1.0) / 0.55);
       final opacity =
-          (0.42 * appear * fade * (1.0 - dissipate)).clamp(0.0, 1.0);
+          (0.66 * appear * fade * (1.0 - dissipate)).clamp(0.0, 1.0);
       if (opacity <= 0.01) continue;
 
-      // done 흩어짐: 살짝 더 떠오르며 퍼짐.
-      final driftPos = pos + Offset(0, -dissipate * 28);
-      _puff(canvas, driftPos, radius * (1 + dissipate * 0.25), opacity,
-          tintPick < 0.5 ? _cloudLavender : _cloudWhite);
-    }
-
-    // ── ② 덮는 구름 뱅크: t≳0.55부터 비행기 살짝 앞에 모여 비행기를 감싸 가림 ──
-    final veil = ((flyT - 0.55) / 0.30).clamp(0.0, 1.0);
-    if (veil > 0 || dissipate > 0) {
-      final bankVeil = veil == 0 ? 1.0 : veil; // done에선 이미 1.
-      // 비행기보다 진행 방향으로 살짝 앞(비행기가 그 속으로 들어감).
-      final aheadT = (flyT + 0.06).clamp(0.0, 1.0);
-      final bankCenter = _pathPoint(aheadT);
-      final grow = Curves.easeInOut.transform(bankVeil);
-
-      for (var i = 0; i < _bankCount; i++) {
-        final ang = rnd.nextDouble() * 2 * pi;
-        final rad = rnd.nextDouble() * (40 + grow * 46);
-        final wobbleR = 0.9 + rnd.nextDouble() * 0.6;
-        final pos = bankCenter +
-            Offset(cos(ang), sin(ang)) * rad +
-            Offset(0, -dissipate * 30);
-        // 덮는 구름은 더 크고 짙게(비행기 occlusion).
-        final radius = (60 + grow * 70) * wobbleR * (1 + dissipate * 0.2);
-        final opacity = (0.78 * bankVeil * (1.0 - dissipate * 0.95))
-            .clamp(0.0, 1.0);
-        if (opacity <= 0.01) continue;
-        _puff(canvas, pos, radius, opacity,
-            i.isEven ? _cloudWhite : _cloudLavender);
-      }
+      // done 흩어짐: 살짝 더 위로 떠오르며 퍼짐.
+      final driftPos = pos + Offset(0, -dissipate * 30);
+      _cumulus(
+        canvas,
+        driftPos,
+        radius * (1 + dissipate * 0.22),
+        opacity,
+        tintPick < 0.5 ? _cloudLavender : _cloudWhite,
+        lobeSeed,
+      );
     }
   }
 
-  // 단일 퍼프: radial gradient(중심 불투명→가장자리 투명) + soft blur로 몽환적.
-  void _puff(
-      Canvas canvas, Offset c, double r, double opacity, Color tint) {
-    final rect = Rect.fromCircle(center: c, radius: r);
-    final paint = Paint()
-      ..maskFilter = MaskFilter.blur(BlurStyle.normal, r * 0.32)
-      ..shader = RadialGradient(
-        colors: [
-          tint.withValues(alpha: opacity),
-          tint.withValues(alpha: opacity * 0.55),
-          tint.withValues(alpha: 0.0),
-        ],
-        stops: const [0.0, 0.55, 1.0],
-      ).createShader(rect);
-    canvas.drawCircle(c, r, paint);
+  // ── 그림책 뭉게구름 한 덩이 ──
+  // 아래는 평평, 위는 둥근 봉우리 여러 개. 여러 lobe(원호)를 겹쳐 실루엣을
+  // 부드러운 흰색으로 채우고, 아랫면에 옅은 라벤더 그늘 + 윗면 하이라이트로
+  // '그림책 구름'처럼 입체를 준다. 외곽은 약한 blur로 soft(형태는 유지).
+  void _cumulus(Canvas canvas, Offset c, double r, double opacity, Color tint,
+      int lobeSeed) {
+    final rnd = Random(lobeSeed);
+    // lobe(봉우리) 개수: 3~4개. 아래는 평평(밑변), 위로 봉우리들이 솟음.
+    final lobeCount = 3 + (rnd.nextInt(2)); // 3 또는 4.
+    final baseY = c.dy + r * 0.42; // 평평한 밑면 y(살짝 아래).
+
+    // lobe 중심들: 가로로 펼쳐 배치, 가운데가 가장 높고 양끝이 낮은 봉우리.
+    final lobes = <(Offset, double)>[]; // (center, radius)
+    for (var i = 0; i < lobeCount; i++) {
+      // -1..1 가로 위치(균등 + 약간의 지터).
+      final u = lobeCount == 1
+          ? 0.0
+          : (i / (lobeCount - 1)) * 2 - 1 + (rnd.nextDouble() - 0.5) * 0.18;
+      // 가운데 봉우리가 크고 높게, 양끝은 작고 낮게(뭉게구름 봉우리감).
+      final centerness = 1 - u.abs(); // 0(끝)~1(가운데).
+      final lobeR = r * (0.55 + centerness * 0.42 + rnd.nextDouble() * 0.08);
+      final cx = c.dx + u * r * 0.92;
+      // 봉우리 꼭대기가 밑면 위로 솟도록: 큰 lobe가 더 높이.
+      final cy = baseY - lobeR * (0.78 + centerness * 0.30);
+      lobes.add((Offset(cx, cy), lobeR));
+    }
+
+    // 실루엣 path: 각 lobe 원 + 밑변을 평평하게 자르는 사각형 결합(union).
+    var silhouette = Path();
+    for (final (lc, lr) in lobes) {
+      silhouette = Path.combine(
+        PathOperation.union,
+        silhouette,
+        Path()..addOval(Rect.fromCircle(center: lc, radius: lr)),
+      );
+    }
+    // 밑면 아래를 잘라 평평한 바닥(cumulus 특징).
+    final clip = Path()
+      ..addRect(Rect.fromLTRB(
+          c.dx - r * 2, c.dy - r * 2, c.dx + r * 2, baseY));
+    final body = Path.combine(PathOperation.intersect, silhouette, clip);
+
+    // soft 외곽: 약한 blur(형태가 구름으로 읽히도록 r에 비례해 작게).
+    final blur = MaskFilter.blur(BlurStyle.normal, r * 0.12);
+
+    // ① 아랫면 옅은 그늘(밑동을 라벤더로 깔아 입체) — 본체 아래쪽.
+    canvas.save();
+    canvas.clipPath(body);
+    final shadeRect = Rect.fromLTRB(
+        c.dx - r * 1.4, c.dy - r * 0.2, c.dx + r * 1.4, baseY + r * 0.2);
+    canvas.drawRect(
+      shadeRect,
+      Paint()
+        ..shader = LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            _cloudShade.withValues(alpha: 0.0),
+            _cloudShade.withValues(alpha: opacity * 0.55),
+          ],
+        ).createShader(shadeRect),
+    );
+    canvas.restore();
+
+    // ② 본체 채움: 부드러운 흰(틴트) — blur로 가장자리 soft.
+    canvas.drawPath(
+      body,
+      Paint()
+        ..maskFilter = blur
+        ..color = tint.withValues(alpha: opacity),
+    );
+
+    // ③ 윗면 하이라이트: 각 봉우리 위쪽에 작은 흰 하이라이트(빛이 위에서).
+    canvas.save();
+    canvas.clipPath(body);
+    for (final (lc, lr) in lobes) {
+      final hc = lc + Offset(-lr * 0.18, -lr * 0.30);
+      final hRect = Rect.fromCircle(center: hc, radius: lr * 0.7);
+      canvas.drawCircle(
+        hc,
+        lr * 0.7,
+        Paint()
+          ..maskFilter = MaskFilter.blur(BlurStyle.normal, lr * 0.22)
+          ..shader = RadialGradient(
+            colors: [
+              _cloudHighlight.withValues(alpha: opacity * 0.5),
+              _cloudHighlight.withValues(alpha: 0.0),
+            ],
+          ).createShader(hRect),
+      );
+    }
+    canvas.restore();
   }
 
   @override
