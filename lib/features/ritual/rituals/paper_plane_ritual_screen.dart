@@ -17,8 +17,8 @@ enum _Phase { idle, folding, folded, flying, done }
 /// 접기 시퀀스 총 길이(3구간: center crease / nose / wings).
 const Duration _kFoldDuration = Duration(milliseconds: 1500);
 
-/// 비행 글라이드 길이.
-const Duration _kFlyDuration = Duration(milliseconds: 1100);
+/// 비행 글라이드 길이(천천히 화면을 가로질러 구름 속으로 — 최소 3초 보장).
+const Duration _kFlyDuration = Duration(milliseconds: 3200);
 
 // (텍스트 종이 → 다트 글리프 크로스페이드는 접기 막바지 ~80ms ≈ wings 구간의
 //  마지막 ~16%를 progress 비율로 구동한다 — _FoldingPaper.glyphT 참조.)
@@ -70,8 +70,14 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
   late final AnimationController _fold;
   // 비행 컨트롤러(0→1). bounded.
   late final AnimationController _fly;
+  // 구름 흩어짐 컨트롤러(done 진입 후 0→1, 잔향 구름이 옅어지며 흩어짐). bounded.
+  late final AnimationController _cloudFade;
+  // 구름 퍼프 결정적 시드(재현성).
+  static const int _cloudSeed = 20260601;
+  // 3.2초 내내 움직임이 느껴지도록 easeInOutCubic(easeOutCubic은 초반에 거의
+  //  다 가버려 후반 2초가 멈춰 보임). 부드럽게 출발→가속→감속하며 구름 속으로.
   late final Animation<double> _flyCurve =
-      CurvedAnimation(parent: _fly, curve: Curves.easeOutCubic);
+      CurvedAnimation(parent: _fly, curve: Curves.easeInOutCubic);
 
   // 접기 크리스 햅틱 fired-set 가드(playTimeline 대신 직접 fire).
   final Set<int> _firedCrease = {};
@@ -93,6 +99,9 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
       ..addStatusListener(_onFoldStatus);
     _fly = AnimationController(vsync: this, duration: _kFlyDuration)
       ..addStatusListener(_onFlyStatus);
+    // 잔향 구름 흩어짐: done 진입 후 천천히(완료 멘트와 겹치지 않게 은은히).
+    _cloudFade =
+        AnimationController(vsync: this, duration: const Duration(seconds: 3));
   }
 
   // ── 접기: 크리스 햅틱(직접 fire, fired-set 가드) ──────────────────────────
@@ -151,6 +160,8 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
   void _complete() {
     if (_phase == _Phase.done || !mounted) return;
     setState(() => _phase = _Phase.done);
+    // 비행기는 이미 구름에 휩싸여 사라짐 — 남은 잔향 구름을 천천히 흩어지게.
+    _cloudFade.forward(from: 0);
 
     Future.delayed(_kMessageDelay, () {
       if (!mounted) return;
@@ -179,6 +190,7 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     _fly
       ..removeStatusListener(_onFlyStatus)
       ..dispose();
+    _cloudFade.dispose();
     super.dispose();
   }
 
@@ -204,6 +216,32 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
                   ),
                 ),
               ),
+
+              // ── 구름 레이어(비행 경로 따라 피어남 + 막바지 덮는 구름 뱅크) ──
+              // 비행기 Center 위에 그려져, 막바지 짙은 뱅크가 비행기를 가린다.
+              // flying/done(구름 소멸 잔향)에만 활성.
+              if (_phase == _Phase.flying || _phase == _Phase.done)
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: AnimatedBuilder(
+                      animation: Listenable.merge([_flyCurve, _cloudFade]),
+                      builder: (context, _) {
+                        final size = MediaQuery.of(context).size;
+                        return CustomPaint(
+                          painter: _CloudFieldPainter(
+                            flyT: _flyCurve.value,
+                            center: Offset(size.width / 2, size.height / 2),
+                            screenSize: size,
+                            dir: _flyDir,
+                            flySpeed: _flySpeed,
+                            dissipate: _cloudFade.value, // done 후 흩어짐(0→1).
+                            seed: _cloudSeed,
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ),
 
               // ── 하단 안내/버튼 ──
               Positioned(
@@ -329,14 +367,12 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     if (_phase == _Phase.flying || _phase == _Phase.done) {
       final t = _flyCurve.value;
       final size = MediaQuery.of(context).size;
-      final dist = size.longestSide * (0.7 + _flySpeed * 0.7);
-      final base = _flyDir * dist * t;
-      // 살짝 떠올랐다 감속하는 lift + 말미로 잦아드는 좌우 wobble.
-      final wobble = Offset(
-        sin(t * pi * 2) * 18 * (1 - t),
-        -sin(t * pi) * 40,
-      );
-      final offset = base + wobble;
+      final offset = _flightOffset(size, _flyDir, _flySpeed, t);
+      // 구름 진입과 동조한 페이드: 후반(t≥0.55)부터 덮는 구름 밀도에 맞춰 빠르게
+      // 사라져 '구름에 휩싸여' 소멸(빈 하늘 축소소멸 아님).
+      final cloudVeil = ((t - 0.55) / 0.32).clamp(0.0, 1.0);
+      final planeOpacity =
+          ((1 - t) * (1 - cloudVeil * 0.92)).clamp(0.0, 1.0);
       return Transform.translate(
         offset: offset,
         child: Transform.rotate(
@@ -344,7 +380,7 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
           child: Transform.scale(
             scale: 1 - t * 0.7,
             child: Opacity(
-              opacity: (1 - t).clamp(0.0, 1.0),
+              opacity: planeOpacity,
               child: const PaperPlaneGlyph(size: _kGlyphSize, shadow: true),
             ),
           ),
@@ -445,12 +481,21 @@ class _FoldingPaper extends StatelessWidget {
     // ② nose: 상단이 삼각으로 모이며 전체가 살짝 위로 솟는 느낌(원근 tilt).
     final noseTilt = c2 * 0.18; // rotateX 근사(상단이 멀어짐).
 
+    // ★ 중앙 보정: ① center-crease의 오른쪽 플랩이 rotateY(c1·π)로 안쪽으로
+    //   접히면, 보이는 종이의 시각 무게중심이 hinge(중앙)쪽=왼쪽으로 쏠려
+    //   "접기가 중앙에서 벗어나" 보인다. 두 절반의 합성 centroid가 다시 중앙(0)에
+    //   오도록 오른쪽으로 dx만큼 보정 translate.
+    //   centroid_x = (W/8)(cos(c1·π) − 1) ≤ 0  →  보정 dx = −centroid_x.
+    final creaseDx = (_kPaperW / 8) * (1 - cos(c1 * pi));
+
     return Transform(
       alignment: Alignment.center,
       transform: Matrix4.identity()
         ..setEntry(3, 2, _kPerspective)
         ..rotateX(noseTilt)
-        ..scaleByDouble(wingNarrow, wingTall, 1, 1),
+        ..scaleByDouble(wingNarrow, wingTall, 1, 1)
+        // 마지막 op = 자식 좌표에 먼저 적용 → 종이 로컬 프레임에서 수평 보정.
+        ..translateByDouble(creaseDx, 0, 0, 1),
       child: SizedBox(
         width: _kPaperW,
         height: _kPaperH,
@@ -608,4 +653,159 @@ class _NoseShadePainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _NoseShadePainter old) =>
       old.t != t || old.left != left;
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// 비행 경로 공식(단일 출처): 비행기의 Center(화면중앙) 기준 오프셋.
+//   - 비행기 Transform(_buildObject)과 구름 레이어(_CloudFieldPainter)가
+//     동일 공식을 호출 → 화면 좌표(중앙+offset)가 두 레이어에서 일치.
+//   - dir: 진행 단위벡터, speed: 0~1(거리), t: 비행 진행(곡선 적용 후).
+// ════════════════════════════════════════════════════════════════════════
+Offset _flightOffset(Size size, Offset dir, double speed, double t) {
+  final dist = size.longestSide * (0.7 + speed * 0.7);
+  final base = dir * dist * t;
+  // 살짝 떠올랐다 가라앉는 lift(3초에 맞춰 진폭 유지) + 말미로 잦아드는 wobble.
+  // 주기를 살짝 늘려(×1.6) 느린 비행 동안 좌우로 부드럽게 일렁이게.
+  final wobble = Offset(
+    sin(t * pi * 1.6) * 22 * (1 - t),
+    -sin(t * pi) * 40,
+  );
+  return base + wobble;
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// 구름 레이어: 비행 경로를 따라 부드러운 흰 퍼프가 피어나고(trailing),
+// 막바지(t≳0.55)엔 비행기 진행 위치 살짝 앞에 더 크고 짙은 '덮는 구름 뱅크'가
+// 모여 비행기를 감싸 가린다. 비행기 Center 위에 그려져 occlusion 성립.
+//   - 결정적: Random(seed)로 퍼프 파라미터 고정(재현성).
+//   - 색: 흰색~연한 라벤더(어둡지 않게), painter 로컬 const(테마 토큰 추가 X).
+//   - dissipate(0→1, done 후): 잔향 퍼프가 옅어지며 살짝 흩어짐.
+// ════════════════════════════════════════════════════════════════════════
+class _CloudFieldPainter extends CustomPainter {
+  _CloudFieldPainter({
+    required this.flyT,
+    required this.center,
+    required this.screenSize,
+    required this.dir,
+    required this.flySpeed,
+    required this.dissipate,
+    required this.seed,
+  });
+
+  final double flyT; // 비행 진행(곡선 후).
+  final Offset center; // 화면 중앙.
+  final Size screenSize;
+  final Offset dir; // 진행 단위벡터.
+  final double flySpeed; // 0~1.
+  final double dissipate; // done 후 흩어짐 0→1.
+  final int seed;
+
+  // 퍼프 개수: trailing(경로 따라) + 덮는 구름 뱅크.
+  static const int _trailCount = 10;
+  static const int _bankCount = 9;
+
+  // 구름 톤(흰색~연한 라벤더). 어둡지 않게, 은은히.
+  static const Color _cloudWhite = Color(0xFFFFFFFF);
+  static const Color _cloudLavender = Color(0xFFEDE7FB);
+
+  // 경로 위 한 점의 화면 좌표(비행기와 동일 공식).
+  Offset _pathPoint(double t) =>
+      center + _flightOffset(screenSize, dir, flySpeed, t);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rnd = Random(seed);
+    // 진행 방향에 수직(lateral) 단위벡터 — 퍼프 측면 산포에 사용.
+    final perp = Offset(-dir.dy, dir.dx);
+
+    // ── ① trailing 퍼프: 경로 t∈[0.03, 0.82]에 분산 emit, 나이 들며 커지고 옅어짐 ──
+    for (var i = 0; i < _trailCount; i++) {
+      // 모든 파라미터를 먼저 결정적으로 소비(분기와 무관하게 RNG 스트림 고정 →
+      // flyT 증가에 따른 퍼프 위치 점프 방지).
+      final jitterT = rnd.nextDouble();
+      final lateral = (rnd.nextDouble() - 0.5) * 90; // 경로 양옆 산포.
+      final along = (rnd.nextDouble() - 0.5) * 40; // 경로 따라 미세 산포.
+      final wobbleR = 0.85 + rnd.nextDouble() * 0.5; // 크기 변주.
+      final tintPick = rnd.nextDouble();
+
+      // 결정적 emit 진행도.
+      final emitT = 0.03 + 0.79 * (i + jitterT * 0.6) / _trailCount;
+      if (flyT < emitT) continue; // 아직 그 지점 미도달 — 그리지 않음.
+
+      // 나이(0→1): emit 직후 0 → 비행 끝/그 이후로 갈수록 1.
+      final age = ((flyT - emitT) / (1.0 - emitT)).clamp(0.0, 1.0);
+      // 피어남: 작게 시작→천천히 커짐(easeOut).
+      final grow = Curves.easeOut.transform(age);
+      final radius = (26 + grow * 52) * wobbleR;
+
+      // 떠오름: 나이 들수록 살짝 위로 부유.
+      final pos = _pathPoint(emitT) +
+          perp * lateral +
+          dir * along +
+          Offset(0, -grow * 26);
+
+      // 불투명도: 등장(빠르게 0→peak) 후 서서히 옅어짐 + done 흩어짐.
+      final appear = (age / 0.25).clamp(0.0, 1.0);
+      final fade = (1.0 - (age - 0.4).clamp(0.0, 1.0) / 0.6);
+      final opacity =
+          (0.42 * appear * fade * (1.0 - dissipate)).clamp(0.0, 1.0);
+      if (opacity <= 0.01) continue;
+
+      // done 흩어짐: 살짝 더 떠오르며 퍼짐.
+      final driftPos = pos + Offset(0, -dissipate * 28);
+      _puff(canvas, driftPos, radius * (1 + dissipate * 0.25), opacity,
+          tintPick < 0.5 ? _cloudLavender : _cloudWhite);
+    }
+
+    // ── ② 덮는 구름 뱅크: t≳0.55부터 비행기 살짝 앞에 모여 비행기를 감싸 가림 ──
+    final veil = ((flyT - 0.55) / 0.30).clamp(0.0, 1.0);
+    if (veil > 0 || dissipate > 0) {
+      final bankVeil = veil == 0 ? 1.0 : veil; // done에선 이미 1.
+      // 비행기보다 진행 방향으로 살짝 앞(비행기가 그 속으로 들어감).
+      final aheadT = (flyT + 0.06).clamp(0.0, 1.0);
+      final bankCenter = _pathPoint(aheadT);
+      final grow = Curves.easeInOut.transform(bankVeil);
+
+      for (var i = 0; i < _bankCount; i++) {
+        final ang = rnd.nextDouble() * 2 * pi;
+        final rad = rnd.nextDouble() * (40 + grow * 46);
+        final wobbleR = 0.9 + rnd.nextDouble() * 0.6;
+        final pos = bankCenter +
+            Offset(cos(ang), sin(ang)) * rad +
+            Offset(0, -dissipate * 30);
+        // 덮는 구름은 더 크고 짙게(비행기 occlusion).
+        final radius = (60 + grow * 70) * wobbleR * (1 + dissipate * 0.2);
+        final opacity = (0.78 * bankVeil * (1.0 - dissipate * 0.95))
+            .clamp(0.0, 1.0);
+        if (opacity <= 0.01) continue;
+        _puff(canvas, pos, radius, opacity,
+            i.isEven ? _cloudWhite : _cloudLavender);
+      }
+    }
+  }
+
+  // 단일 퍼프: radial gradient(중심 불투명→가장자리 투명) + soft blur로 몽환적.
+  void _puff(
+      Canvas canvas, Offset c, double r, double opacity, Color tint) {
+    final rect = Rect.fromCircle(center: c, radius: r);
+    final paint = Paint()
+      ..maskFilter = MaskFilter.blur(BlurStyle.normal, r * 0.32)
+      ..shader = RadialGradient(
+        colors: [
+          tint.withValues(alpha: opacity),
+          tint.withValues(alpha: opacity * 0.55),
+          tint.withValues(alpha: 0.0),
+        ],
+        stops: const [0.0, 0.55, 1.0],
+      ).createShader(rect);
+    canvas.drawCircle(c, r, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _CloudFieldPainter old) =>
+      old.flyT != flyT ||
+      old.dissipate != dissipate ||
+      old.center != center ||
+      old.dir != dir ||
+      old.flySpeed != flySpeed;
 }
