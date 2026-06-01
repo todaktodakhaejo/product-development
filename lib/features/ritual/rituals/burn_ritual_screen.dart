@@ -39,6 +39,12 @@ const Duration _kButtonFade = Duration(milliseconds: 800);
 /// 불꽃 스프링 복귀(미점화 후 손 뗌) 시간 — 레퍼런스 cubic-bezier(0.34,1.56,0.64,1).
 const Duration _kFlameReturn = Duration(milliseconds: 600);
 
+// ── 전폭 '불의 벽'(연소 중) 기하 ───────────────────────────────────────────
+/// 종이 좌우로 넘쳐 감싸 올라가는 폭(±). 종이 폭(250)에 더해진다.
+const double _kWallOverflow = 12;
+/// 벽 box 높이(가장 큰 혀 + 베이스 글로우 여유). box bottom=burnY 근처.
+const double _kWallHeight = 200;
+
 // ── 흰 재 / 탄자국 로컬 색 (app_theme 미수정) ──────────────────────────────
 // 따뜻한 갈탄 — 남은 종이 하단 탄자국(어둡지 않게).
 const Color _kCharWarm = Color(0xFF6E4A3A);
@@ -401,17 +407,24 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
                 _flameBox.width,
                 _flameBox.height,
               );
-              // 연소 중엔 불꽃이 연소선(burnY)을 따라 위로 올라간다 — 불씨가
-              // 종이를 타고 오르고, 이미 탄 아래쪽엔 불이 남지 않는다.
-              // idle/igniting에선 드래그 위치 그대로.
+              // 연소 중엔 종이 가로 폭 전체를 채우는 '불의 벽'이 연소선(burnY)을
+              // 따라 위로 올라간다 — 종이를 통째로 타고 오르고, 이미 탄 아래쪽엔
+              // 불이 남지 않는다. idle/igniting에선 단일 불씨를 드래그한 위치 그대로.
+              final bool wall =
+                  _phase == _Phase.burning || _phase == _Phase.done;
               final Rect flameRect;
-              if (_phase == _Phase.burning || _phase == _Phase.done) {
+              if (wall) {
                 final burnY = _paperRect.bottom - _paperRect.height * _burn;
+                // 폭: 종이 폭 + 좌우 overflow(종이를 감싸 올라가는 느낌).
+                final wallW = _paperSize.width + _kWallOverflow * 2;
+                // 벽 base(box bottom)를 연소선 살짝 아래에 둔다 → 불이 burnY에서
+                // 시작해 위로 솟고, burnY 아래(이미 탄 곳)엔 불이 없다.
+                final wallBottom = burnY + 6;
                 flameRect = Rect.fromLTWH(
-                  (c.maxWidth - _flameBox.width) / 2,
-                  burnY - _flameBox.height + 28, // 불꽃 base를 연소선 살짝 아래에
-                  _flameBox.width,
-                  _flameBox.height,
+                  (c.maxWidth - wallW) / 2,
+                  wallBottom - _kWallHeight,
+                  wallW,
+                  _kWallHeight,
                 );
               } else {
                 flameRect = _flameRestRect.shift(Offset(0, _flameY));
@@ -423,18 +436,22 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
               return Stack(
                 children: [
                   // ── 종이: 마스크로 아래→위 부드럽게 녹아 사라짐 ──
-                  Positioned.fromRect(
-                    rect: _paperRect,
-                    child: IgnorePointer(
-                      child: _BurningPaper(
-                        text: text,
-                        size: _paperSize,
-                        burn: _burn,
-                        burning: _phase == _Phase.burning,
-                        clock: _clock,
+                  // done(전소)에선 종이가 완전히 사라진 상태이므로 본체·마스크·
+                  // inner-shadow·char를 **아예 렌더하지 않는다**(테두리/hairline
+                  // 잔상 0). 완료 멘트 단계에서 종이 외곽선이 '훑이는' 현상 차단.
+                  if (_phase != _Phase.done && _burn < 1.0)
+                    Positioned.fromRect(
+                      rect: _paperRect,
+                      child: IgnorePointer(
+                        child: _BurningPaper(
+                          text: text,
+                          size: _paperSize,
+                          burn: _burn,
+                          burning: _phase == _Phase.burning,
+                          clock: _clock,
+                        ),
                       ),
                     ),
-                  ),
 
                   // ── 불티·흰재 파티클 ──
                   Positioned.fill(
@@ -476,6 +493,7 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
                           painter: FlamePainter(
                             clock: () => _clock,
                             engulfOf: () => _flameEngulf,
+                            wallOf: () => wall,
                             repaint: _repaint,
                           ),
                         ),
@@ -630,16 +648,22 @@ class _BurningPaper extends StatelessWidget {
       blendMode: BlendMode.dstIn,
       shaderCallback: (rect) {
         final b = burn.clamp(0.0, 1.0);
+        // 종이 윗변 hairline 방지: b가 1에 가까워지면 '불투명' 색마저 투명으로
+        // 페이드해, b=1 직전 stops가 [.., 1, 1, 1]로 뭉쳐 맨 위 1px opaque
+        // 선(테두리)이 남는 현상을 없앤다. b<0.85에선 완전 불투명(정상 마스크).
+        final topAlpha =
+            (1.0 - ((b - 0.85) / 0.15)).clamp(0.0, 1.0); // 0.85→1, 1.0→0
+        final opaque = Color.fromRGBO(255, 255, 255, topAlpha);
         // 세로: y=1(아래)에서 위로 b만큼 투명, +0.12 전이.
         // LinearGradient bottom→top. 아래(0.0)=투명, 위=불투명.
         return LinearGradient(
           begin: Alignment.bottomCenter,
           end: Alignment.topCenter,
-          colors: const [
-            Color(0x00FFFFFF),
-            Color(0x00FFFFFF),
-            Color(0xFFFFFFFF),
-            Color(0xFFFFFFFF),
+          colors: [
+            const Color(0x00FFFFFF),
+            const Color(0x00FFFFFF),
+            opaque,
+            opaque,
           ],
           stops: [
             0.0,
@@ -734,147 +758,44 @@ class _BurningPaper extends StatelessWidget {
 }
 
 // ════════════════════════════════════════════════════════════════════════
-// BurnEdgePainter: 레퍼런스 .burn-edge(글로잉 char 띠) + .burn-rim(밝은 불선).
-// 연소 경계(아래에서 burn만큼 올라온 y)에 ① 울퉁불퉁 글로잉 띠(주황/노랑 핫스팟
-// + 어두운 char 점 + 세로 그라데이션) ② 그 정중앙에 밝은 흰-노랑 rim 라인.
-// 뾰족한 혀가 아니라 "이글거리는 숯+불의 띠". 모두 가산 합성(screen 근사).
-// ════════════════════════════════════════════════════════════════════════
-
-class BurnEdgePainter extends CustomPainter {
-  BurnEdgePainter({
-    required this.burnOf,
-    required this.clock,
-    required Listenable repaint,
-  }) : super(repaint: repaint);
-
-  final double Function() burnOf;
-  final double clock;
-
-  // 띠 높이(레퍼런스 burn-edge 50px).
-  static const double _edgeH = 50;
-  // rim 높이(레퍼런스 burn-rim 10px).
-  static const double _rimH = 10;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final burn = burnOf();
-    if (burn <= 0 || burn >= 1) return;
-
-    // 연소선 y: 아래에서 burn만큼 올라온 위치(마스크 전이 중앙에 맞춤).
-    final y = size.height * (1 - burn);
-    final t = clock;
-
-    // 좌우로 살짝 넘치게(레퍼런스 left:-2 right:-2).
-    const ov = 2.0;
-    final rect = Rect.fromLTWH(-ov, y - _edgeH, size.width + ov * 2, _edgeH);
-
-    // ── ① char 띠: 세로 그라데이션(아래 어두운 char → 위 밝은 불). ──
-    final bandPaint = Paint()
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 1.2)
-      ..blendMode = BlendMode.plus
-      ..shader = const LinearGradient(
-        begin: Alignment.bottomCenter,
-        end: Alignment.topCenter,
-        colors: [
-          Color(0x00281005), // transparent (아래)
-          Color(0xCC281005), // 어두운 char
-          Color(0xB3783214), // 그을린 갈탄 전이
-          Color(0xD9FFB450), // 밝은 불
-          Color(0x99FFDC8C),
-          Color(0x00FFDC8C), // transparent (위)
-        ],
-        stops: [0.0, 0.30, 0.55, 0.78, 0.92, 1.0],
-      ).createShader(rect);
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(rect, const Radius.circular(4)),
-      bandPaint,
-    );
-
-    // ── ② 핫스팟: 주황/노랑 밝은 점 + 어두운 char 점(레퍼런스 radial 6개). ──
-    // 결정적 위치(시드 고정) + clock으로 미세 일렁임.
-    const hotspots = <_Hot>[
-      _Hot(0.15, 0.30, Color(0xCCFFB450), 0.22),
-      _Hot(0.40, 0.50, Color(0xD9FF8C32), 0.25),
-      _Hot(0.70, 0.40, Color(0xD9FFC864), 0.20),
-      _Hot(0.90, 0.55, Color(0xCCFFA03C), 0.24),
-      _Hot(0.25, 0.78, Color(0xF0501E0F), 0.28), // char(어두움)
-      _Hot(0.60, 0.82, Color(0xF03C140A), 0.30), // char(어두움)
-    ];
-    for (var i = 0; i < hotspots.length; i++) {
-      final h = hotspots[i];
-      // 미세 일렁임(±2px, 결정적 sin).
-      final jx = sin(t * 3 + i * 1.7) * 2.0;
-      final jy = cos(t * 2.5 + i) * 1.5;
-      final cx = -ov + (size.width + ov * 2) * h.xn + jx;
-      final cy = y - _edgeH + _edgeH * h.yn + jy;
-      final r = (size.width + ov * 2) * h.radiusN;
-      final flick = 0.85 + 0.15 * sin(t * 5 + i * 2.1);
-      final paint = Paint()
-        ..blendMode = h.color.computeLuminance() > 0.2
-            ? BlendMode.plus
-            : BlendMode.srcOver
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4)
-        ..shader = RadialGradient(
-          colors: [
-            h.color.withValues(alpha: h.color.a * flick),
-            h.color.withValues(alpha: 0.0),
-          ],
-        ).createShader(Rect.fromCircle(center: Offset(cx, cy), radius: r));
-      canvas.drawCircle(Offset(cx, cy), r, paint);
-    }
-
-    // ── ③ burn-rim: 경계 정중앙에 밝은 흰-노랑 라인(blur 크게, 가산). ──
-    final rimRect = Rect.fromLTWH(-6, y - _rimH / 2, size.width + 12, _rimH);
-    final rimPaint = Paint()
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4)
-      ..blendMode = BlendMode.plus
-      ..shader = const RadialGradient(
-        center: Alignment.center,
-        radius: 0.9,
-        colors: [
-          Color(0xF2FFE6A0), // rgba(255,230,160,0.95)
-          Color(0xBFFFA046), // rgba(255,160,70,0.75)
-          Color(0x00FFA046),
-        ],
-        stops: [0.0, 0.35, 0.80],
-      ).createShader(rimRect);
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(rimRect, const Radius.circular(_rimH / 2)),
-      rimPaint,
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant BurnEdgePainter old) => true;
-}
-
-class _Hot {
-  const _Hot(this.xn, this.yn, this.color, this.radiusN);
-  final double xn; // 0~1 가로 위치
-  final double yn; // 0~1 띠 내 세로 위치
-  final Color color;
-  final double radiusN; // size.width 대비 반지름 비율
-}
-
-// ════════════════════════════════════════════════════════════════════════
 // FlamePainter: 레퍼런스 3겹 불꽃(outer/mid/core) + 독립 flicker + engulf.
 // screen blend 느낌을 겹친 반투명 RadialGradient로 근사(BlendMode.plus).
 // ════════════════════════════════════════════════════════════════════════
 
-/// 화면 하단의 크고 부드러운 3겹 불꽃. idle에도 항상 일렁인다(flicker).
-/// box 좌표계(_flameBox 220×280) 안에서, 바닥 중앙을 기준으로 위로 솟는다.
+/// 화면 하단의 크고 부드러운 3겹 불꽃(단일, idle/igniting) — 불씨를 종이로
+/// 옮기는 단계. box 좌표계 안에서 바닥 중앙을 기준으로 위로 솟는다.
+/// `wallOf()==true`(burning/done)이면 단일 불꽃 대신 종이 폭 전체를 채우는
+/// **불의 벽**(가로로 배열된 큰 혀 + 베이스 글로우 띠, 3겹 두께감)을 그린다.
+/// 벽의 base(box bottom)가 연소선(burnY)에 위치하므로 _burn 0→1에 따라 같이
+/// 위로 상승하고, box bottom 아래(이미 탄 곳)엔 불이 없다.
 class FlamePainter extends CustomPainter {
   FlamePainter({
     required this.clock,
     required this.engulfOf,
+    required this.wallOf,
     required Listenable repaint,
   }) : super(repaint: repaint);
 
   final double Function() clock;
   final bool Function() engulfOf;
+  final bool Function() wallOf;
+
+  // ── 전폭 불벽 파라미터 ──────────────────────────────────────────────────
+  static const int _tongueCount = 10; // 가로로 배열되는 큰 혀 수.
+  static const double _tongueMinH = 84; // 혀 최소 높이.
+  static const double _tongueMaxH = 158; // 혀 최대 높이(활활).
 
   @override
   void paint(Canvas canvas, Size size) {
+    if (wallOf()) {
+      _paintWall(canvas, size);
+      return;
+    }
+    _paintSingle(canvas, size);
+  }
+
+  // ── 단일 불꽃(idle/igniting): 불씨를 옮기는 단계 ─────────────────────────
+  void _paintSingle(Canvas canvas, Size size) {
     final t = clock();
     final engulf = engulfOf();
 
@@ -937,6 +858,143 @@ class FlamePainter extends CustomPainter {
       stops: const [0.0, 0.50, 0.85],
       baseOpacity: 0.92,
     );
+  }
+
+  // ── 전폭 불의 벽(burning/done): 종이 폭 전체를 채우는 화력 ────────────────
+  // box bottom(= 연소선 burnY 근처)을 베이스로, 가로로 배열된 큰 혀 + 폭 전체
+  // 글로우 띠를 3겹(주황 바깥 blur / 노랑 중간 / 흰-노랑 코어)으로 그려 연속된
+  // 불의 벽을 만든다. 각 혀는 결정적 sin 조합으로 유기적 flicker(높이/좌우/투명).
+  void _paintWall(Canvas canvas, Size size) {
+    final t = clock();
+    final w = size.width;
+    final bottom = size.height; // 벽 베이스(연소선 근처).
+
+    // ── ① 폭 전체 베이스 글로우 띠: 연소선에 깔리는 두꺼운 불의 바닥. ──
+    // 살짝 출렁이는 높이로 '활활' 호흡. 좌우로 box 끝까지 가득.
+    final bandH = 70 + 14 * sin(t * 4.0);
+    final bandRect = Rect.fromLTWH(-4, bottom - bandH, w + 8, bandH + 8);
+    final bandPaint = Paint()
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 14)
+      ..blendMode = BlendMode.plus
+      ..shader = const LinearGradient(
+        begin: Alignment.bottomCenter,
+        end: Alignment.topCenter,
+        colors: [
+          Color(0xCCFF5A1E), // 진한 주황(베이스)
+          Color(0x99FF8C3C),
+          Color(0x33FFB450),
+          Color(0x00FFB450),
+        ],
+        stops: [0.0, 0.40, 0.75, 1.0],
+      ).createShader(bandRect);
+    canvas.drawRect(bandRect, bandPaint);
+
+    // ── ② 혀(tongue) 3겹: outer(주황) / mid(노랑) / core(흰-노랑) ──
+    // 같은 혀 형상을 폭을 줄여가며 3번 겹쳐 두께감을 준다.
+    // outer를 모두 먼저(뒤), 그 다음 mid, 마지막 core(앞).
+    _drawTongueLayer(
+      canvas,
+      w,
+      bottom,
+      t,
+      widthScale: 1.0,
+      heightScale: 1.0,
+      blur: 10,
+      colors: const [
+        Color(0xCCFF5A1E),
+        Color(0x80FF8C3C),
+        Color(0x00FF8C3C),
+      ],
+      stops: const [0.0, 0.45, 0.85],
+    );
+    _drawTongueLayer(
+      canvas,
+      w,
+      bottom,
+      t,
+      widthScale: 0.66,
+      heightScale: 0.86,
+      blur: 7,
+      colors: const [
+        Color(0xE6FFA046),
+        Color(0x99FFC864),
+        Color(0x00FFC864),
+      ],
+      stops: const [0.0, 0.5, 0.85],
+    );
+    _drawTongueLayer(
+      canvas,
+      w,
+      bottom,
+      t,
+      widthScale: 0.40,
+      heightScale: 0.66,
+      blur: 4,
+      colors: const [
+        Color(0xFAFFEBB4),
+        Color(0xBFFFD28C),
+        Color(0x00FFD28C),
+      ],
+      stops: const [0.0, 0.55, 0.9],
+    );
+  }
+
+  /// 한 겹(layer)의 혀들을 폭 전체에 가로로 배열해 그린다.
+  void _drawTongueLayer(
+    Canvas canvas,
+    double w,
+    double bottom,
+    double t, {
+    required double widthScale,
+    required double heightScale,
+    required double blur,
+    required List<Color> colors,
+    required List<double> stops,
+  }) {
+    // 혀가 서로 겹치도록 간격보다 넓은 혀 폭(연속된 불의 벽).
+    final slot = w / _tongueCount;
+    final tongueW = slot * 1.55 * widthScale;
+
+    for (var i = 0; i < _tongueCount; i++) {
+      // 슬롯 중앙 + 결정적 좌우 흔들림(sway).
+      final baseX = slot * (i + 0.5);
+      final sway = sin(t * 3.0 + i * 2.3) * slot * 0.18;
+      final cx = baseX + sway;
+
+      // 높이: 결정적 flicker로 min~max 사이 출렁(혀마다 위상 다름).
+      final flick = 0.5 + 0.5 * sin(t * (3.4 + (i % 3) * 0.5) + i * 1.9);
+      final h =
+          (_tongueMinH + (_tongueMaxH - _tongueMinH) * flick) * heightScale;
+
+      // 투명도 일렁임.
+      final op = (0.78 + 0.22 * sin(t * 4.2 + i * 1.3)).clamp(0.0, 1.0);
+      // 좌우 미세 회전(혀 끝이 살랑).
+      final rot = 0.12 * sin(t * 2.6 + i * 1.1);
+
+      final rect = Rect.fromCenter(
+        center: Offset(cx, bottom - h / 2),
+        width: tongueW,
+        height: h,
+      );
+      final paint = Paint()
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, blur)
+        ..blendMode = BlendMode.plus
+        ..shader = RadialGradient(
+          center: const Alignment(0, 0.7),
+          radius: 0.95,
+          colors: colors
+              .map((c) => c.withValues(alpha: c.a * op))
+              .toList(growable: false),
+          stops: stops,
+        ).createShader(rect);
+
+      canvas.save();
+      canvas.translate(cx, bottom);
+      canvas.rotate(rot);
+      canvas.translate(-cx, -bottom);
+      canvas.drawPath(_flamePath(cx, bottom, tongueW, h), paint);
+      canvas.restore();
+    }
   }
 
   void _drawLayer(
