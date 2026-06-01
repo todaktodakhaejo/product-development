@@ -401,14 +401,28 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
                 _flameBox.width,
                 _flameBox.height,
               );
-              final flameRect = _flameRestRect.shift(Offset(0, _flameY));
+              // 연소 중엔 불꽃이 연소선(burnY)을 따라 위로 올라간다 — 불씨가
+              // 종이를 타고 오르고, 이미 탄 아래쪽엔 불이 남지 않는다.
+              // idle/igniting에선 드래그 위치 그대로.
+              final Rect flameRect;
+              if (_phase == _Phase.burning || _phase == _Phase.done) {
+                final burnY = _paperRect.bottom - _paperRect.height * _burn;
+                flameRect = Rect.fromLTWH(
+                  (c.maxWidth - _flameBox.width) / 2,
+                  burnY - _flameBox.height + 28, // 불꽃 base를 연소선 살짝 아래에
+                  _flameBox.width,
+                  _flameBox.height,
+                );
+              } else {
+                flameRect = _flameRestRect.shift(Offset(0, _flameY));
+              }
 
               // 점화 후 불꽃 페이드아웃(done에서 천천히 사라짐).
               final flameOpacity = _phase == _Phase.done ? 0.0 : 1.0;
 
               return Stack(
                 children: [
-                  // ── 종이: 마스크로 아래→위 부드럽게 사라짐 + char 띠 + rim ──
+                  // ── 종이: 마스크로 아래→위 부드럽게 녹아 사라짐 ──
                   Positioned.fromRect(
                     rect: _paperRect,
                     child: IgnorePointer(
@@ -418,7 +432,6 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
                         burn: _burn,
                         burning: _phase == _Phase.burning,
                         clock: _clock,
-                        repaint: _repaint,
                       ),
                     ),
                   ),
@@ -593,7 +606,6 @@ class _BurningPaper extends StatelessWidget {
     required this.burn,
     required this.burning,
     required this.clock,
-    required this.repaint,
   });
 
   final String text;
@@ -601,7 +613,6 @@ class _BurningPaper extends StatelessWidget {
   final double burn; // 0→1 (연소 진행, 아래에서 위로).
   final bool burning;
   final double clock;
-  final Listenable repaint;
 
   @override
   Widget build(BuildContext context) {
@@ -709,19 +720,11 @@ class _BurningPaper extends StatelessWidget {
           height: size.height,
           child: Stack(
             children: [
-              // 마스크된 종이 본문.
+              // 마스크된 종이 본문. 연소 경계의 불은 연소선을 따라 올라가는
+              // 3겹 불꽃이 담당하므로, 별도의 밝은 rim/깜빡이는 char 띠는 그리지
+              // 않는다(종이는 소프트 마스크로 깨끗이 녹아 사라짐 — 번쩍이는
+              // 테두리 제거).
               Positioned.fill(child: masked),
-              // 글로잉 char 띠 + 밝은 rim(연소 경계).
-              if (burning && burn > 0 && burn < 1)
-                Positioned.fill(
-                  child: CustomPaint(
-                    painter: BurnEdgePainter(
-                      burnOf: () => burn,
-                      clock: clock,
-                      repaint: repaint,
-                    ),
-                  ),
-                ),
             ],
           ),
         ),
