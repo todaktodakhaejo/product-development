@@ -78,9 +78,43 @@ class RitualSelectScreen extends StatelessWidget {
                     ],
                   ),
                 ),
+                const SizedBox(height: 16),
+                const _ComingSoonTile(),
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 2차 스펙 의식들이 곧 추가됨을 알리는 비활성 예고 칸 (터치 불가, 흐림 처리).
+class _ComingSoonTile extends StatelessWidget {
+  const _ComingSoonTile();
+
+  @override
+  Widget build(BuildContext context) {
+    return Opacity(
+      opacity: 0.7,
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.03),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: Colors.white12),
+        ),
+        child: const Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text('✨', style: TextStyle(fontSize: 15)),
+            SizedBox(width: 8),
+            Text(
+              '더 많은 방법들이 기다리고 있어요',
+              style: TextStyle(color: Colors.white54, fontSize: 13),
+            ),
+          ],
         ),
       ),
     );
