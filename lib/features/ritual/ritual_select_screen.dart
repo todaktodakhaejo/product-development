@@ -63,11 +63,14 @@ class RitualSelectScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 24),
                 Expanded(
-                  child: GridView.count(
-                    crossAxisCount: 2,
-                    mainAxisSpacing: 16,
-                    crossAxisSpacing: 16,
-                    childAspectRatio: 0.88,
+                  child: GridView(
+                    gridDelegate:
+                        const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 2,
+                      mainAxisSpacing: 16,
+                      crossAxisSpacing: 16,
+                      mainAxisExtent: 172, // 카드 높이 고정: 설명 2줄 온전히 표시
+                    ),
                     children: [
                       for (final r in Ritual.values)
                         _RitualCard(
