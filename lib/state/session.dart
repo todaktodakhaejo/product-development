@@ -5,7 +5,7 @@ enum Ritual {
   burn('태우기', '불꽃에 실어 위로 날려보내요', RitualKind.release),
   shredder('파쇄기', '잘게 부숴 위로 뿌려요', RitualKind.release),
   paperPlane('종이비행기', '접어서 멀리 날려보내요', RitualKind.release),
-  jewelryBox('보석함 보관', '보석함에 가만히 담아요', RitualKind.keep);
+  jewelryBox('보석함 담기', '보석함에 가만히 담아요', RitualKind.keep);
 
   const Ritual(this.label, this.tagline, this.kind);
   final String label;
