@@ -150,6 +150,15 @@ class _RitualCardState extends State<_RitualCard> {
     if (_pressed != v) setState(() => _pressed = v);
   }
 
+  /// 흰색 반전 피드백을 잠깐 보여준 뒤 다음 화면으로 넘어간다.
+  Future<void> _handleTap() async {
+    _setPressed(true);
+    await Future<void>.delayed(const Duration(milliseconds: 160));
+    if (!mounted) return;
+    widget.onTap();
+    _setPressed(false);
+  }
+
   @override
   Widget build(BuildContext context) {
     return AnimatedScale(
@@ -157,9 +166,8 @@ class _RitualCardState extends State<_RitualCard> {
       duration: const Duration(milliseconds: 110),
       curve: Curves.easeOut,
       child: InkWell(
-        onTap: widget.onTap,
+        onTap: _handleTap,
         onTapDown: (_) => _setPressed(true),
-        onTapUp: (_) => _setPressed(false),
         onTapCancel: () => _setPressed(false),
         borderRadius: BorderRadius.circular(20),
         child: AnimatedContainer(
