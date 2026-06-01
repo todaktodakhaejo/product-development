@@ -90,6 +90,14 @@ class RitualSelectScreen extends StatelessWidget {
   }
 }
 
+/// 줄바꿈 금지 문자(word-joiner, U+2060).
+final String _wordJoiner = String.fromCharCode(0x2060);
+
+/// 한글이 글자 단위로 끊기지 않고 띄어쓰기(어절)에서만 줄바꿈되도록,
+/// 각 단어의 글자 사이에 word-joiner를 넣어 단어를 통째로 묶는다.
+String _wrapByWord(String text) =>
+    text.split(' ').map((w) => w.split('').join(_wordJoiner)).join(' ');
+
 class _RitualCard extends StatelessWidget {
   const _RitualCard(
       {required this.emoji, required this.ritual, required this.onTap});
@@ -131,7 +139,7 @@ class _RitualCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 4),
-            Text(ritual.tagline,
+            Text(_wrapByWord(ritual.tagline),
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(color: Colors.white54, fontSize: 13)),
