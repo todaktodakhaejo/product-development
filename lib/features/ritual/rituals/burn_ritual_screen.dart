@@ -4,9 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
 
 import '../../../core/haptics.dart';
+import '../../../core/strings.dart';
 import '../../../state/session.dart';
 import '../../../theme/app_theme.dart';
-import '../../complete/complete_screen.dart';
 import '../widgets/paper_card.dart';
 import '../widgets/particles.dart';
 
@@ -16,15 +16,25 @@ import '../widgets/particles.dart';
 /// 1) 하단의 큰 3겹 불꽃을 위로 드래그 → 2) 불꽃 상단이 종이 하단에 **닿는 순간**
 /// 즉시 점화(드래그 거리 임계 아님) → 3) 종이가 아래→위로 부드럽게 사라지며
 /// 글로잉 char 띠 + 밝은 rim 상승·종이 떨림·불티 솟음 → 4) 전소 후 화면 전체에
-/// 흰 재가 눈처럼 → 5) 기존 CompleteScreen.
+/// 흰 재가 눈처럼 지속 → 5) **인플레이스 오버레이**(라우트 전환 없음)로 완료 멘트
+/// 페이드인 → '처음으로' 버튼 페이드인. burn 화면에 그대로 머문다.
 enum _Phase { idle, igniting, burning, done }
 
 /// 점화 확정 후 고정 연소 시간(드래그 무관). 사용자 합의값 3초 유지(레퍼런스 ~2.4s).
 const Duration _kBurnDuration = Duration(milliseconds: 3000);
 
-/// 전소→완료 화면 전이 지연. 전소 후 화면 전체가 흰 눈으로 가득 차도록 흩날림을
-/// 유지하는 홀드 시간. 이후 CompleteScreen으로 전이.
-const Duration _kSnowfallHold = Duration(milliseconds: 1800);
+// ── 완료 인플레이스 오버레이 타임라인(전소=0 기준) ──────────────────────────
+/// 전소 후 멘트가 떠오르기 전 재 흩날림만 보여주는 홀드(레퍼런스 released-msg).
+const Duration _kMessageDelay = Duration(milliseconds: 3000);
+
+/// 멘트 페이드인 시간(opacity 0→1, ease).
+const Duration _kMessageFade = Duration(milliseconds: 1400);
+
+/// 멘트가 다 뜬 뒤 '처음으로' 버튼이 뜨기까지의 추가 지연(전소 기준 ≈4.4s).
+const Duration _kButtonDelay = Duration(milliseconds: 4400);
+
+/// '처음으로' 버튼 페이드인 시간(opacity 0→1).
+const Duration _kButtonFade = Duration(milliseconds: 800);
 
 /// 불꽃 스프링 복귀(미점화 후 손 뗌) 시간 — 레퍼런스 cubic-bezier(0.34,1.56,0.64,1).
 const Duration _kFlameReturn = Duration(milliseconds: 600);
@@ -99,6 +109,10 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
   // 힌트(화살표·문구) 페이드(점화 시 0).
   bool get _showHint => _phase == _Phase.idle || _phase == _Phase.igniting;
 
+  // ── 완료 인플레이스 오버레이 시퀀스 토글(전소 후 Future.delayed로 구동) ──
+  bool _showMessage = false; // t=3.0s 멘트 페이드인.
+  bool _showButton = false; // t≈4.4s '처음으로' 버튼 페이드인.
+
   @override
   void initState() {
     super.initState();
@@ -155,15 +169,17 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
       }
     }
 
-    // done 단계: 화면 상단 전폭에서 흰 눈을 지속 대량 방출 → 화면 전체를 채움.
+    // done 단계: 화면 상단 전폭에서 흰 눈을 지속 방출 → 화면 전체에 은은히 흩날림.
+    // 라우트 전환을 없애 화면이 오래 머물므로, 방출 밀도를 차분히 낮춰(눈처럼 은은)
+    // 멘트·버튼이 뜬 뒤에도 거슬리지 않게 계속 살아있게 한다(재는 흰색 유지).
     if (_phase == _Phase.done && _screen != Size.zero) {
       _snowAccum += dt;
-      if (_snowAccum >= 0.04) {
+      if (_snowAccum >= 0.10) {
         _snowAccum = 0;
         _field.emitSnowAsh(
           origin: Offset(_screen.width / 2, -8),
           width: _screen.width,
-          count: 7,
+          count: 3,
           palette: _kSnowAshPalette,
         );
       }
@@ -276,9 +292,10 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
     _burn = 1.0;
 
     // ★ stop()을 softSuccess 보다 반드시 먼저(겹침 방지 계약).
+    // 연소 햅틱은 즉시 멈추되, 등장 성공 햅틱은 멘트가 떠오르는 순간에 1회
+    // 발사한다(아래 _kMessageDelay 콜백). 여기선 stop만.
     _blazeHandle?.stop();
     _blazeHandle = null;
-    Haptics.instance.softSuccess();
 
     // 전소 지점에서 위로 솟는 큰 ember 버스트(레퍼런스 complete 30개) + 흰재 whoosh.
     if (_paperRect != Rect.zero) {
@@ -315,14 +332,25 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
       );
     }
 
-    // 화면 전체가 흰 눈으로 가득 차도록 홀드한 뒤 완료 화면 전이.
-    Future.delayed(_kSnowfallHold, () {
+    // ── 인플레이스 완료 시퀀스(라우트 전환 없음 — 같은 burn 화면에 머문다) ──
+    // 재가 ~3초 은은히 흩날린 뒤 멘트 페이드인(+success 햅틱 1회), 그 뒤 버튼.
+    Future.delayed(_kMessageDelay, () {
       if (!mounted) return;
-      Navigator.of(context).pushReplacement(MaterialPageRoute(
-        builder: (_) => const CompleteScreen(afterglow: _SnowAshAfterglow()),
-      ));
+      // 멘트가 떠오르는 순간 부드러운 success 햅틱 1회(기존 CompleteScreen 톤).
+      Haptics.instance.fire(HapticLevel.success, throttle: false);
+      setState(() => _showMessage = true);
+    });
+    Future.delayed(_kButtonDelay, () {
+      if (!mounted) return;
+      setState(() => _showButton = true);
     });
     setState(() {});
+  }
+
+  // ── '처음으로': 세션 리셋 + 홈 복귀(기존 _backToHome 동작과 동일) ──
+  void _backToHome() {
+    SessionScope.of(context).reset();
+    Navigator.of(context).popUntil((r) => r.isFirst);
   }
 
   @override
@@ -459,6 +487,89 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
                       ),
                     ),
                   ),
+
+                  // ── 완료 멘트(인플레이스 페이드인) — 재 위 화면 중앙 ──
+                  // CompleteScreen과 동일 카피·스타일. 어두운 배경 위 가독성 위해
+                  // 살짝 그림자. 멘트가 다 떠야 버튼이 뜨므로 IgnorePointer.
+                  if (_phase == _Phase.done)
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: AnimatedOpacity(
+                          duration: _kMessageFade,
+                          curve: Curves.easeInOut,
+                          opacity: _showMessage ? 1.0 : 0.0,
+                          child: const Center(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  kCompletionMessage,
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    fontSize: 26,
+                                    fontWeight: FontWeight.w700,
+                                    shadows: [
+                                      Shadow(
+                                        blurRadius: 12,
+                                        color: Color(0x99000000),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                SizedBox(height: 12),
+                                Text(
+                                  '잘 보냈어요. 마음이 조금 가벼워졌길.',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    color: Colors.white60,
+                                    shadows: [
+                                      Shadow(
+                                        blurRadius: 10,
+                                        color: Color(0x80000000),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+
+                  // ── '처음으로' 버튼(멘트 뒤 페이드인) — 하단 고정 ──
+                  if (_phase == _Phase.done)
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      child: AnimatedOpacity(
+                        duration: _kButtonFade,
+                        curve: Curves.easeInOut,
+                        opacity: _showButton ? 1.0 : 0.0,
+                        child: IgnorePointer(
+                          ignoring: !_showButton,
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(32, 0, 32, 36),
+                            child: SizedBox(
+                              width: double.infinity,
+                              child: FilledButton(
+                                onPressed: _backToHome,
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: AppColors.ballGlow,
+                                  padding:
+                                      const EdgeInsets.symmetric(vertical: 16),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(16),
+                                  ),
+                                ),
+                                child: const Text('처음으로'),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
                 ],
               );
             },
@@ -913,87 +1024,4 @@ class _ArrowPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _ArrowPainter old) => false;
-}
-
-// ════════════════════════════════════════════════════════════════════════
-// END-01 태우기 마무리: 흰 재 스노폴 잔상(CompleteScreen afterglow 주입).
-// complete_screen 불변. 누수 0: dispose에서 ticker 정리.
-// ════════════════════════════════════════════════════════════════════════
-class _SnowAshAfterglow extends StatefulWidget {
-  const _SnowAshAfterglow();
-
-  @override
-  State<_SnowAshAfterglow> createState() => _SnowAshAfterglowState();
-}
-
-class _SnowAshAfterglowState extends State<_SnowAshAfterglow> {
-  late final Ticker _ticker;
-  final _field = ParticleField(maxParticles: 120);
-  final _repaint = ValueNotifier(0);
-  Duration _last = Duration.zero;
-  double _emitAccum = 0;
-  static const double _box = 180;
-
-  @override
-  void initState() {
-    super.initState();
-    _ticker = Ticker(_tick)..start();
-  }
-
-  void _tick(Duration elapsed) {
-    final dt =
-        _last == Duration.zero ? 0.016 : (elapsed - _last).inMicroseconds / 1e6;
-    _last = elapsed;
-    _emitAccum += dt;
-    if (_emitAccum >= 0.18) {
-      _emitAccum = 0;
-      _field.emitSnowAsh(
-        origin: const Offset(_box / 2, -4),
-        width: _box,
-        count: 2,
-        palette: _kSnowAshPalette,
-      );
-    }
-    _field.update(dt.clamp(0.0, 0.05));
-    _repaint.value++;
-  }
-
-  @override
-  void dispose() {
-    _ticker.dispose();
-    _repaint.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      width: _box,
-      height: _box,
-      child: ClipRect(
-        child: Stack(
-          children: [
-            Center(
-              child: Container(
-                width: _box * 0.7,
-                height: _box * 0.7,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  gradient: RadialGradient(
-                    colors: [
-                      AppColors.ballCore.withValues(alpha: 0.28),
-                      AppColors.ballCore.withValues(alpha: 0.0),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-            Positioned.fill(
-              child: CustomPaint(painter: ParticlePainter(_field, _repaint)),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
 }
