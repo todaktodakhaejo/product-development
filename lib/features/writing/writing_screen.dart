@@ -41,14 +41,15 @@ class _WritingScreenState extends State<WritingScreen> {
         title: const Text('마음 꺼내기',
             style: TextStyle(color: AppColors.ink, fontSize: 16)),
       ),
-      body: SafeArea(
+      body: _FadeIn(
+        child: SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(24, 8, 24, 16),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const Text(
-                '여기 적은 건 누구에게도 보이지 않아요.\n맞춤법도, 완성도 신경 쓰지 말고 마구 적어 보세요.',
+                '여기 적은 건 아무에게도 보이지 않아요.\n맞춤법도, 끝맺음도 신경 쓰지 마세요. 떠오르는 그대로면 돼요.',
                 style: TextStyle(color: Colors.black54, height: 1.5),
               ),
               const SizedBox(height: 16),
@@ -68,6 +69,7 @@ class _WritingScreenState extends State<WritingScreen> {
                   ),
                   child: TextField(
                     controller: _controller,
+                    autofocus: true,
                     onChanged: (_) => setState(() {}),
                     maxLines: null,
                     expands: true,
@@ -100,6 +102,38 @@ class _WritingScreenState extends State<WritingScreen> {
           ),
         ),
       ),
+      ),
+    );
+  }
+}
+
+/// 화면 진입 시 한 번 부드럽게 떠오르게 하는 페이드인 래퍼.
+class _FadeIn extends StatefulWidget {
+  const _FadeIn({required this.child});
+  final Widget child;
+
+  @override
+  State<_FadeIn> createState() => _FadeInState();
+}
+
+class _FadeInState extends State<_FadeIn> {
+  double _opacity = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setState(() => _opacity = 1);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedOpacity(
+      opacity: _opacity,
+      duration: const Duration(milliseconds: 450),
+      curve: Curves.easeOut,
+      child: widget.child,
     );
   }
 }
