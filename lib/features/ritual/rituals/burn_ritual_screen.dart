@@ -229,11 +229,12 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
   // ── 3초 컨트롤러 리스너 ───────────────────────────────────────────────
   void _onBurnTick() {
     if (_phase != _Phase.burning) return;
-    // 화르륵 강화: 균일 선형 대신 살짝 가파른 ease-out(decelerate)로 연소선이
-    // 초반에 빠르게 치솟아 '화르륵 번지는' 가속감을 준다. 3초 duration은 그대로
-    // 유지하되, 시각적으로 불이 더 맹렬하게 위로 달려 올라가도록 한다.
+    // 연소선이 아래→위로 '일정한 속도(선형)'로 올라간다(사용자 피드백) — 시간이
+    // 종이 높이에 균등 분배되어 위쪽에서 오래 머무르지 않는다. 컨트롤러가 이미
+    // 선형(forward)이므로 raw value를 그대로 쓴다. 불꽃 일렁임·강도 고조는
+    // painter/blaze 곡선이 담당하므로 등속이어도 '화르륵' 맹렬함은 유지된다.
     // 햅틱/blaze 진행도는 시각 연소선과 동기화되도록 동일 값(_burn)을 전달한다.
-    _burn = Curves.easeOutQuart.transform(_burnCtrl.value);
+    _burn = _burnCtrl.value;
     _blazeHandle?.setProgress(_burn);
     setState(() {}); // 마스크 stop·edge/rim 위치 갱신.
   }
