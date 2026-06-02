@@ -41,9 +41,11 @@ const Duration _kFlameReturn = Duration(milliseconds: 600);
 
 // ── 전폭 '불의 벽'(연소 중) 기하 ───────────────────────────────────────────
 /// 종이 좌우로 넘쳐 감싸 올라가는 폭(±). 종이 폭(250)에 더해진다.
-const double _kWallOverflow = 12;
-/// 벽 box 높이(가장 큰 혀 + 베이스 글로우 여유). box bottom=burnY 근처.
-const double _kWallHeight = 200;
+/// 화르륵 강화: 좌우로 더 넘쳐 종이를 통째로 집어삼키는 느낌.
+const double _kWallOverflow = 22;
+/// 벽 box 높이(가장 큰 혀 + 베이스 글로우 + 열기 글로우 여유). box bottom=burnY 근처.
+/// 화르륵 강화: 혀 최대 240px + 글로우/스파크 여유 → 360px로 상향.
+const double _kWallHeight = 360;
 
 // ── 흰 재 / 탄자국 로컬 색 (app_theme 미수정) ──────────────────────────────
 // 따뜻한 갈탄 — 남은 종이 하단 탄자국(어둡지 않게).
@@ -68,8 +70,9 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
     with TickerProviderStateMixin {
   // 파티클 루프 + 불꽃 flicker 구동 ticker(60fps 공통). 3초 연소는 bounded 컨트롤러.
   late final Ticker _ticker;
-  // 전소 후 화면 전체 눈 흩날림을 위해 cap 상향(320).
-  final _field = ParticleField(maxParticles: 320);
+  // 전소 후 화면 전체 눈 흩날림 + 화르륵 강화(불티/스파크 폭증)를 위해 cap 상향(420).
+  // 합리적 상한으로 폭증해도 _cap()이 가장 오래된 입자부터 정리(프레임 예산 보호).
+  final _field = ParticleField(maxParticles: 420);
   final _repaint = ValueNotifier(0);
   Duration _last = Duration.zero;
 
@@ -146,9 +149,10 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
       final burnY = _paperRect.bottom - _paperRect.height * _burn;
       final origin = Offset(_paperRect.center.dx, burnY);
 
-      // ember: 연소 중 매 프레임 ~85% 확률 방출(레퍼런스). 진행도 비례 count.
-      if (_clock > 0 && (_clock * 997).floor() % 100 < 85) {
-        final emberCount = (3 + 5 * _burn).round();
+      // ember: 연소 중 매 프레임 ~92% 확률 방출(화르륵 강화). 진행도 비례 count↑.
+      // 불티가 빈틈없이 솟구치도록 방출 확률과 개수를 모두 상향(기존 3~8 → 6~20).
+      if (_clock > 0 && (_clock * 997).floor() % 100 < 92) {
+        final emberCount = (6 + 14 * _burn).round();
         _field.emitEmber(
           origin: origin,
           count: emberCount,
@@ -158,6 +162,33 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
             Color(0xFFFF5722),
           ],
         );
+
+        // ★ 솟구치는 스파크 폭증: emitEmber(내부 v/gravity 고정)만으로는 부족하므로
+        // 위로 맹렬히 쏘는 고속 스파크를 emitBurst로 추가. baseAngle 위(-pi/2),
+        // 좁은 spread로 위로 집중, 음수 gravity로 상승 거리↑·오래 흩날림.
+        // throttle: 진행도가 오를수록 더 자주 방출(전소 직전 정점에서 가장 맹렬).
+        // 기존 ember 확률 패턴과 동일하게 결정적 의사난수(_clock*1409)로 게이트.
+        final sparkGate = (45 + 55 * _burn).round();
+        if ((_clock * 1409).floor() % 100 < sparkGate) {
+          final sparkCount = (2 + 8 * _burn).round();
+          _field.emitBurst(
+            origin: origin,
+            count: sparkCount,
+            palette: const [
+              AppColors.emberYellow,
+              Color(0xFFFFE0A0),
+              AppColors.emberOrange,
+            ],
+            speed: 260 + 340 * _burn, // 진행도 비례 더 빠르게 솟구침
+            sizeMin: 1.5,
+            sizeMax: 3.5,
+            life: 1.0 + 0.7 * _burn,
+            shape: ParticleShape.circle,
+            gravity: -160, // 위로 솟구쳐 흩날림(상승 거리↑)
+            spread: pi * 0.7, // 위로 집중된 부채꼴
+            baseAngle: -pi / 2,
+          );
+        }
       }
 
       // 흰 재 스노폴: throttle 간격을 진행도로 가변. 연소선 전폭(70%) 살포.
@@ -198,10 +229,12 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
   // ── 3초 컨트롤러 리스너 ───────────────────────────────────────────────
   void _onBurnTick() {
     if (_phase != _Phase.burning) return;
-    // 레퍼런스: 일정 속도(speed*dt). 살짝 가속감만 주려 easeInOutSine 근사 대신
-    // 선형에 가깝게(균일 연소). 곧게 위로 사라지도록 raw value 사용.
-    _burn = _burnCtrl.value;
-    _blazeHandle?.setProgress(_burnCtrl.value);
+    // 화르륵 강화: 균일 선형 대신 살짝 가파른 ease-out(decelerate)로 연소선이
+    // 초반에 빠르게 치솟아 '화르륵 번지는' 가속감을 준다. 3초 duration은 그대로
+    // 유지하되, 시각적으로 불이 더 맹렬하게 위로 달려 올라가도록 한다.
+    // 햅틱/blaze 진행도는 시각 연소선과 동기화되도록 동일 값(_burn)을 전달한다.
+    _burn = Curves.easeOutQuart.transform(_burnCtrl.value);
+    _blazeHandle?.setProgress(_burn);
     setState(() {}); // 마스크 stop·edge/rim 위치 갱신.
   }
 
@@ -271,16 +304,35 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
     Haptics.instance.fire(HapticLevel.heavy, throttle: false);
     Haptics.instance.fire(HapticLevel.medium, throttle: false);
 
-    // 화르륵 초기 ember burst(레퍼런스 20개).
+    // 화르륵 초기 ember burst(강화: 20 → 40) + 위로 솟구치는 고속 스파크 폭발.
     if (_paperRect != Rect.zero) {
+      final ignite = Offset(_paperRect.center.dx, _paperRect.bottom);
       _field.emitEmber(
-        origin: Offset(_paperRect.center.dx, _paperRect.bottom),
-        count: 20,
+        origin: ignite,
+        count: 40,
         palette: const [
           AppColors.emberOrange,
           AppColors.emberYellow,
           Color(0xFFFF5722),
         ],
+      );
+      // 점화 순간 화르륵 터지는 스파크(전폭으로 빠르게 솟구침).
+      _field.emitBurst(
+        origin: ignite,
+        count: 36,
+        palette: const [
+          AppColors.emberYellow,
+          Color(0xFFFFE0A0),
+          AppColors.emberOrange,
+        ],
+        speed: 460,
+        sizeMin: 1.5,
+        sizeMax: 4,
+        life: 1.2,
+        shape: ParticleShape.circle,
+        gravity: -140,
+        spread: pi * 0.95,
+        baseAngle: -pi / 2,
       );
     }
 
@@ -307,12 +359,30 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
     if (_paperRect != Rect.zero) {
       _field.emitEmber(
         origin: Offset(_paperRect.center.dx, _paperRect.top),
-        count: 30,
+        count: 54,
         palette: const [
           AppColors.emberOrange,
           AppColors.emberYellow,
           Color(0xFFFF5722),
         ],
+      );
+      // 전소 정점 스파크 폭발: 위로 맹렬히 솟구치는 고속 불티.
+      _field.emitBurst(
+        origin: Offset(_paperRect.center.dx, _paperRect.top),
+        count: 44,
+        palette: const [
+          AppColors.emberYellow,
+          Color(0xFFFFE0A0),
+          AppColors.emberOrange,
+        ],
+        speed: 540,
+        sizeMin: 1.5,
+        sizeMax: 4,
+        life: 1.4,
+        shape: ParticleShape.circle,
+        gravity: -150,
+        spread: pi * 0.85,
+        baseAngle: -pi / 2,
       );
       _field.emitBurst(
         origin: Offset(_paperRect.center.dx, _paperRect.top),
@@ -494,6 +564,7 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
                             clock: () => _clock,
                             engulfOf: () => _flameEngulf,
                             wallOf: () => wall,
+                            progressOf: () => _burn,
                             repaint: _repaint,
                           ),
                         ),
@@ -773,17 +844,23 @@ class FlamePainter extends CustomPainter {
     required this.clock,
     required this.engulfOf,
     required this.wallOf,
+    required this.progressOf,
     required Listenable repaint,
   }) : super(repaint: repaint);
 
   final double Function() clock;
   final bool Function() engulfOf;
   final bool Function() wallOf;
+  // 연소 진행도 0→1(화르륵 강화: 혀 키·flicker 속도·열기 글로우를 정점까지 끌어올림).
+  final double Function() progressOf;
 
-  // ── 전폭 불벽 파라미터 ──────────────────────────────────────────────────
-  static const int _tongueCount = 10; // 가로로 배열되는 큰 혀 수.
-  static const double _tongueMinH = 84; // 혀 최소 높이.
-  static const double _tongueMaxH = 158; // 혀 최대 높이(활활).
+  // ── 전폭 불벽 파라미터 (화르륵 강화) ────────────────────────────────────
+  // 혀 개수↑(10→16)로 빈틈 없이 빽빽한 불의 벽. 혀 키 대폭 상향(84~158 →
+  // 90~240, 진행도 비례)으로 맹렬히 치솟는 화력. 진행도(burn)는 paint에서 받아
+  // 혀 높이·flicker 속도·글로우를 정점까지 끌어올린다.
+  static const int _tongueCount = 16; // 가로로 배열되는 큰 혀 수.
+  static const double _tongueMinH = 90; // 혀 최소 높이.
+  static const double _tongueMaxH = 240; // 혀 최대 높이(활활·정점).
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -868,24 +945,49 @@ class FlamePainter extends CustomPainter {
     final t = clock();
     final w = size.width;
     final bottom = size.height; // 벽 베이스(연소선 근처).
+    // 진행도 0→1. 화르륵 강화: 정점에 가까울수록 더 거대·맹렬·빠르게.
+    final p = progressOf().clamp(0.0, 1.0);
+    // flicker 가속 계수: 진행도가 오를수록 sin 위상속도↑('화르륵' 거칠게).
+    final fr = 1.0 + 0.8 * p;
+
+    // ── ⓪ 열기 글로우(앰비언트): 불벽 위로 번지는 따뜻한 빛무리. ──
+    // 진행도 비례로 강해지며, 코어 위쪽 공기를 데우는 듯한 큰 부드러운 radial.
+    // 종이 텍스트 가독성 보호: 점화 후(burning/done = wall) 단계에서만 그려지고
+    // 종이는 이미 burn만큼 녹아 사라지므로 텍스트와 겹치지 않는다.
+    final heatH = 150 + 130 * p;
+    final heatRect = Rect.fromLTWH(-30, bottom - heatH, w + 60, heatH);
+    final heatPaint = Paint()
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 40)
+      ..blendMode = BlendMode.plus
+      ..shader = RadialGradient(
+        center: const Alignment(0, 0.85),
+        radius: 1.1,
+        colors: [
+          Color.fromRGBO(255, 150, 70, 0.30 * (0.4 + 0.6 * p)),
+          Color.fromRGBO(255, 120, 50, 0.16 * (0.4 + 0.6 * p)),
+          const Color(0x00FF7832),
+        ],
+        stops: const [0.0, 0.5, 1.0],
+      ).createShader(heatRect);
+    canvas.drawRect(heatRect, heatPaint);
 
     // ── ① 폭 전체 베이스 글로우 띠: 연소선에 깔리는 두꺼운 불의 바닥. ──
-    // 살짝 출렁이는 높이로 '활활' 호흡. 좌우로 box 끝까지 가득.
-    final bandH = 70 + 14 * sin(t * 4.0);
-    final bandRect = Rect.fromLTWH(-4, bottom - bandH, w + 8, bandH + 8);
+    // 화르륵 강화: 더 굵고(70→110+) 더 밝게, 더 빠르게 출렁(fr 가속).
+    final bandH = (110 + 26 * sin(t * 6.0 * fr)) * (0.8 + 0.2 * p);
+    final bandRect = Rect.fromLTWH(-6, bottom - bandH, w + 12, bandH + 10);
     final bandPaint = Paint()
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 14)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 18)
       ..blendMode = BlendMode.plus
       ..shader = const LinearGradient(
         begin: Alignment.bottomCenter,
         end: Alignment.topCenter,
         colors: [
-          Color(0xCCFF5A1E), // 진한 주황(베이스)
-          Color(0x99FF8C3C),
-          Color(0x33FFB450),
+          Color(0xFFFFD27A), // 밝은 코어 베이스(흰-노랑)
+          Color(0xE6FF8C3C),
+          Color(0x66FFB450),
           Color(0x00FFB450),
         ],
-        stops: [0.0, 0.40, 0.75, 1.0],
+        stops: [0.0, 0.38, 0.72, 1.0],
       ).createShader(bandRect);
     canvas.drawRect(bandRect, bandPaint);
 
@@ -897,79 +999,92 @@ class FlamePainter extends CustomPainter {
       w,
       bottom,
       t,
+      p,
+      fr,
       widthScale: 1.0,
       heightScale: 1.0,
-      blur: 10,
+      blur: 12,
       colors: const [
-        Color(0xCCFF5A1E),
-        Color(0x80FF8C3C),
+        Color(0xE6FF5A1E),
+        Color(0x99FF8C3C),
         Color(0x00FF8C3C),
       ],
-      stops: const [0.0, 0.45, 0.85],
+      stops: const [0.0, 0.45, 0.88],
     );
     _drawTongueLayer(
       canvas,
       w,
       bottom,
       t,
+      p,
+      fr,
       widthScale: 0.66,
-      heightScale: 0.86,
-      blur: 7,
+      heightScale: 0.88,
+      blur: 8,
       colors: const [
-        Color(0xE6FFA046),
-        Color(0x99FFC864),
+        Color(0xF2FFA046),
+        Color(0xB3FFC864),
         Color(0x00FFC864),
       ],
-      stops: const [0.0, 0.5, 0.85],
+      stops: const [0.0, 0.5, 0.88],
     );
     _drawTongueLayer(
       canvas,
       w,
       bottom,
       t,
-      widthScale: 0.40,
-      heightScale: 0.66,
+      p,
+      fr,
+      widthScale: 0.42,
+      heightScale: 0.70,
       blur: 4,
+      // 밝은 흰-노랑 코어 더 밝게(불투명도↑).
       colors: const [
-        Color(0xFAFFEBB4),
-        Color(0xBFFFD28C),
+        Color(0xFFFFF4D2),
+        Color(0xDBFFDC9C),
         Color(0x00FFD28C),
       ],
-      stops: const [0.0, 0.55, 0.9],
+      stops: const [0.0, 0.55, 0.92],
     );
   }
 
   /// 한 겹(layer)의 혀들을 폭 전체에 가로로 배열해 그린다.
+  /// [p]=진행도(혀 키·밀도 강도), [fr]=flicker 가속 계수.
   void _drawTongueLayer(
     Canvas canvas,
     double w,
     double bottom,
-    double t, {
+    double t,
+    double p,
+    double fr, {
     required double widthScale,
     required double heightScale,
     required double blur,
     required List<Color> colors,
     required List<double> stops,
   }) {
-    // 혀가 서로 겹치도록 간격보다 넓은 혀 폭(연속된 불의 벽).
+    // 혀가 서로 겹치도록 간격보다 넓은 혀 폭(연속된 불의 벽). 화르륵 강화: 1.55→1.7
+    // 로 더 빽빽하게 겹쳐 빈틈 없는 불의 벽.
     final slot = w / _tongueCount;
-    final tongueW = slot * 1.55 * widthScale;
+    final tongueW = slot * 1.7 * widthScale;
 
     for (var i = 0; i < _tongueCount; i++) {
-      // 슬롯 중앙 + 결정적 좌우 흔들림(sway).
+      // 슬롯 중앙 + 결정적 좌우 흔들림(sway). 진행도↑일수록 더 빠르게 흔들림.
       final baseX = slot * (i + 0.5);
-      final sway = sin(t * 3.0 + i * 2.3) * slot * 0.18;
+      final sway = sin(t * 4.4 * fr + i * 2.3) * slot * 0.20;
       final cx = baseX + sway;
 
-      // 높이: 결정적 flicker로 min~max 사이 출렁(혀마다 위상 다름).
-      final flick = 0.5 + 0.5 * sin(t * (3.4 + (i % 3) * 0.5) + i * 1.9);
-      final h =
-          (_tongueMinH + (_tongueMaxH - _tongueMinH) * flick) * heightScale;
+      // 높이: 결정적 flicker로 min~max 사이 출렁(혀마다 위상 다름). 화르륵 강화:
+      // flicker 주파수↑(fr 가속)로 맹렬히 흔들리고, 진행도(p)에 비례해 베이스 키가
+      // 솟아오르도록 min을 끌어올린다(전소 직전 정점에서 가장 거대).
+      final flick = 0.5 + 0.5 * sin(t * (5.0 + (i % 3) * 0.8) * fr + i * 1.9);
+      final base = _tongueMinH + (_tongueMaxH - _tongueMinH) * flick;
+      final h = base * (0.62 + 0.38 * p) * heightScale;
 
-      // 투명도 일렁임.
-      final op = (0.78 + 0.22 * sin(t * 4.2 + i * 1.3)).clamp(0.0, 1.0);
-      // 좌우 미세 회전(혀 끝이 살랑).
-      final rot = 0.12 * sin(t * 2.6 + i * 1.1);
+      // 투명도 일렁임(더 빠르게).
+      final op = (0.80 + 0.20 * sin(t * 6.0 * fr + i * 1.3)).clamp(0.0, 1.0);
+      // 좌우 미세 회전(혀 끝이 살랑 — 더 거칠게).
+      final rot = 0.16 * sin(t * 3.8 * fr + i * 1.1);
 
       final rect = Rect.fromCenter(
         center: Offset(cx, bottom - h / 2),

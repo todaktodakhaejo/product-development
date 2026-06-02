@@ -641,27 +641,29 @@ class BlazeHandle {
     final t = _progress();
     // 키프레임('약→강 점진'): 0.0→0.28, 0.4→0.55, 0.7→0.80, 1.0→1.00.
     // light에서 출발해 medium(≥0.42)·heavy(≥0.70)로 올라 전소 직전 최고조.
+    // 키프레임 상향(2026-06-02 '강도 최고치'): 상반부부터 heavy(≥0.70)에 도달해
+    // 정점까지 최고 강도를 유지한다. light에서 출발해 빠르게 heavy로 치솟음.
     final double base;
     if (t < 0.4) {
-      base = _lerp(0.28, 0.55, t / 0.4);
+      base = _lerp(0.30, 0.60, t / 0.4);
     } else if (t < 0.7) {
-      base = _lerp(0.55, 0.80, (t - 0.4) / 0.3);
+      base = _lerp(0.60, 0.90, (t - 0.4) / 0.3);
     } else {
-      base = _lerp(0.80, 1.00, (t - 0.7) / 0.3);
+      base = _lerp(0.90, 1.00, (t - 0.7) / 0.3);
     }
     // 불 일렁임: 약 4.5Hz로 강도를 흔든다(t를 위상으로 사용 — '타오르는 떨림').
     final wobble = 0.05 * math.sin(t * 2 * math.pi * 4.5);
     return (base + wobble).clamp(0.0, 1.0);
   }
 
-  /// 진행도에 따른 펄스 간격. 기본 ~45ms, 말미(t≥0.9)는 35ms로 촘촘(전소 직전 텐션).
-  /// '불 일렁임'을 위해 ±8ms 지터를 얹는다.
+  /// 진행도에 따른 펄스 간격. 사용자 피드백(2026-06-02 '진동 빈도 점점 세게'):
+  /// 불이 위로 화르륵 오를수록 간격이 **연속적으로 짧아진다** — 시작 ~55ms(성김)
+  /// → 정점 ~16ms(맹렬히 촘촘). '점점 빈도가 세지는' 고조감. ±6ms 지터.
   Duration _nextInterval() {
     final t = _progress();
-    final baseMs = t >= 0.9 ? 35 : 45;
-    // 경과 ms 기반 의사난수 지터(±8ms) — 외부 의존 없이 결정적·가벼움.
-    final jitter = (_watch.elapsedMicroseconds % 17) - 8; // -8..+8
-    final ms = (baseMs + jitter).clamp(28, 60);
+    final baseMs = _lerp(55, 16, t); // 진행도 따라 간격 단조 감소(빈도 상승).
+    final jitter = (_watch.elapsedMicroseconds % 13) - 6; // -6..+6
+    final ms = (baseMs + jitter).clamp(12.0, 60.0).round();
     return Duration(milliseconds: ms);
   }
 
@@ -671,8 +673,8 @@ class BlazeHandle {
     _timer = Timer(_nextInterval(), () {
       if (_stopped) return;
       final t = _progress();
-      // 최말미(≥0.9) 순간엔 heavy를 상시 섞어 전소 직전 정점 텐션.
-      _engine._blazePulse(_curveIntensity(), spikeHeavy: t >= 0.9);
+      // 상반부 정점 구간(≥0.75)은 heavy 상시 — '강도 최고치'로 치솟아 유지.
+      _engine._blazePulse(_curveIntensity(), spikeHeavy: t >= 0.75);
       _schedule();
     });
   }
