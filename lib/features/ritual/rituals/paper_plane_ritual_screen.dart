@@ -49,14 +49,21 @@ const double _kPaperW = 240;
 const double _kPaperH = 320;
 const double _kGlyphSize = 200; // 접힌 다트 표시 크기(종이와 시각 균형).
 
-// ── 던지기 물리 상수 ───────────────────────────────────────────────────────
-/// 약투 무시 임계(px/s). 이하면 제자리(되돌림).
-const double _kThrowMin = 300;
-/// 세기 정규화 분모(maxSpeed - min ≈ 2300).
-const double _kSpeedSpan = 2300;
+// ── 슬링샷(draw-back) 발사 물리 상수 ───────────────────────────────────────
+/// 약투 무시 임계(당긴 거리 px). 이하면 발사 안 함 → 스프링으로 제자리 복귀.
+const double _kDrawMin = 46;
+/// 세기 정규화 분모(이 거리만큼 당기면 최대 세기). drawDist - min 기준.
+const double _kDrawSpan = 230;
+/// draw-back 시각 이동 상한(비행기가 손가락 따라 내려가는 최대 px). 화면 밖 방지.
+const double _kDrawVisualMax = 150;
+/// draw 벡터의 보조 혼합용 던지기 속도 정규화 분모(놓는 손짓 속도 가미).
+const double _kFlickSpan = 2600;
+/// 발사 기본 상향 바이어스(거의 수직으로 당겨도 위 하늘로 솟게). 0~1.
+const double _kUpwardBias = 0.55;
 
 /// RIT-09 종이비행기. 종이를 3단계로 실제 접어(크리스 햅틱) 다트를 만든 뒤,
-/// 손가락으로 던진 방향·세기로 날려 보낸다. 비행 후 같은 화면에 인플레이스 완료.
+/// 슬링샷처럼 **눌러 몸 쪽(아래)으로 당겼다 놓으면**(draw-back) 당긴 반대인
+/// 위 하늘로 솟아 구름 사이를 가르며 날아간다. 비행 후 같은 화면에 인플레이스 완료.
 class PaperPlaneRitualScreen extends StatefulWidget {
   const PaperPlaneRitualScreen({super.key});
 
@@ -77,6 +84,9 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
   // 흔들림 위상 컨트롤러(0→1을 빠르게 반복 = sin 떨림 위상). bounded(repeat).
   //  드래그(당기는) 동안에만 repeat, 놓으면 stop+reset. unbounded 미사용.
   late final AnimationController _wobble;
+  // 약투(거의 안 당김) 시 draw-back 위치 → 제자리로 튕겨 돌아가는 스프링. bounded.
+  //  0→1로 elasticOut 진행하며 _drawOffset를 시작값에서 0으로 보간(_recoilFrom).
+  late final AnimationController _recoil;
   // 구름 퍼프 결정적 시드(재현성).
   static const int _cloudSeed = 20260601;
   // 천천히 멀어지는 느낌(easeInOutSine): 부드럽게 출발해 일정히 나아가며
@@ -102,6 +112,13 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
   // 당기는 중 플래그(folded 드래그 동안 true). 흔들림 Transform 게이트.
   bool _pulling = false;
 
+  // ── 슬링샷 draw-back ──
+  // 손가락 따라 당겨진 비행기의 시각 이동(장전 위치). 주로 아래(+dy)로 쌓인다.
+  //  발사 방향 = 이 벡터의 반대, 세기 = 이 벡터 길이.
+  Offset _drawOffset = Offset.zero;
+  // 약투 복귀 스프링이 시작될 때의 draw 위치(elasticOut으로 0까지 보간).
+  Offset _recoilFrom = Offset.zero;
+
   // 인플레이스 완료 토글.
   bool _showMessage = false;
   bool _showButton = false;
@@ -123,6 +140,18 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
       vsync: this,
       duration: const Duration(milliseconds: 120),
     );
+    // 약투 복귀 스프링: 짧고 탄성있게 제자리로(elasticOut으로 살짝 오버슈트).
+    _recoil = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 620),
+    )..addListener(_onRecoilTick);
+  }
+
+  // 약투 복귀: _recoilFrom → 0으로 elasticOut 보간(살짝 튕기며 제자리).
+  void _onRecoilTick() {
+    if (!mounted) return;
+    final e = Curves.elasticOut.transform(_recoil.value);
+    setState(() => _drawOffset = _recoilFrom * (1 - e));
   }
 
   // ── 접기: 크리스 햅틱(직접 fire, fired-set 가드) ──────────────────────────
@@ -167,6 +196,8 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     if (_phase != _Phase.folded) return;
     _pullAccum = 0;
     _pullTotal = 0;
+    _recoil.stop(); // 이전 약투 복귀 스프링이 돌고 있으면 중단(잡는 순간 재장전).
+    _drawOffset = Offset.zero; // 새 장전 시작점.
     // 잡는 순간부터 다트가 흔들흔들(활시위 긴장). bounded controller repeat.
     _pulling = true;
     _wobble.repeat(); // 0→1 짧은 주기 반복 = sin 떨림 위상.
@@ -176,6 +207,18 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
 
   void _onPullUpdate(DragUpdateDetails d) {
     if (_phase != _Phase.folded) return;
+    // ── draw-back 누적: 손가락 따라 비행기를 당긴다 ──
+    // 주로 아래(몸 쪽, +dy)로 당기는 의도. 위로 미는 성분(-dy)은 절반만 반영해
+    //  '아래로 장전' 느낌을 유지(위로 밀어 발사를 약화시키는 역장전 방지).
+    var delta = d.delta;
+    if (delta.dy < 0) delta = Offset(delta.dx, delta.dy * 0.5);
+    var next = _drawOffset + delta;
+    // 시각 이동 상한(화면 밖으로 끌려나가지 않게). 길이만 클램프(방향 유지).
+    if (next.distance > _kDrawVisualMax) {
+      next = next / next.distance * _kDrawVisualMax;
+    }
+    _drawOffset = next;
+
     final step = d.delta.distance;
     _pullAccum += step;
     _pullTotal += step;
@@ -187,6 +230,7 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
       Haptics.instance
           .fire(_pullTotal < 110 ? HapticLevel.selection : HapticLevel.light);
     }
+    setState(() {}); // draw-back 이동 + 긴장 진폭을 매 프레임 갱신.
   }
 
   // 흔들림 종료(놓음/취소): repeat 정지 + 위상 리셋. 손을 떼면 더는 떨지 않음.
@@ -197,35 +241,64 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     _wobble.value = 0; // 다음 당김을 위해 위상 리셋(잔류 떨림 0).
   }
 
-  // 드래그 취소(시스템이 제스처를 가로챔 등) — 흔들림만 정리, 상태 유지.
+  // 드래그 취소(시스템이 제스처를 가로챔 등) — 흔들림 정리 + 제자리로 복귀.
   void _onPullCancel() {
     if (_phase != _Phase.folded) return;
     _stopWobble();
-    setState(() {}); // 떨림 멈춘 정지 다트로 다시 그림.
+    _springBack(); // 장전된 위치에서 제자리로 튕겨 복귀.
   }
 
-  // ── 던지기(throw) — onPanEnd ──────────────────────────────────────────────
+  // 약투/취소 시 draw-back 위치에서 제자리(Offset.zero)로 탄성 복귀.
+  void _springBack() {
+    if (_drawOffset == Offset.zero) {
+      setState(() {}); // 이미 제자리 — 정지 다트로 환원.
+      return;
+    }
+    _recoilFrom = _drawOffset;
+    _recoil.forward(from: 0); // elasticOut으로 0까지 보간(_onRecoilTick).
+  }
+
+  // ── 슬링샷 발사(release) — onPanEnd ───────────────────────────────────────
+  // 당긴 반대 방향(주로 위 하늘)으로, 당긴 거리에 비례한 세기로 솟아 발사한다.
   void _throw(DragEndDetails d) {
     if (_phase != _Phase.folded) return;
-    // 놓는 순간 흔들림 종료(이후 비행은 기존 _throw 그대로).
+    // 놓는 순간 흔들림 종료(장전 긴장 해제).
     _stopWobble();
+
+    final draw = _drawOffset; // 당겨진 벡터(주로 +dy).
+    final drawDist = draw.distance;
+    // ── 약투: 거의 안 당김 → 발사 무시, 스프링으로 제자리 복귀 ──
+    if (drawDist < _kDrawMin) {
+      _springBack();
+      return; // 발사하지 않음(상태 folded 유지).
+    }
+
+    // ── 발사 방향 = draw 벡터의 반대(아래로 당기면 위로) ──
+    var launch = -draw / drawDist; // 정규화된 반대 방향.
+    // 놓는 손짓 속도를 보조로 가미(휙 놓으면 그 반대로 살짝 더). 미세 혼합.
     final v = d.velocity.pixelsPerSecond;
-    final dist = v.distance;
-    if (dist == 0) {
-      setState(() {}); // 떨림 멈춘 정지 다트로 환원(상태 유지).
-      return; // NaN 방지: 정규화 생략하고 즉시 return.
+    final flick = (v.distance / _kFlickSpan).clamp(0.0, 1.0);
+    if (v.distance > 1) {
+      launch = launch + (-v / v.distance) * flick * 0.6;
+      final m = launch.distance;
+      if (m > 0) launch = launch / m; // 재정규화.
     }
-    if (dist < _kThrowMin) {
-      setState(() {}); // 약투 — 떨림만 멈춘 정지 다트로 환원(제자리).
-      return; // 약투 무시(제자리, 상태 유지).
-    }
-    _flyDir = v / dist;
-    _flySpeed = ((dist - _kThrowMin) / _kSpeedSpan).clamp(0.0, 1.0);
+    // ── 상향 바이어스: 거의 수직으로 당겨도 위 하늘로 솟게 -y 성분 보강 ──
+    launch = Offset(launch.dx * (1 - _kUpwardBias),
+        launch.dy * (1 - _kUpwardBias) - _kUpwardBias);
+    final lm = launch.distance;
+    _flyDir = lm > 0 ? launch / lm : const Offset(0, -1);
+
+    // ── 세기 = 당긴 거리 정규화(많이 당길수록 멀리). 발사 임팩트 강도에도 사용 ──
+    _flySpeed =
+        ((drawDist - _kDrawMin) / _kDrawSpan).clamp(0.0, 1.0);
     // 글리프 코는 -y이므로 진행 방향 정렬 보정각 = atan2 + π/2.
     _flyAngle = atan2(_flyDir.dy, _flyDir.dx) + pi / 2;
-    Haptics.instance.impactBySpeed(dist); // 세게 던질수록 강하게.
+    // 발사 임팩트 햅틱: 당긴 세기에 비례(impactBySpeed는 px/s 기대 → 세기 환산).
+    Haptics.instance.impactBySpeed(600 + _flySpeed * 1900);
     // 발사 직후: 비행 동안 내내 도는 '진공' 연속 햅틱 시작(완료에 stop).
     _flightHandle = Haptics.instance.startFlightHum();
+    _drawOffset = Offset.zero; // 발사했으니 장전 위치 해제(비행 Transform이 인계).
     setState(() => _phase = _Phase.flying);
     _fly.forward(from: 0);
   }
@@ -272,6 +345,9 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
       ..dispose();
     _cloudFade.dispose();
     _wobble.dispose();
+    _recoil
+      ..removeListener(_onRecoilTick)
+      ..dispose();
     super.dispose();
   }
 
@@ -296,8 +372,10 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
                   onPanCancel: _phase == _Phase.folded ? _onPullCancel : null,
                   behavior: HitTestBehavior.opaque,
                   child: AnimatedBuilder(
-                    // _wobble 추가: folded 당김 중 다트 떨림이 매 프레임 갱신.
-                    animation: Listenable.merge([_fold, _flyCurve, _wobble]),
+                    // _wobble: folded 당김 중 떨림. _recoil: 약투 복귀 스프링.
+                    //  (둘 다 setState로도 갱신되나, 컨트롤러 tick과 동기 보장.)
+                    animation:
+                        Listenable.merge([_fold, _flyCurve, _wobble, _recoil]),
                     builder: (context, _) => _buildObject(context, text),
                   ),
                 ),
@@ -344,7 +422,7 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
                     child: Center(
                       child: _phase == _Phase.folded
                           ? const Text(
-                              '손가락으로 휙 던져 날려 보내요',
+                              '비행기를 아래로 당겼다 놓아 하늘로 날려 보내요',
                               style: TextStyle(color: Colors.white60),
                             )
                           : FilledButton.icon(
@@ -482,28 +560,47 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
       return const _SizedPaper(float: true);
     }
 
-    // folded: 정지 다트(당기지 않을 땐) / 당기는 동안엔 흔들흔들 떨림.
+    // folded: 슬링샷 장전. 당긴 만큼 손가락 따라 이동(_drawOffset) + 장전 긴장
+    //  (당기는 동안 흔들흔들 떨림 + 살짝 뒤로 눕고 미세 scale로 '장전감').
+    //  당기지 않으면 정지 다트, 약투 후엔 _recoil 스프링으로 제자리 복귀.
     if (_phase == _Phase.folded) {
       const glyph = PaperPlaneGlyph(size: _kGlyphSize, shadow: true);
-      if (!_pulling) return glyph;
-      // ── 당김 중 떨림(활시위 긴장) ──
-      // 위상: _wobble(0→1)을 2π로. 회전·translate는 살짝 다른 주파수/위상의
-      //  sin을 겹쳐 '단조롭지 않게 부르르' 떨리게 한다(paint-only, 레이아웃 무관).
-      final phase = _wobble.value * 2 * pi;
-      // 당긴 정도에 따라 진폭 살짝 증가(0→1, 더 당길수록 긴장 ↑). 상한 클램프.
-      final tension = (_pullTotal / 160).clamp(0.0, 1.0);
-      // 회전 ±2°~±4°(라디안). 기본 2° + 긴장 2°.
-      final angAmp = (2.0 + tension * 2.0) * pi / 180;
-      final angle = sin(phase) * angAmp;
-      // 미세 translate ±2~3px(회전과 다른 위상/주파수로 떨림이 섞이게).
-      final tAmp = 2.0 + tension * 1.0; // 2~3px.
-      final dx = sin(phase * 1.7 + 0.6) * tAmp;
-      final dy = cos(phase * 1.3) * tAmp;
+      // 당긴 거리(0~1, 시각 상한 기준). 장전 scale/tilt 강도.
+      final loaded = (_drawOffset.distance / _kDrawVisualMax).clamp(0.0, 1.0);
+
+      // ── 떨림(활시위 긴장): 당기는 동안에만 ──
+      double wdx = 0, wdy = 0, wAngle = 0;
+      if (_pulling) {
+        // 위상: _wobble(0→1)을 2π로. 회전·translate는 살짝 다른 주파수/위상의
+        //  sin을 겹쳐 '단조롭지 않게 부르르' 떨리게 한다(paint-only, 레이아웃 무관).
+        final phase = _wobble.value * 2 * pi;
+        // 당긴 정도에 따라 진폭 증가(0→1, 더 당길수록 긴장 ↑). 상한 클램프.
+        final tension = (_pullTotal / 160).clamp(0.0, 1.0);
+        // 회전 ±2°~±4°(라디안). 기본 2° + 긴장 2°.
+        final angAmp = (2.0 + tension * 2.0) * pi / 180;
+        wAngle = sin(phase) * angAmp;
+        // 미세 translate ±2~3px(회전과 다른 위상/주파수로 떨림이 섞이게).
+        final tAmp = 2.0 + tension * 1.0; // 2~3px.
+        wdx = sin(phase * 1.7 + 0.6) * tAmp;
+        wdy = cos(phase * 1.3) * tAmp;
+      }
+
+      // 장전 위치 이동(_drawOffset) + 떨림 + 미세 scale(눌리는 장전감) + 뒤로 눕기.
+      //  뒤로 눕기: 당긴 반대(발사) 방향을 코가 살짝 향하도록 미세 회전(±5°).
+      final loadScale = 1.0 - loaded * 0.06; // 당길수록 살짝 작아짐(장전 압축).
+      // 발사 방향(=당김 반대)으로 코를 살짝 기울임. 거의 수직 당김이면 0에 수렴.
+      final tiltSign = _drawOffset.dx == 0 ? 0.0 : -_drawOffset.dx.sign;
+      final loadTilt = tiltSign * loaded * (5 * pi / 180);
+
+      if (_drawOffset == Offset.zero && !_pulling) return glyph;
       return Transform.translate(
-        offset: Offset(dx, dy),
+        offset: _drawOffset + Offset(wdx, wdy),
         child: Transform.rotate(
-          angle: angle,
-          child: glyph,
+          angle: wAngle + loadTilt,
+          child: Transform.scale(
+            scale: loadScale,
+            child: glyph,
+          ),
         ),
       );
     }
@@ -849,7 +946,9 @@ class _CloudFieldPainter extends CustomPainter {
   final int seed;
 
   // 경로 따라 피어나는 뭉게구름 덩이 수(occlusion 뱅크 제거 — 가리지 않음).
-  static const int _trailCount = 11;
+  //  슬링샷은 위 하늘로 일관되게 솟으므로 경로(위쪽)에 구름을 촘촘히 깔아
+  //  '구름 사이를 가르며' 지나가는 느낌을 강화(11→14).
+  static const int _trailCount = 14;
 
   // 구름 톤(흰색~연한 라벤더). 어둡지 않게, 은은히.
   static const Color _cloudWhite = Color(0xFFFFFFFF);
