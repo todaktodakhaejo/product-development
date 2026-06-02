@@ -17,7 +17,7 @@ class RitualSelectScreen extends StatelessWidget {
   // 따라서 _icons에는 paperPlane 항목을 두지 않는다(이모지 0).
   static const _icons = {
     Ritual.burn: '🔥',
-    Ritual.shredder: '🎉',
+    Ritual.shredder: '🗑️',
     Ritual.jewelryBox: '💎',
   };
 
@@ -60,16 +60,19 @@ class RitualSelectScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 6),
                 const Text(
-                  '마음에 드는 방식으로 흘려보내거나 간직하세요.',
+                  '마음 가는 방식으로 골라보세요.',
                   style: TextStyle(color: Colors.white60),
                 ),
                 const SizedBox(height: 24),
                 Expanded(
-                  child: GridView.count(
-                    crossAxisCount: 2,
-                    mainAxisSpacing: 16,
-                    crossAxisSpacing: 16,
-                    childAspectRatio: 0.95,
+                  child: GridView(
+                    gridDelegate:
+                        const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 2,
+                      mainAxisSpacing: 16,
+                      crossAxisSpacing: 16,
+                      mainAxisExtent: 210, // 카드 높이 고정: 설명 2줄 + 여유
+                    ),
                     children: [
                       for (final r in Ritual.values)
                         _RitualCard(
@@ -80,6 +83,8 @@ class RitualSelectScreen extends StatelessWidget {
                     ],
                   ),
                 ),
+                const SizedBox(height: 16),
+                const _ComingSoonTile(),
               ],
             ),
           ),
@@ -89,7 +94,47 @@ class RitualSelectScreen extends StatelessWidget {
   }
 }
 
-class _RitualCard extends StatelessWidget {
+/// 2차 스펙 의식들이 곧 추가됨을 알리는 비활성 예고 칸 (터치 불가, 흐림 처리).
+class _ComingSoonTile extends StatelessWidget {
+  const _ComingSoonTile();
+
+  @override
+  Widget build(BuildContext context) {
+    return Opacity(
+      opacity: 0.7,
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.03),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: Colors.white12),
+        ),
+        child: const Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text('✨', style: TextStyle(fontSize: 15)),
+            SizedBox(width: 8),
+            Text(
+              '더 많은 방법들이 기다리고 있어요',
+              style: TextStyle(color: Colors.white54, fontSize: 13),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 줄바꿈 금지 문자(word-joiner, U+2060).
+final String _wordJoiner = String.fromCharCode(0x2060);
+
+/// 한글이 글자 단위로 끊기지 않고 띄어쓰기(어절)에서만 줄바꿈되도록,
+/// 각 단어의 글자 사이에 word-joiner를 넣어 단어를 통째로 묶는다.
+String _wrapByWord(String text) =>
+    text.split(' ').map((w) => w.split('').join(_wordJoiner)).join(' ');
+
+class _RitualCard extends StatefulWidget {
   const _RitualCard(
       {required this.emoji, required this.ritual, required this.onTap});
   final String? emoji; // paperPlane은 글리프라 null
@@ -97,42 +142,73 @@ class _RitualCard extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
+  State<_RitualCard> createState() => _RitualCardState();
+}
+
+class _RitualCardState extends State<_RitualCard> {
+  bool _pressed = false;
+
+  void _setPressed(bool v) {
+    if (_pressed != v) setState(() => _pressed = v);
+  }
+
+  /// 흰색 반전 피드백을 잠깐 보여준 뒤 다음 화면으로 넘어간다.
+  Future<void> _handleTap() async {
+    _setPressed(true);
+    await Future<void>.delayed(const Duration(milliseconds: 160));
+    if (!mounted) return;
+    widget.onTap();
+    _setPressed(false);
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final keep = ritual.kind == RitualKind.keep;
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(20),
-      child: Container(
-        padding: const EdgeInsets.all(18),
-        decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.06),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: Colors.white12),
-        ),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // 종이비행기만 직접 그린 다트 글리프(이모지 아님), 나머지는 이모지.
-            if (ritual == Ritual.paperPlane)
-              const PaperPlaneGlyph(size: 44)
-            else
-              Text(emoji!, style: const TextStyle(fontSize: 44)),
-            const Spacer(),
-            Row(
-              children: [
-                Text(ritual.label,
-                    style: const TextStyle(
-                        fontSize: 18, fontWeight: FontWeight.w600)),
-                const SizedBox(width: 6),
-                if (keep)
-                  const Icon(Icons.bookmark, size: 14, color: Colors.white38),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Text(ritual.tagline,
-                style: const TextStyle(color: Colors.white54, fontSize: 13)),
-          ],
+    return AnimatedScale(
+      scale: _pressed ? 0.95 : 1.0,
+      duration: const Duration(milliseconds: 110),
+      curve: Curves.easeOut,
+      child: InkWell(
+        onTap: _handleTap,
+        onTapDown: (_) => _setPressed(true),
+        onTapCancel: () => _setPressed(false),
+        borderRadius: BorderRadius.circular(20),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 110),
+          curve: Curves.easeOut,
+          padding: const EdgeInsets.all(18),
+          decoration: BoxDecoration(
+            // 누르면 흰 카드로 반전 → 선택이 시각적으로 또렷하게.
+            color: _pressed ? Colors.white : Colors.white.withValues(alpha: 0.06),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+                color: _pressed ? Colors.transparent : Colors.white12),
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // 종이비행기만 직접 그린 다트 글리프(이모지 아님), 나머지는 이모지.
+              if (widget.ritual == Ritual.paperPlane)
+                const PaperPlaneGlyph(size: 40)
+              else
+                Text(widget.emoji!, style: const TextStyle(fontSize: 40)),
+              const SizedBox(height: 12),
+              Text(widget.ritual.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600,
+                      color: _pressed ? AppColors.ink : Colors.white)),
+              const SizedBox(height: 4),
+              Text(_wrapByWord(widget.ritual.tagline),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      color: _pressed ? Colors.black54 : Colors.white54,
+                      fontSize: 13)),
+            ],
+          ),
         ),
       ),
     );

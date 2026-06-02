@@ -14,16 +14,33 @@ class WritingScreen extends StatefulWidget {
 
 class _WritingScreenState extends State<WritingScreen> {
   final _controller = TextEditingController();
+  late SessionState _session;
+  bool _restored = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _session = SessionScope.of(context);
+    // 화면 진입 시 세션에 임시 보존된 초안을 한 번만 되살린다.
+    if (!_restored) {
+      _restored = true;
+      _controller.text = _session.text;
+      // 커서를 글 끝으로 두어 이어서 쓰기 편하게.
+      _controller.selection =
+          TextSelection.collapsed(offset: _controller.text.length);
+    }
+  }
 
   @override
   void dispose() {
+    // 화면을 떠날 때(뒤로가기 등) 작성 중인 글을 세션에 임시 보존.
+    _session.saveDraft(_controller.text);
     _controller.dispose();
     super.dispose();
   }
 
   void _next() {
-    final session = SessionScope.of(context);
-    session.writeText(_controller.text);
+    _session.writeText(_controller.text);
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const RitualSelectScreen()),
     );
@@ -41,14 +58,15 @@ class _WritingScreenState extends State<WritingScreen> {
         title: const Text('마음 꺼내기',
             style: TextStyle(color: AppColors.ink, fontSize: 16)),
       ),
-      body: SafeArea(
+      body: _FadeIn(
+        child: SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(24, 8, 24, 16),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const Text(
-                '여기 적은 건 누구에게도 보이지 않아요.\n맞춤법도, 완성도 신경 쓰지 말고 마구 적어 보세요.',
+                '여기 적은 건 아무에게도 보이지 않아요.\n맞춤법도, 끝맺음도 신경 쓰지 마세요. 떠오르는 그대로면 돼요.',
                 style: TextStyle(color: Colors.black54, height: 1.5),
               ),
               const SizedBox(height: 16),
@@ -68,6 +86,7 @@ class _WritingScreenState extends State<WritingScreen> {
                   ),
                   child: TextField(
                     controller: _controller,
+                    autofocus: true,
                     onChanged: (_) => setState(() {}),
                     maxLines: null,
                     expands: true,
@@ -88,18 +107,52 @@ class _WritingScreenState extends State<WritingScreen> {
                 onPressed: canProceed ? _next : null,
                 style: FilledButton.styleFrom(
                   backgroundColor: AppColors.ink,
+                  foregroundColor: AppColors.paper,
                   disabledBackgroundColor: Colors.black12,
+                  disabledForegroundColor: Colors.black26,
                   padding: const EdgeInsets.symmetric(vertical: 16),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(16),
                   ),
                 ),
-                child: const Text('흘려보내기'),
+                child: const Text('이 마음 보내기'),
               ),
             ],
           ),
         ),
       ),
+      ),
+    );
+  }
+}
+
+/// 화면 진입 시 한 번 부드럽게 떠오르게 하는 페이드인 래퍼.
+class _FadeIn extends StatefulWidget {
+  const _FadeIn({required this.child});
+  final Widget child;
+
+  @override
+  State<_FadeIn> createState() => _FadeInState();
+}
+
+class _FadeInState extends State<_FadeIn> {
+  double _opacity = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setState(() => _opacity = 1);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedOpacity(
+      opacity: _opacity,
+      duration: const Duration(milliseconds: 450),
+      curve: Curves.easeOut,
+      child: widget.child,
     );
   }
 }

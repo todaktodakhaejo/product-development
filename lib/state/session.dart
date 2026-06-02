@@ -2,10 +2,10 @@ import 'package:flutter/widgets.dart';
 
 /// 5단계 의식(분출/보관). 이번 범위는 우선순위 '필수' 4종.
 enum Ritual {
-  burn('태우기', '불꽃에 실어 위로 흘려보내요', RitualKind.release),
-  shredder('파쇄기', '잘게 부숴 폭죽처럼 날려요', RitualKind.release),
-  paperPlane('종이비행기', '접어서 멀리 날려 보내요', RitualKind.release),
-  jewelryBox('보석함 보관', '소중히 간직해 안치해요', RitualKind.keep);
+  burn('태우기', '불꽃에 실어 위로 날려보내요', RitualKind.release),
+  shredder('파쇄기', '잘게 부숴 위로 뿌려요', RitualKind.release),
+  paperPlane('종이비행기', '접어서 멀리 날려보내요', RitualKind.release),
+  jewelryBox('보석함 담기', '보석함에 가만히 담아요', RitualKind.keep);
 
   const Ritual(this.label, this.tagline, this.kind);
   final String label;
@@ -27,6 +27,13 @@ class SessionState extends ChangeNotifier {
   void writeText(String value) {
     _text = value;
     notifyListeners();
+  }
+
+  /// 작성 중인 글을 세션에 임시 보존한다.
+  /// 화면을 다시 그릴 필요가 없으므로 알림(notify)은 하지 않는다.
+  /// 의식 완료 시 [reset]이 함께 비우므로 영구 저장(기록)이 아니다.
+  void saveDraft(String value) {
+    _text = value;
   }
 
   void chooseRitual(Ritual r) {
