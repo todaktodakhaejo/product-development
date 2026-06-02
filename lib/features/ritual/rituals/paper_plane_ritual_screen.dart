@@ -10,20 +10,23 @@ import '../widgets/paper_card.dart';
 import '../widgets/paper_plane_glyph.dart';
 
 // ── 종이비행기 상태머신 ────────────────────────────────────────────────────
-/// idle → folding(3단계 자동 접기) → folded(던지기 대기) → flying(글라이드) →
-/// done(인플레이스 완료 멘트→버튼). 라우트 전환 없음(태우기 패턴).
+/// idle → folding(레퍼런스 4단계 자동 접기) → folded(던지기 대기) →
+/// flying(글라이드) → done(인플레이스 완료 멘트→버튼). 라우트 전환 없음(태우기).
 enum _Phase { idle, folding, folded, flying, done }
 
-/// 접기 시퀀스 총 길이(3구간: center crease / nose / wings).
-const Duration _kFoldDuration = Duration(milliseconds: 1500);
+/// 접기 시퀀스 총 길이(레퍼런스 4구간: ① 윗 모서리→중앙 삼각 코 ② 삼각 코를
+/// 아래로 접어 뭉툭 ③ 세로 중앙 반접기 ④ 양 날개 아래로). 단계가 하나 늘어
+/// 살짝 길게 잡아 각 "탁" 눌림이 또렷이 읽히게 한다.
+const Duration _kFoldDuration = Duration(milliseconds: 1900);
 
 /// 비행 글라이드 길이(또렷한 궤적을 그리며 먼 하늘로 후퇴 — 최소 3.8초 보장).
 /// 길게 잡아 궤적이 충분히 펼쳐지고, 막판 원근 축소가 '머얼리' 사라지게 한다.
 const Duration _kFlyDuration = Duration(milliseconds: 4000);
 
-// (기하 모핑: 사각 종이 외곽 path가 progress로 다트 외곽 path까지 연속 보간된다.
-//  crossfade 팝 제거 — progress=1에서 PaperPlaneGlyph 다트와 정확히 일치하므로
-//  folded 진입 시 글리프로 교체해도 팝이 없다 — _FoldMorphPainter 참조.)
+// (기하 모핑: 사각 종이 외곽 path가 progress로 레퍼런스 4단계 순서를 따라
+//  글라이더 외곽 path까지 연속 보간된다. crossfade 팝 제거 — progress=1에서
+//  PaperPlaneGlyph 글라이더와 정확히 일치하므로 folded 진입 시 글리프로
+//  교체해도 팝이 없다 — _FoldMorphPainter 참조.)
 
 // ── 인플레이스 완료 타임라인(다트 소멸=0 기준) — 태우기와 톤 일치 ──────────
 /// 다트가 사라진 뒤 멘트가 뜨기 전 여운(비행기는 잔향 없으니 짧게).
@@ -45,11 +48,17 @@ const Duration _kButtonDelay = Duration(milliseconds: 2200);
 /// 버튼 페이드인.
 const Duration _kButtonFade = Duration(milliseconds: 800);
 
-// ── 접기 크리스 햅틱 발사 지점(진행도) ──────────────────────────────────────
-// 각 구간 끝 직전(손을 떼는 호흡). light·light·medium — 마지막 날개접기가 단단.
-const double _kCreaseCenter = 0.30;
-const double _kCreaseNose = 0.63;
-const double _kCreaseWings = 0.97;
+// ── 접기 크리스 햅틱 발사 지점(진행도) — 레퍼런스 4단계 ─────────────────────
+// 각 구간이 닫히는 끝 직전(손을 눌러 자국내는 호흡)에 1발씩.
+//   ① 삼각 코     (light)
+//   ② 코 아래로 접어 뭉툭(light)
+//   ③ 세로 반접기  (light)
+//   ④ 날개 아래로  (medium — 마지막 날개접기가 가장 단단, throttle 무시)
+// 4구간 균등 경계(0.25/0.50/0.75/1.00) 직전에 배치.
+const double _kCreaseNose = 0.23; // ① 삼각 코 닫힘.
+const double _kCreaseBlunt = 0.48; // ② 코 아래로 접어 뭉툭.
+const double _kCreaseHalf = 0.73; // ③ 세로 반접기.
+const double _kCreaseWings = 0.97; // ④ 날개 아래로(단단).
 
 // ── 종이 / 다트 표시 크기 ──────────────────────────────────────────────────
 const double _kPaperW = 240;
@@ -71,9 +80,10 @@ const double _kUpwardBias = 0.55;
 // done 하늘 씬: 하늘 그라데이션·햇무리 제거(사용자 요청) — 원래 다크 배경 위에
 // 구름만 천천히 떠다닌다(그라데이션/햇무리 색 상수도 함께 제거).
 
-/// RIT-09 종이비행기. 종이를 3단계로 실제 접어(크리스 햅틱) 다트를 만든 뒤,
-/// 슬링샷처럼 **눌러 몸 쪽(아래)으로 당겼다 놓으면**(draw-back) 당긴 반대인
-/// 위 하늘로 솟아 구름 사이를 가르며 날아간다. 비행 후 같은 화면에 인플레이스 완료.
+/// RIT-09 종이비행기. 종이를 레퍼런스 4단계(삼각 코→코 아래로 접어 뭉툭→세로
+/// 반접기→날개)로 실제 접어(크리스 햅틱) 글라이더를 만든 뒤, 슬링샷처럼 **눌러
+/// 몸 쪽(아래)으로 당겼다 놓으면**(draw-back) 당긴 반대인 위 하늘로 솟아 구름
+/// 사이를 가르며 날아간다. 비행 후 같은 화면에 인플레이스 완료.
 class PaperPlaneRitualScreen extends StatefulWidget {
   const PaperPlaneRitualScreen({super.key});
 
@@ -181,17 +191,21 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     setState(() => _drawOffset = _recoilFrom * (1 - e));
   }
 
-  // ── 접기: 크리스 햅틱(직접 fire, fired-set 가드) ──────────────────────────
+  // ── 접기: 크리스 햅틱(직접 fire, fired-set 가드) — 레퍼런스 4단계 ─────────
   void _onFoldTick() {
     final t = _fold.value;
-    // ① center crease(light) ② nose(light) ③ wings(medium, 가장 단단).
-    if (t >= _kCreaseCenter && _firedCrease.add(0)) {
+    // ① 삼각 코(light) ② 코 아래로 접어 뭉툭(light) ③ 세로 반접기(light)
+    // ④ 날개 아래로(medium, 가장 단단). 각 접힘이 닫히는 순간 1발씩.
+    if (t >= _kCreaseNose && _firedCrease.add(0)) {
       Haptics.instance.fire(HapticLevel.light);
     }
-    if (t >= _kCreaseNose && _firedCrease.add(1)) {
+    if (t >= _kCreaseBlunt && _firedCrease.add(1)) {
       Haptics.instance.fire(HapticLevel.light);
     }
-    if (t >= _kCreaseWings && _firedCrease.add(2)) {
+    if (t >= _kCreaseHalf && _firedCrease.add(2)) {
+      Haptics.instance.fire(HapticLevel.light);
+    }
+    if (t >= _kCreaseWings && _firedCrease.add(3)) {
       Haptics.instance.fire(HapticLevel.medium, throttle: false);
     }
     setState(() {}); // 접기 변형 갱신.
@@ -209,7 +223,7 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     }
   }
 
-  // ── 접기 시작(버튼/탭) → 자동 3단계 ──────────────────────────────────────
+  // ── 접기 시작(버튼/탭) → 자동 4단계(레퍼런스 순서) ───────────────────────
   void _startFold() {
     if (_phase != _Phase.idle) return;
     _firedCrease.clear();
@@ -676,7 +690,7 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
       );
     }
 
-    // folding: 3단계 접기 모핑 + 막바지 글리프 크로스페이드.
+    // folding: 레퍼런스 4단계 기하 모핑(끝이 글리프와 정확히 일치 — 크로스페이드 없음).
     return _FoldingPaper(progress: _fold.value, text: text);
   }
 }
@@ -700,16 +714,20 @@ class _SizedPaper extends StatelessWidget {
 
 // ════════════════════════════════════════════════════════════════════════
 // 접기 기하 모핑 위젯(crossfade 팝 제거): 단일 CustomPaint로 사각 종이의
-// 외곽·면·크리스선 자체를 progress(0→1)로 다트까지 **연속 보간**한다.
-//   ① center crease (0.00–0.33): 가운데 세로 크리스가 또렷이 생기고, 종이 폭이
-//      미세하게 좁아지며 좌우 면이 능선(중앙선) 기준 살짝 각을 가진다.
-//   ② nose       (0.33–0.66): 윗 양 모서리가 중앙선으로 접혀 내려와 삼각 코를
-//      형성. 상단 실루엣이 사각 → 삼각으로 연속 변형(접힌 플랩 음영).
-//   ③ wings      (0.66–1.00): 좌우 바깥변이 keel 기준으로 접혀 내려가 날개가
-//      되고 전체 실루엣이 다트로 수렴. keel 좌/우 면 음영으로 V자 단면.
+// 외곽·면·크리스선 자체를 progress(0→1)로 **레퍼런스 4단계** 순서대로 글라이더
+// 비행기까지 **연속 보간**한다(중간 크로스페이드/팝 없음).
+//   ① 삼각 코      (0.00–0.25): 윗 양 모서리가 중앙선으로 접혀 내려와 큰 삼각
+//      코를 형성. 상단 실루엣이 평평한 윗변 → 한 점(꼭지)으로 수렴(삼각 플랩 음영).
+//   ② 코 아래로(뭉툭)(0.25–0.50): 삼각의 꼭지(맨 위 점)를 아래로 접어 내려,
+//      상단이 한 점 → **짧은 수평 단면(뭉툭한 코)** 으로 펼쳐진다. 접어 내린
+//      머리 자국이 사다리꼴 음영으로 남는다. ← 레퍼런스의 핵심 단계.
+//   ③ 세로 반접기  (0.50–0.75): 가운데 세로 능선(keel)이 또렷해지고 폭이 살짝
+//      좁아지며 우측 반이 그늘져 '접힌 V자' 단면이 시작된다.
+//   ④ 날개 아래로  (0.75–1.00): 좌우 바깥 아래변이 넓은 날개 뒷전으로 펼쳐지고
+//      꼬리 노치·keel V홈이 파이며 전체가 **넓적한 글라이더**로 수렴.
 //   progress=1 외곽 = PaperPlaneDartGeometry(글리프와 동일 비율) → folded 진입
 //   시 글리프로 교체해도 팝 없음.
-//   텍스트: 사각 종이엔 보이고, nose 진입(코 접힘)부터 접힌 면에 덮여 페이드아웃.
+//   텍스트: 사각 종이엔 보이고, ① 삼각 코 접힘부터 접힌 면에 덮여 페이드아웃.
 // ════════════════════════════════════════════════════════════════════════
 class _FoldingPaper extends StatelessWidget {
   const _FoldingPaper({required this.progress, required this.text});
@@ -719,15 +737,15 @@ class _FoldingPaper extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // 텍스트 페이드: 사각 종이(progress~0)엔 또렷, nose 진입(0.33~0.45)에서
+    // 텍스트 페이드: 사각 종이(progress~0)엔 또렷, ① 삼각 코 접힘(0.12~0.24)에서
     // 접힌 면에 덮여 자연스럽게 사라진다(갑작스런 toggle 금지 — 부드러운 페이드).
     final textOpacity =
-        (1.0 - ((progress - 0.33) / 0.12)).clamp(0.0, 1.0);
+        (1.0 - ((progress - 0.12) / 0.12)).clamp(0.0, 1.0);
 
     return SizedBox(
       width: _kPaperW,
       height: _kPaperH,
-      // 기하 모핑 페인터: 사각 → 다트 외곽/면/크리스 + 텍스트(클립)를 한 번에.
+      // 기하 모핑 페인터: 사각 → 글라이더 외곽/면/크리스 + 텍스트(클립)를 한 번에.
       child: CustomPaint(
         size: const Size(_kPaperW, _kPaperH),
         painter: _FoldMorphPainter(
@@ -740,12 +758,12 @@ class _FoldingPaper extends StatelessWidget {
   }
 }
 
-/// 종이 사각형 → 다트 기하 모핑 페인터.
+/// 종이 사각형 → 글라이더 기하 모핑 페인터(레퍼런스 4단계).
 ///
-/// 핵심: 사각형 외곽 4점을 progress로 다트 정점들로 `Offset.lerp` 하고, 내부
-/// 접힘 면(삼각 코 플랩 2개, 좌우 날개 면)과 크리스 선(중앙 keel, 코 접힘선,
-/// 날개 접힘선)을 단계별로 나타낸다. progress=1 외곽은
-/// `PaperPlaneDartGeometry`와 정확히 일치한다.
+/// 핵심: 외곽 정점을 progress로 단계별 `Offset.lerp` 하여 사각 → 삼각코 →
+/// 뭉툭코 → 반접기 → 날개로 **연속 변형**하고, 접힘 면(삼각 코 플랩, 뭉툭 머리
+/// 자국, 우측 V면)과 크리스 선(중앙 keel, 코 접힘선, 날개 접힘선)을 단계별로
+/// 나타낸다. progress=1 외곽은 `PaperPlaneDartGeometry`(글리프)와 정확히 일치.
 class _FoldMorphPainter extends CustomPainter {
   _FoldMorphPainter({
     required this.progress,
@@ -762,69 +780,63 @@ class _FoldMorphPainter extends CustomPainter {
   static const Color _paperShadow = AppColors.paperShadow; // 그늘 면.
   static const Color _ink = AppColors.ink; // keel·외곽·크리스 선.
 
-  // 구간 정규화(각 구간 내 0→1, easeInOut으로 단계 경계서 "탁" 눌리는 느낌).
-  static double _c1(double p) =>
-      Curves.easeInOut.transform((p / 0.33).clamp(0.0, 1.0));
-  static double _c2(double p) =>
-      Curves.easeInOut.transform(((p - 0.33) / 0.33).clamp(0.0, 1.0));
-  static double _c3(double p) =>
-      Curves.easeInOut.transform(((p - 0.66) / 0.34).clamp(0.0, 1.0));
+  // 4구간 정규화(각 구간 내 0→1, easeInOut으로 단계 경계서 "탁" 눌리는 느낌).
+  //   c1: 삼각 코  c2: 코 아래로(뭉툭)  c3: 세로 반접기  c4: 날개 아래로
+  static double _seg(double p, double a, double b) =>
+      Curves.easeInOut.transform(((p - a) / (b - a)).clamp(0.0, 1.0));
 
   @override
   void paint(Canvas canvas, Size size) {
-    final c1 = _c1(progress); // center crease.
-    final c2 = _c2(progress); // nose.
-    final c3 = _c3(progress); // wings.
+    final c1 = _seg(progress, 0.00, 0.25); // ① 삼각 코.
+    final c2 = _seg(progress, 0.25, 0.50); // ② 코 아래로(뭉툭).
+    final c3 = _seg(progress, 0.50, 0.75); // ③ 세로 반접기.
+    final c4 = _seg(progress, 0.75, 1.00); // ④ 날개 아래로.
 
-    // ── 다트 타깃 정점(글리프와 동일 비율) ──
+    // ── 글라이더 타깃 정점(글리프와 동일 비율) ──
     final g = PaperPlaneDartGeometry.forSquare(size);
+    final noseMid = g.noseMid; // 뭉툭 코 평평 단면 중점.
 
-    // ── 사각 종이 시작 정점(중앙 정렬, 글리프 박스와 같은 폭으로 두어 끝이
-    //    매끄럽게 이어지게 — box 폭은 _kPaperW의 84%이지만, 종이 자체는 전체
-    //    캔버스를 쓰므로 시작 사각형은 캔버스 가장자리에서 출발) ──
-    // center-crease가 폭을 미세하게 좁히므로(능선) 시작 좌우변을 c1로 살짝 모음.
     final w = size.width;
     final h = size.height;
     final cx = w / 2;
-    // ① 폭 미세 수축(접힌 종이의 능선). 좌우 바깥변을 안쪽으로 c1·6% 당김.
-    final squeeze = c1 * w * 0.06;
 
-    // 사각형 4꼭짓점(좌상·우상·우하·좌하) — 시작 형상.
+    // ── 시작 사각형 정점(좌상·우상·우하·좌하) ──
+    // ③ 세로 반접기(c3)가 폭을 살짝 좁히므로(능선) 좌우 바깥변을 c3로 미세 수축.
+    final squeeze = c3 * w * 0.05;
     final sqTL = Offset(squeeze, 0);
     final sqTR = Offset(w - squeeze, 0);
     final sqBR = Offset(w - squeeze, h);
     final sqBL = Offset(squeeze, h);
 
-    // ── ② nose: 상단 좌우 꼭짓점이 중앙선(코)으로 모인다 ──
-    // 상단 두 점을 c2로 코(g.nose) 쪽으로 끌어당겨 사각→삼각 상단 실루엣.
-    final topL = Offset.lerp(sqTL, g.nose, c2)!;
-    final topR = Offset.lerp(sqTR, g.nose, c2)!;
+    // ── ① 삼각 코: 상단 좌우 모서리가 중앙 꼭지(topApex=(cx,0))로 모인다 ──
+    // 상단 두 점을 c1으로 꼭지 쪽으로 끌어당겨 평평한 윗변 → 한 점(삼각) 수렴.
+    final topApex = Offset(cx, 0);
+    final triL = Offset.lerp(sqTL, topApex, c1)!; // 좌상 → 꼭지.
+    final triR = Offset.lerp(sqTR, topApex, c1)!; // 우상 → 꼭지.
 
-    // ── ③ wings: 좌우 바깥변(하단)이 다트 뒷전으로, 상단은 코로 수렴 ──
-    // 외곽 정점 최종 보간:
-    //   - 상단 좌/우 → 코(완전 합류)
-    //   - 하단 좌/우 → 날개 뒷전(tailL/tailR)
-    final outNoseL = Offset.lerp(topL, g.nose, c3)!;
-    final outNoseR = Offset.lerp(topR, g.nose, c3)!;
-    final outTailL = Offset.lerp(sqBL, g.tailL, c3)!;
-    final outTailR = Offset.lerp(sqBR, g.tailR, c3)!;
-    // 다트 꼬리 V홈(keelBottom)과 노치는 wings 후반에 나타난다.
-    final keelBottom = Offset.lerp(
-        Offset(cx, h), g.keelBottom, c3)!;
-    final notchL = Offset.lerp(Offset(cx, h), g.notchL, c3)!;
-    final notchR = Offset.lerp(Offset(cx, h), g.notchR, c3)!;
+    // ── ② 코 아래로(뭉툭): 꼭지(한 점)를 아래로 접어 평평 단면으로 펼친다 ──
+    // 상단 외곽이 한 점(topApex) → 짧은 수평 단면(noseL·noseR)으로 c2 보간.
+    //  c2=0이면 두 점이 꼭지에 겹쳐 '뾰족', c2=1이면 평평한 뭉툭 코.
+    final noseL = Offset.lerp(topApex, g.noseL, c2)!;
+    final noseR = Offset.lerp(topApex, g.noseR, c2)!;
 
-    // ── 외곽 실루엣 path ──
-    // c3<1에선 단순 사각/삼각 외곽(상단 코, 하단 좌우), c3가 차오르며 꼬리
-    // 노치·keel V홈이 파여 다트 외곽으로 수렴.
+    // ── ④ 날개 아래로: 하단 좌우가 넓은 날개 뒷전으로, 꼬리 노치·V홈이 파인다 ──
+    final outTailL = Offset.lerp(sqBL, g.tailL, c4)!;
+    final outTailR = Offset.lerp(sqBR, g.tailR, c4)!;
+    final keelBottom = Offset.lerp(Offset(cx, h), g.keelBottom, c4)!;
+    final notchL = Offset.lerp(Offset(cx, h), g.notchL, c4)!;
+    final notchR = Offset.lerp(Offset(cx, h), g.notchR, c4)!;
+
+    // ── 외곽 실루엣 path(상단 뭉툭 코 단면 → 하단 좌우 → 꼬리 V) ──
+    // 상단은 noseL→noseR 평평 단면, 하단은 c4로 날개 뒷전+꼬리 노치가 차오른다.
     final outline = Path()
-      ..moveTo(outNoseR.dx, outNoseR.dy)
+      ..moveTo(noseL.dx, noseL.dy)
+      ..lineTo(noseR.dx, noseR.dy)
       ..lineTo(outTailR.dx, outTailR.dy)
       ..lineTo(notchR.dx, notchR.dy)
       ..lineTo(keelBottom.dx, keelBottom.dy)
       ..lineTo(notchL.dx, notchL.dy)
       ..lineTo(outTailL.dx, outTailL.dy)
-      ..lineTo(outNoseL.dx, outNoseL.dy)
       ..close();
 
     // ── drop shadow(종이 질감, 살짝) ──
@@ -838,52 +850,80 @@ class _FoldMorphPainter extends CustomPainter {
     // ── 본체 채움(밝은 면) ──
     canvas.drawPath(outline, Paint()..color = _paper);
 
-    // ── ③ keel 우측 면(그늘): 코→keelBottom→우측 뒷전 면을 paperShadow로 ──
-    // wings가 진행될수록 또렷해져 '접힌 V자 단면' 입체. c3로 페이드인.
-    if (c3 > 0.001) {
+    // ── ③+④ keel 우측 면(그늘): 세로 반접기부터 우측 반이 그늘진 V자 단면 ──
+    // c3로 페이드인(반접기), c4로 또렷해지며 날개 뒷전까지 우측 면을 덮는다.
+    final rightAlpha = (c3 * (0.5 + 0.5 * c4)).clamp(0.0, 1.0);
+    if (rightAlpha > 0.001) {
       final rightFace = Path()
-        ..moveTo(outNoseR.dx, outNoseR.dy)
+        ..moveTo(noseMid.dx, noseL.dy)
+        ..lineTo(noseR.dx, noseR.dy)
         ..lineTo(outTailR.dx, outTailR.dy)
         ..lineTo(notchR.dx, notchR.dy)
         ..lineTo(keelBottom.dx, keelBottom.dy)
         ..close();
       canvas.drawPath(
         rightFace,
-        Paint()..color = _paperShadow.withValues(alpha: c3),
+        Paint()..color = _paperShadow.withValues(alpha: rightAlpha),
       );
     }
 
-    // ── ② nose 삼각 코 플랩 음영(좌/우 접힌 삼각면) ──
-    // 상단 모서리가 중앙선으로 접혀 내려온 삼각 플랩을 paperShadow로 그늘짐.
-    // c2로 깊어지고, wings(c3)에서 keel 면 음영에 흡수되며 완전히 옅어진다
-    // (progress=1에 잔여 0 → 글리프 교체 시 팝 없음).
-    final flapAlpha = (c2 * (1.0 - c3)).clamp(0.0, 1.0);
+    // ── ① 삼각 코 플랩 음영(좌/우 접힌 삼각면) ──
+    // 윗 모서리가 중앙선으로 접혀 내려온 삼각 플랩을 paperShadow로 그늘짐.
+    // c1으로 깊어지고, ② 코 아래로(c2)에서 뭉툭 머리 음영에 흡수되며 옅어진다.
+    final flapAlpha = (c1 * (1.0 - c2)).clamp(0.0, 1.0);
     if (flapAlpha > 0.001) {
-      // 코에서 좌/우로 내려오는 접힘선의 아래 끝(중앙선상, c2로 깊어짐).
-      final apex = Offset.lerp(
-          Offset(cx, 0), Offset(cx, h * 0.46), c2)!;
-      // 좌측 삼각 플랩: 코 - 좌상(접히기 전 모서리 흔적) - 중앙선 apex.
+      // 삼각 코의 좌/우 접힘선이 만나는 중앙선상의 아래 끝(c1로 깊어짐).
+      final apex = Offset.lerp(Offset(cx, 0), Offset(cx, h * 0.42), c1)!;
       final flapL = Path()
-        ..moveTo(outNoseL.dx, outNoseL.dy)
-        ..lineTo(topL.dx, topL.dy)
+        ..moveTo(topApex.dx, topApex.dy)
+        ..lineTo(triL.dx, triL.dy)
         ..lineTo(apex.dx, apex.dy)
         ..close();
       final flapR = Path()
-        ..moveTo(outNoseR.dx, outNoseR.dy)
-        ..lineTo(topR.dx, topR.dy)
+        ..moveTo(topApex.dx, topApex.dy)
+        ..lineTo(triR.dx, triR.dy)
         ..lineTo(apex.dx, apex.dy)
         ..close();
       final flapPaint = Paint()
         ..color = _paperShadow.withValues(alpha: 0.7 * flapAlpha);
       canvas.drawPath(flapL, flapPaint);
       canvas.drawPath(flapR, flapPaint);
-      // 코 접힘선(모서리 선).
       final foldLine = Paint()
         ..color = _ink.withValues(alpha: 0.12 * flapAlpha)
         ..strokeWidth = 1
         ..style = PaintingStyle.stroke;
-      canvas.drawLine(topL, apex, foldLine);
-      canvas.drawLine(topR, apex, foldLine);
+      canvas.drawLine(triL, apex, foldLine);
+      canvas.drawLine(triR, apex, foldLine);
+    }
+
+    // ── ② 뭉툭 코 머리 자국(삼각 꼭지를 아래로 접어 내린 사다리꼴 음영) ──
+    // c2로 나타나(코가 뭉툭해지는 단계), ③/④에서도 남아 무게 실린 머리를 표현.
+    // (글리프의 head 음영과 동일 형태/강도(0.55)로 수렴 → progress=1 일치.)
+    final headAlpha = c2 * 0.55; // 0→0.55(c2 완료 시 글리프와 동일).
+    if (headAlpha > 0.001) {
+      final headY = noseL.dy + (keelBottom.dy - noseL.dy) * 0.30;
+      final headHalfTop = (noseR.dx - noseL.dx) / 2;
+      final headL = Offset(noseL.dx - headHalfTop * 0.70, headY);
+      final headR = Offset(noseR.dx + headHalfTop * 0.70, headY);
+      final head = Path()
+        ..moveTo(noseL.dx, noseL.dy)
+        ..lineTo(noseR.dx, noseR.dy)
+        ..lineTo(headR.dx, headR.dy)
+        ..lineTo(headL.dx, headL.dy)
+        ..close();
+      canvas.drawPath(
+        head,
+        Paint()..color = _paperShadow.withValues(alpha: headAlpha),
+      );
+      // 코 접힘선(평평 단면) — 뭉툭함을 또렷이.
+      canvas.drawLine(
+        headL,
+        headR,
+        Paint()
+          ..color = _ink.withValues(alpha: 0.10 * c2)
+          ..strokeWidth = size.shortestSide * 0.007
+          ..strokeCap = StrokeCap.round,
+      );
     }
 
     // ── 텍스트(종이 위 글) — 외곽 path로 클립, textOpacity로 페이드 ──
@@ -908,13 +948,12 @@ class _FoldMorphPainter extends CustomPainter {
     }
 
     // ── 크리스 선들(progress로 나타남) ──
-    // ① 중앙 세로 크리스(center crease): c1로 또렷이. wings(c3)에서 keel 선이
-    //    이를 이어받으므로 c3로 페이드아웃(이중선 방지 — 글리프와 일치).
-    final creaseAlpha = (0.18 * (0.5 + 0.5 * c1) * (1.0 - c3)).clamp(0.0, 1.0);
+    // ③ 중앙 세로 크리스(반접기 능선): c3로 또렷이. ④ 날개(c4)에서 keel 선이
+    //    이를 이어받으므로 c4로 페이드아웃(이중선 방지 — 글리프와 일치).
+    final creaseAlpha = (0.18 * (0.5 + 0.5 * c3) * (1.0 - c4)).clamp(0.0, 1.0);
     if (creaseAlpha > 0.001) {
-      // 능선 윗끝(코로 수렴)·아랫끝(keelBottom으로 수렴).
-      final topPt = Offset.lerp(Offset(cx, 0), g.nose, c2)!;
-      final botPt = Offset.lerp(Offset(cx, h), g.keelBottom, c3)!;
+      final topPt = Offset.lerp(Offset(cx, 0), noseMid, c2)!;
+      final botPt = Offset.lerp(Offset(cx, h), g.keelBottom, c4)!;
       canvas.drawLine(
         topPt,
         botPt,
@@ -925,24 +964,24 @@ class _FoldMorphPainter extends CustomPainter {
       );
     }
 
-    // ③ keel 선(다트 동체: 코→keelBottom) — wings에서 또렷.
-    if (c3 > 0.001) {
+    // ④ keel 선(동체: 코 중앙→keelBottom) + 날개 접힘선 — 날개 단계에서 또렷.
+    if (c4 > 0.001) {
       canvas.drawLine(
-        g.nose,
+        noseMid,
         keelBottom,
         Paint()
-          ..color = _ink.withValues(alpha: 0.20 * c3)
+          ..color = _ink.withValues(alpha: 0.20 * c4)
           ..strokeWidth = size.shortestSide * 0.012
           ..strokeCap = StrokeCap.round,
       );
       // 날개 접힘선(코→날개 뒷전) — 좌우 바깥변이 keel 기준 접힌 능선.
       final wingFold = Paint()
-        ..color = _ink.withValues(alpha: 0.10 * c3)
+        ..color = _ink.withValues(alpha: 0.10 * c4)
         ..strokeWidth = size.shortestSide * 0.008
         ..style = PaintingStyle.stroke
         ..strokeJoin = StrokeJoin.round;
-      canvas.drawLine(g.nose, outTailL, wingFold);
-      canvas.drawLine(g.nose, outTailR, wingFold);
+      canvas.drawLine(noseMid, outTailL, wingFold);
+      canvas.drawLine(noseMid, outTailR, wingFold);
     }
 
     // ── 외곽 미세 stroke(종이 가장자리 암시, ink 10%) — 글리프와 동일 톤 ──
