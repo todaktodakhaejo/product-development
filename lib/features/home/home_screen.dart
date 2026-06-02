@@ -14,10 +14,10 @@ import 'emotion_ball_painter.dart';
 
 /// 2단계 첫 화면(홈). 감정 오브제(공)와 4종 제스처 인터랙션의 무대.
 ///
-///  - GST-01 흔들기 : 자이로 각속도 세기 비례 임펄스 + 세기별 햅틱, 벽 충돌 진동
-///  - GST-02 굴리기 : 손가락 드래그 추종 → 놓으면 관성 fling + 벽 튕김
-///  - GST-03 누르기 : 탭 → 물결 + 뗄 때 'selection' 진동
-///  - GST-04 쓰다듬기: 제자리 왕복 드래그 → 표면 출렁임 + 글로우 + 연속 약진동
+///  - GST-01 흔들기 : 자이로 각속도 3구간(약/중/강) 임펄스 + light/medium/heavy 햅틱
+///  - GST-02 굴리기 : 손가락 드래그 추종 + 이동거리 기반 마찰 틱 → 놓으면 관성 fling
+///  - GST-03 누르기 : 본체 탭 → 물결 + 침몰 덴트(press) + 2단 햅틱(down/release)
+///  - GST-04 쓰다듬기: 제자리 왕복 드래그 → 표면 출렁임 + 글로우 + 연속 약진동(strokeSoft)
 ///
 /// 굴리기·쓰다듬기는 둘 다 단일 포인터 드래그라, 드래그 메트릭(직진성·방향전환)
 /// 으로 모드를 자동 판별한다(히스테리시스, [_onPointerMove] 참고).
@@ -61,6 +61,7 @@ class _HomeScreenState extends State<HomeScreen>
   int _turnCount = 0; // 방향 전환 횟수
   Offset _lastMoveDir = Offset.zero;
   double _strokeEnergy = 0; // 쓰다듬기 누적(0~1) → wobble/글로우 구동
+  double _rollAccum = 0; // 굴리기 누적 이동거리(px) → 마찰 틱 발사 타이밍
 
   bool _showComfort = true;
   late final String _comfort = randomComfortMessage();
@@ -110,15 +111,20 @@ class _HomeScreenState extends State<HomeScreen>
         final strength =
             ((w - kShakeOn) / (kShakeMax - kShakeOn)).clamp(0.0, 1.0);
         _ball?.addImpulse(_randomUnitVector(), strength);
-        // 임펄스가 발사된(=kShakeOn 각속도 게이트를 통과한) 흔들기는 반드시 손에
-        // 느껴져야 한다. strength 원값은 임계 부근에서 0에 수렴해 impactByStrength의
-        // 하한(0.12)에 걸려 무발동 → 시각은 튀는데 진동은 없는 desync가 생긴다.
-        // 발사된 흔들기는 light(0.12) 이상이 보장되도록 바닥을 깔고, 셀수록 강하게
-        // medium·heavy로 단계 상승시킨다(throttle은 120ms 쿨다운이 이미 담당).
-        Haptics.instance.impactByStrength(
-          (0.18 + strength * 0.82).clamp(0.0, 1.0),
-          throttle: false,
-        );
+        // 흔들기 강도 체감(요구1, §6.1): 1차의 연속식 impactByStrength는 임계
+        // 부근에서 light에만 머물러 "확연한 차이"가 안 났다. 각속도 w를 직접
+        // 3구간(약/중/강)으로 나눠 light/medium/heavy를 명시 발사하면 손에서
+        // 단차가 보장된다. 임펄스는 strength 단일값으로 연속 비례(안정화가 잡아줌).
+        // 게이트를 통과한 흔들기는 매번 손에 느껴져야 하므로 throttle:false.
+        final HapticLevel level;
+        if (w < 5.5) {
+          level = HapticLevel.light; // 약 (3.5~5.5 rad/s)
+        } else if (w < 8.5) {
+          level = HapticLevel.medium; // 중 (5.5~8.5 rad/s)
+        } else {
+          level = HapticLevel.heavy; // 강 (8.5+ rad/s)
+        }
+        Haptics.instance.fire(level, throttle: false);
         if (_showComfort) setState(() => _showComfort = false);
       },
       onError: (_) {}, // 센서 미지원 기기에서도 터치는 동작
@@ -151,6 +157,13 @@ class _HomeScreenState extends State<HomeScreen>
       Haptics.instance.impactByStrength(ball.lastImpact);
     }
 
+    // 누르기 복원 정점 햅틱(요구4, §6.3-B): 침몰→복원 정점 타이밍을 ball이 소유한
+    // 물리에서 단일 소스로 내보낸다. 정점 프레임에 한 번만 true를 소비해 'pressRelease'
+    // (차오르는 톡)을 발사 → 시각 복원과 햅틱이 desync 없이 동기.
+    if (ball.consumePressRelease()) {
+      Haptics.instance.pressRelease();
+    }
+
     for (final r in _ripples) {
       r.update(clampedDt);
     }
@@ -173,6 +186,7 @@ class _HomeScreenState extends State<HomeScreen>
     _pathLen = 0;
     _turnCount = 0;
     _lastMoveDir = Offset.zero;
+    _rollAccum = 0; // 굴리기 마찰 누적 리셋
     if (_showComfort) setState(() => _showComfort = false); // HOME-04
   }
 
@@ -222,9 +236,23 @@ class _HomeScreenState extends State<HomeScreen>
         ball.stroke(step); // 제자리 출렁임
         _strokeEnergy = (_strokeEnergy + stepLen / ball.radius * 0.4)
             .clamp(0.0, 1.0); // step 비례 증가
-        Haptics.instance.rubTick(); // 연속 약진동(throttle 내장)
+        // 쓰다듬기 힐링(요구2): 1차 rubTick(딱딱한 light 반복) 대체. 위로받는
+        // 느낌의 부드러운 저강도 텍스처를 흐르듯 발사(throttle은 strokeSoft 내장).
+        Haptics.instance.strokeSoft();
       } else if (_dragMode == _DragMode.roll) {
         ball.grab(pos); // 손가락 추종
+        // 굴리기 마찰감(요구3, §6.2): 이동 누적이 반경의 절반을 넘을 때마다
+        // 마찰 틱을 발사 → 구슬 굴리는 자글거림. 손가락이 빠를수록 잦고 강하다.
+        // speed01은 추종 속도(px/s)를 2600으로 정규화. throttle은 rollFriction 내장.
+        _rollAccum += stepLen;
+        final tickDist = ball.radius * 0.5;
+        if (_rollAccum >= tickDist) {
+          _rollAccum -= tickDist;
+          final moveDt = (e.timeStamp - _lastMoveTime).inMicroseconds / 1e6;
+          final speed01 =
+              (moveDt > 0 ? (stepLen / moveDt) / 2600 : 0.0).clamp(0.0, 1.0);
+          Haptics.instance.rollFriction(speed01);
+        }
       }
     }
 
@@ -242,9 +270,15 @@ class _HomeScreenState extends State<HomeScreen>
 
     if (ball == null) return;
     if (!_moved) {
-      // 누르기(GST-03): 물결 + 뗄 때 진동
-      _ripples.add(Ripple(e.localPosition));
-      Haptics.instance.fire(HapticLevel.selection, throttle: false);
+      // 누르기(GST-03, 요구4): 물결은 항상. 단 공 본체 위 탭일 때만 침몰 덴트 +
+      // 2단 햅틱의 1단(pressDown, 눌리는 무게감). 빈 배경 탭은 물결만(덴트·햅틱 없음)
+      // 으로 자연스러움 유지. 복원 정점의 pressRelease는 _onTick에서 발사(§6.3-B).
+      final pos = e.localPosition;
+      _ripples.add(Ripple(pos));
+      if (ball.hitTest(pos)) {
+        ball.press(pos);
+        Haptics.instance.pressDown();
+      }
     } else if (_dragMode == _DragMode.roll) {
       ball.release();
       ball.vel = _flingVel; // 던진 손맛(관성 fling)
