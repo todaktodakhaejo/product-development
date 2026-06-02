@@ -422,26 +422,33 @@ class _ShredderRitualScreenState extends State<ShredderRitualScreen>
                     ),
                   ),
                   // 파쇄기 본체 (grinding 중 motor shake)
+                  // "다 보냈어요" 멘트가 뜨면(_showMessage) 본체도 함께 사라진다 —
+                  // 폭죽·재만 남기고 기계는 비워 완료의 여운을 방해하지 않게.
                   Positioned(
                     left: 24,
                     right: 24,
                     top: slotY - 18,
-                    child: Transform.translate(
-                      offset: shake,
-                      child: Container(
-                        height: 56,
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF22242E),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: Colors.white12),
-                        ),
-                        child: Center(
-                          child: Container(
-                            width: _paperSize.width + 16,
-                            height: 6,
-                            decoration: BoxDecoration(
-                              color: Colors.black,
-                              borderRadius: BorderRadius.circular(3),
+                    child: AnimatedOpacity(
+                      duration: _kMessageFade,
+                      curve: Curves.easeInOut,
+                      opacity: _showMessage ? 0.0 : 1.0,
+                      child: Transform.translate(
+                        offset: shake,
+                        child: Container(
+                          height: 56,
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF22242E),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: Colors.white12),
+                          ),
+                          child: Center(
+                            child: Container(
+                              width: _paperSize.width + 16,
+                              height: 6,
+                              decoration: BoxDecoration(
+                                color: Colors.black,
+                                borderRadius: BorderRadius.circular(3),
+                              ),
                             ),
                           ),
                         ),
