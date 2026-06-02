@@ -20,8 +20,8 @@ import '../widgets/particles.dart';
 /// 페이드인 → '처음으로' 버튼 페이드인. burn 화면에 그대로 머문다.
 enum _Phase { idle, igniting, burning, done }
 
-/// 점화 확정 후 고정 연소 시간(드래그 무관). 사용자 합의값 3초 유지(레퍼런스 ~2.4s).
-const Duration _kBurnDuration = Duration(milliseconds: 3000);
+/// 점화 확정 후 고정 연소 시간(드래그 무관). 사용자 요청으로 속도 늦춤(3초→4.5초).
+const Duration _kBurnDuration = Duration(milliseconds: 4500);
 
 // ── 완료 인플레이스 오버레이 타임라인(전소=0 기준) ──────────────────────────
 /// 전소 후 멘트가 떠오르기 전 재 흩날림만 보여주는 홀드(레퍼런스 released-msg).

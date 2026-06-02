@@ -602,11 +602,11 @@ class BlazeHandle {
 
   final Haptics _engine;
 
-  /// 연소 명목 길이(화면 `_kBurnDuration`과 동일한 3초).
-  static const Duration _duration = Duration(milliseconds: 3000);
+  /// 연소 명목 길이(화면 `_kBurnDuration`과 동일한 4.5초).
+  static const Duration _duration = Duration(milliseconds: 4500);
 
-  /// stop 누락 대비 자동 종료 시한(명목 3초 + 여유).
-  static const Duration _safety = Duration(milliseconds: 4000);
+  /// stop 누락 대비 자동 종료 시한(명목 4.5초 + 여유).
+  static const Duration _safety = Duration(milliseconds: 5500);
 
   Timer? _timer;
   bool _stopped = false;
