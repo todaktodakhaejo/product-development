@@ -179,15 +179,19 @@ class Haptics {
 
   /// [BlazeHandle]이 1펄스 발사할 때 사용(throttle 우회).
   ///
-  /// blaze 강도(0~1)를 레벨로 양자화한다. 파쇄기 [_grindPulse]와 **동일 철학·
-  /// 동일 임계**(2026-06-01 실기기 피드백 반영) — 태우기도 **light를 쓰지 않고**
-  /// medium을 바닥, 중반 이후(≥0.62)와 최말미 정점 구간은 heavy를 상시 사용해
-  /// 약하지 않게 묵직한 화력감을 낸다.
+  /// blaze 강도(0~1)를 레벨로 양자화한다. 사용자 피드백(2026-06-02: 불이
+  /// 아래에서 위로 **약→강 점진**)으로 3밴드로 — 점화 직후(아래)는 **light(약)**,
+  /// 중반은 **medium**, 위(≥0.70)·최말미 정점은 **heavy(강)**. 전소로 갈수록 강해진다.
   /// (HapticFeedback의 천장은 heavyImpact. 더 센 '연속' 진동은 Core Haptics 필요.)
   void _blazePulse(double intensity, {bool spikeHeavy = false}) {
-    final level = (intensity >= 0.62 || spikeHeavy)
-        ? HapticLevel.heavy
-        : HapticLevel.medium;
+    final HapticLevel level;
+    if (intensity >= 0.70 || spikeHeavy) {
+      level = HapticLevel.heavy;
+    } else if (intensity >= 0.42) {
+      level = HapticLevel.medium;
+    } else {
+      level = HapticLevel.light;
+    }
     fire(level, throttle: false);
   }
 
@@ -495,18 +499,19 @@ class BlazeHandle {
   /// 좀 더 가파르다(t=0.4→0.72, 0.7→0.88, 1.0→1.00).
   double _curveIntensity() {
     final t = _progress();
-    // 키프레임(실기기 medium~heavy 톤): 0.0→0.55, 0.4→0.72, 0.7→0.88, 1.0→1.00.
-    // medium에서 출발해 heavy(≥0.62)로 올라 전소 직전 최고조.
+    // 약→강 점진(사용자 피드백 2026-06-02): 아래(점화 직후)는 약하게(light),
+    // 위로 갈수록 강하게(heavy). 키프레임 0.0→0.28, 0.4→0.55, 0.7→0.80, 1.0→1.00.
     final double base;
     if (t < 0.4) {
-      base = _lerp(0.55, 0.72, t / 0.4);
+      base = _lerp(0.28, 0.55, t / 0.4);
     } else if (t < 0.7) {
-      base = _lerp(0.72, 0.88, (t - 0.4) / 0.3);
+      base = _lerp(0.55, 0.80, (t - 0.4) / 0.3);
     } else {
-      base = _lerp(0.88, 1.00, (t - 0.7) / 0.3);
+      base = _lerp(0.80, 1.00, (t - 0.7) / 0.3);
     }
     // 불 일렁임: 약 4.5Hz로 강도를 흔든다(t를 위상으로 사용 — '타오르는 떨림').
-    final wobble = 0.06 * math.sin(t * 2 * math.pi * 4.5);
+    // 진폭을 줄여(±0.05) 초반 약한 대역이 흔들려 사라지지 않게 한다.
+    final wobble = 0.05 * math.sin(t * 2 * math.pi * 4.5);
     return (base + wobble).clamp(0.0, 1.0);
   }
 
