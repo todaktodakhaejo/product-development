@@ -316,6 +316,12 @@ class GrindHandle {
   /// 외부 주입 진행도(0~1). null이면 [_watch] 경과 기반 기본 곡선을 쓴다.
   double? _externalT;
 
+  /// '잘게 끊기는' staccato 리듬용 — 한 끊김 묶음 내 펄스 위치(0..len-1).
+  int _burstStep = 0;
+
+  /// 한 끊김 묶음의 펄스 수(짧게 또르륵 묶였다 공백).
+  static const int _burstLen = 3;
+
   void _start() {
     if (_stopped) return;
     _watch.start();
@@ -353,18 +359,22 @@ class GrindHandle {
     return (base + wobble).clamp(0.0, 1.0);
   }
 
-  /// 진행도에 따른 펄스 간격. 기본 ~45ms, 말미(t≥0.9)는 35ms로 촘촘.
-  /// '도는 모터'감을 위해 ±8ms 지터를 얹는다.
+  /// '잘게 끊기는'(staccato) 간격. 종이가 칼날에 잘려나가듯 — 짧은 펄스 묶음
+  /// (묶음 내부 ~22ms 촘촘) + 묶음 사이 공백(~100ms)을 반복한다. 끊김감이
+  /// 핵심(연속 모터 hum 아님). 말미(t≥0.9)는 더 촘촘·공백 짧게(거세짐).
   Duration _nextInterval() {
     final t = _progress();
-    final baseMs = t >= 0.9 ? 35 : 45;
-    // 경과 ms 기반 의사난수 지터(±8ms) — 외부 의존 없이 결정적·가벼움.
-    final jitter = (_watch.elapsedMicroseconds % 17) - 8; // -8..+8
-    final ms = (baseMs + jitter).clamp(28, 60);
+    final inBurst = _burstStep < _burstLen - 1; // 묶음 내부면 촘촘.
+    final tight = t >= 0.9 ? 18 : 22; // 묶음 내 펄스 간격.
+    final gap = t >= 0.9 ? 78 : 100; // 묶음 사이 공백.
+    final baseMs = inBurst ? tight : gap;
+    // 경과 ms 기반 의사난수 지터(±6ms) — 결정적·가벼움, 기계적 균일감 제거.
+    final jitter = (_watch.elapsedMicroseconds % 13) - 6; // -6..+6
+    final ms = (baseMs + jitter).clamp(12, 130);
     return Duration(milliseconds: ms);
   }
 
-  /// 매 펄스마다 간격을 재계산해 1발 발사하고 다음 펄스를 예약(가변 간격).
+  /// 매 펄스마다 간격을 재계산해 1발 발사하고 다음 펄스를 예약(staccato 묶음).
   void _schedule() {
     if (_stopped) return;
     _timer = Timer(_nextInterval(), () {
@@ -372,6 +382,7 @@ class GrindHandle {
       final t = _progress();
       // 최말미(≥0.9) 순간엔 heavy를 가끔 섞어 폭죽 직전 텐션.
       _engine._grindPulse(_curveIntensity(), spikeHeavy: t >= 0.9);
+      _burstStep = (_burstStep + 1) % _burstLen; // 끊김 묶음 진행.
       _schedule();
     });
   }
