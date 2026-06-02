@@ -333,6 +333,13 @@ class _JewelryBoxRitualScreenState extends State<JewelryBoxRitualScreen>
                   final paperScale = ui.lerpDouble(1.0, 0.18, _approachT)!;
                   // 원근으로 상단이 뒤로 눕는 rotateX(입구로 빨려드는 느낌).
                   final paperTilt = _approachT * 0.95; // 라디안(≈54°).
+                  // 팔랑~: 빨려드는 동안 좌우로 살랑이며 흔들림(낙엽처럼 안으로 들어감).
+                  // 진폭은 진입 중반에 최대→입구 근처(approachT→1)엔 잦아들어 안착.
+                  final flutterEnv = math.sin(_approachT * math.pi);
+                  final flutterZ =
+                      math.sin(_clock * 7.5) * 0.22 * flutterEnv; // 좌우 기울임(rad)
+                  final flutterX =
+                      math.sin(_clock * 5.5 + 0.7) * 26 * flutterEnv; // 가로 드리프트(px)
 
               return Stack(
                 alignment: Alignment.center,
@@ -379,8 +386,10 @@ class _JewelryBoxRitualScreenState extends State<JewelryBoxRitualScreen>
                                 child: Transform(
                                   alignment: Alignment.center,
                                   transform: Matrix4.identity()
+                                    ..translateByDouble(flutterX, 0.0, 0.0, 1.0)
                                     ..setEntry(3, 2, 0.0014)
                                     ..rotateX(paperTilt)
+                                    ..rotateZ(flutterZ)
                                     ..scaleByDouble(
                                         paperScale, paperScale, 1.0, 1.0),
                                   child: PaperCard(
