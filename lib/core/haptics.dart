@@ -330,8 +330,10 @@ class Haptics {
   /// **완료 멘트/화면 dispose에서 반드시 [HeartbeatHandle.stop]을 호출**해야 무한
   /// 진동·타이머 누수를 막는다. [stop]은 중복 호출해도 안전하다(idempotent). 안전장치로
   /// 시작 후 ~8초 경과 시 자동 [stop]된다(후광 구간 ~3.5s보다 길게 — stop 누락 대비).
-  HeartbeatHandle startHeartbeat() {
-    final handle = HeartbeatHandle._(this);
+  HeartbeatHandle startHeartbeat({
+    Duration safety = const Duration(seconds: 8),
+  }) {
+    final handle = HeartbeatHandle._(this, safety);
     handle._start();
     return handle;
   }
@@ -797,7 +799,7 @@ class FlightHandle {
 /// ⚠️ 연속/패턴 진동은 OS 네이티브 미배선 → 짧은 임팩트의 타이머 반복 **근사**가
 /// 전부다. '따뜻하게 폰 전반으로 번지는' 심박의 실제 손맛은 실기기에서만 검증 가능.
 class HeartbeatHandle {
-  HeartbeatHandle._(this._engine);
+  HeartbeatHandle._(this._engine, this._safety);
 
   final Haptics _engine;
 
@@ -808,8 +810,9 @@ class HeartbeatHandle {
   /// 자체 미세 변조(±25ms)를 얹어 기계적이지 않은 생체 리듬을 만든다.
   static const int _periodMs = 830;
 
-  /// stop 누락 대비 자동 종료 시한(후광 구간 ~3.5s보다 넉넉히 김).
-  static const Duration _safety = Duration(milliseconds: 8000);
+  /// stop 누락 대비 자동 종료 시한(생성 시 주입). 보석함은 '처음으로' 탭까지
+  /// 지속이라 길게 잡는다 — 화면 dispose가 항상 stop하므로 무한 진동 위험은 없다.
+  final Duration _safety;
 
   /// 다음 박동(재귀)·dub 발사용 타이머. 매 박동마다 갱신된다.
   Timer? _beatTimer;

@@ -212,18 +212,19 @@ class _JewelryBoxRitualScreenState extends State<JewelryBoxRitualScreen>
     // 후광이 닫힘 직후 부드럽게 등장(이후 매 프레임 sin 펄스로 번쩍번쩍).
     _halo.forward(from: 0);
     // 후광이 번쩍이는 동안 심장박동 햅틱이 연속으로 돈다(따뜻·부드럽게 폰 전반).
-    // 멘트 시점에 stop. dispose에서도 stop.
+    // '처음으로'를 누를 때까지(=화면 떠날 때까지) 계속 — _backToHome·dispose에서 stop.
+    // 안전장치를 길게(10분) 줘서 멘트·버튼 표시 동안에도 끊기지 않게.
     _heartbeat?.stop();
-    _heartbeat = Haptics.instance.startHeartbeat();
+    _heartbeat =
+        Haptics.instance.startHeartbeat(safety: const Duration(minutes: 10));
     _rise.forward(from: 0);
 
     // ── 인플레이스 완료 시퀀스(라우트 전환 없음 — 같은 화면에 머문다) ──
     // 닫힘=0 기준 ~3.5s 멘트, ~4.8s 버튼.
     Future.delayed(_kMessageDelay, () {
       if (!mounted) return;
-      // 심장박동 멈추고, 보관 완료의 따뜻한 success 1회(태우기 완료 톤).
-      _heartbeat?.stop();
-      _heartbeat = null;
+      // 심장박동은 '처음으로' 누를 때까지 계속 유지(여기서 멈추지 않는다).
+      // 멘트 등장에 보관 완료의 따뜻한 success 1회만 얹는다(태우기 완료 톤).
       Haptics.instance.fire(HapticLevel.success, throttle: false);
       setState(() => _showMessage = true);
     });
@@ -242,6 +243,9 @@ class _JewelryBoxRitualScreenState extends State<JewelryBoxRitualScreen>
 
   // '처음으로': 세션 리셋 + 홈 복귀(burn _backToHome과 동일).
   void _backToHome() {
+    // '처음으로' 탭 = 의식 종료 → 여기서 심장박동(후광 심박)을 멈춘다.
+    _heartbeat?.stop();
+    _heartbeat = null;
     SessionScope.of(context).reset();
     Navigator.of(context).popUntil((r) => r.isFirst);
   }
