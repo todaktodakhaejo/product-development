@@ -1,11 +1,16 @@
 import 'package:flutter/material.dart';
 
+import 'features/home/home_screen.dart';
 import 'features/onboarding/onboarding_screen.dart';
+import 'services/storage_service.dart';
 import 'state/session.dart';
+import 'state/storage_scope.dart';
 import 'theme/app_theme.dart';
 
 class EmotionResolutionApp extends StatefulWidget {
-  const EmotionResolutionApp({super.key});
+  const EmotionResolutionApp({super.key, required this.storage});
+
+  final StorageService storage;
 
   @override
   State<EmotionResolutionApp> createState() => _EmotionResolutionAppState();
@@ -22,13 +27,19 @@ class _EmotionResolutionAppState extends State<EmotionResolutionApp> {
 
   @override
   Widget build(BuildContext context) {
-    return SessionScope(
-      notifier: _session,
-      child: MaterialApp(
-        title: '감정 해소',
-        debugShowCheckedModeBanner: false,
-        theme: AppTheme.dark,
-        home: const OnboardingScreen(),
+    return StorageScope(
+      storage: widget.storage,
+      child: SessionScope(
+        notifier: _session,
+        child: MaterialApp(
+          title: '감정 해소',
+          debugShowCheckedModeBanner: false,
+          theme: AppTheme.dark,
+          // 온보딩을 이미 봤으면 홈으로 직행, 처음이면 온보딩부터.
+          home: widget.storage.onboardingDone
+              ? const HomeScreen()
+              : const OnboardingScreen(),
+        ),
       ),
     );
   }

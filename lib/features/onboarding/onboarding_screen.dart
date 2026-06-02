@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../state/storage_scope.dart';
 import '../../theme/app_theme.dart';
 import '../home/home_screen.dart';
 
@@ -51,6 +52,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 
   void _enter() {
+    // 온보딩을 끝냈다고 기록 → 다음 실행부터 홈으로 직행.
+    StorageScope.of(context).setOnboardingDone();
     Navigator.of(context).pushReplacement(
       MaterialPageRoute(builder: (_) => const HomeScreen()),
     );
