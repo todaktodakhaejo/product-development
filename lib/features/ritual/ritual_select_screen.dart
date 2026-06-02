@@ -14,7 +14,7 @@ class RitualSelectScreen extends StatelessWidget {
 
   static const _icons = {
     Ritual.burn: '🔥',
-    Ritual.shredder: '📄',
+    Ritual.shredder: '🗑️',
     Ritual.paperPlane: '🛩️',
     Ritual.jewelryBox: '💎',
   };
