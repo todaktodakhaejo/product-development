@@ -219,6 +219,44 @@ class Haptics {
         () => fire(HapticLevel.light, throttle: false)); // 마지막 잔향
   }
 
+  // ── 보석함(jewel box) 심장박동 전용 햅틱 ──────────────────────────
+  // 보석함 후광 펄스 구간(~3.5s)의 '심장박동' 연속 햅틱. 파쇄기 [startShredGrind]·
+  // 태우기 [startBurnBlaze]의 **형제** 드라이버이지만, 저들이 '점점 강해지는 모터/
+  // 화력 고조 곡선'인 것과 달리 이쪽은 **일정한 lub-dub 두 박자(~72bpm)** 를 따뜻·
+  // 부드럽게 반복한다. heavy를 쓰지 않고 medium(lub)→light(dub)로 폰 전반에 묵직히
+  // 퍼지는 안정 심박을 흉내낸다(기존 드라이버는 그대로 유지).
+  //
+  // ⚠️ 연속/패턴 진동은 OS 네이티브 미배선 → 짧은 임팩트를 타이머로 반복하는
+  // **근사**가 전부다. '따뜻하게 번지는 심장박동'의 실제 손맛(특히 dub의 부드러운
+  // 여운·폰 전반 확산감)은 실기기에서만 검증 가능. 미지원/웹에서는 [fire]가
+  // HapticFeedback 무음 통과 → 예외 없이 무동작(§9 폴백).
+
+  /// 보석함 후광 펄스 구간의 '심장박동' 연속 햅틱(따뜻·부드럽게 폰 전반으로).
+  ///
+  /// 후광 등장 시 시작, 완료 멘트/dispose에서 [HeartbeatHandle.stop]으로 멈춘다.
+  /// lub(medium)→130ms→dub(light)→620ms 휴지를 한 박동(≈750~850ms, 약 72bpm)으로
+  /// 무한 반복한다 — 따뜻한 안정 심박. heavy는 쓰지 않는다(날카로움 금지). 너무
+  /// 기계적이지 않도록 박동 주기에 ±20~30ms 미세 변조(생체 리듬)를 얹는다.
+  ///
+  /// **완료 멘트/화면 dispose에서 반드시 [HeartbeatHandle.stop]을 호출**해야 무한
+  /// 진동·타이머 누수를 막는다. [stop]은 중복 호출해도 안전하다(idempotent). 안전장치로
+  /// 시작 후 ~8초 경과 시 자동 [stop]된다(후광 구간 ~3.5s보다 길게 — stop 누락 대비).
+  HeartbeatHandle startHeartbeat() {
+    final handle = HeartbeatHandle._(this);
+    handle._start();
+    return handle;
+  }
+
+  /// [HeartbeatHandle]이 lub/dub 1박을 발사할 때 사용(throttle 우회).
+  ///
+  /// lub=medium(폰 전반으로 묵직히 퍼지는 첫 박), dub=light(부드러운 둘째 박).
+  /// **heavy 미사용** — 따뜻·부드러움이 핵심이라 날카로운 단계는 쓰지 않는다.
+  /// (light만으론 '폰 전반' 확산감이 약해 lub은 medium으로 둔다. 더 풍부한 연속
+  /// 심박은 Core Haptics 필요.)
+  void _heartPulse({required bool isLub}) {
+    fire(isLub ? HapticLevel.medium : HapticLevel.light, throttle: false);
+  }
+
   // ── P3 신규: 의식별 타임라인/스텝 큐 빌더 ────────────────────────
   // playTimeline(controller, cues)에 그대로 넣을 수 있는 List<HapticCue> 생성.
 
@@ -555,4 +593,82 @@ class BlazeHandle {
 
   static double _lerp(double a, double b, double t) =>
       a + (b - a) * t.clamp(0.0, 1.0);
+}
+
+/// [Haptics.startHeartbeat]가 반환하는 보석함 '심장박동' 연속 햅틱 제어 핸들.
+///
+/// [GrindHandle]/[BlazeHandle]의 **형제**격이지만, 저들의 '점점 강해지는 고조
+/// 곡선'과 달리 이쪽은 **일정한 lub-dub 두 박자(~72bpm)** 를 따뜻·부드럽게 반복한다.
+/// 시작 시점에 첫 lub이 즉시 발사되고, 이후 각 박동은 직전 박동 시작에서 한 주기 뒤로
+/// 재귀 예약된다(lub → 130ms 뒤 dub 1발 예약 → 다음 박동을 주기 후 예약).
+///
+/// **완료 멘트·화면 dispose에서 반드시 [stop]을 호출**해야 무한 진동·타이머 누수를
+/// 막는다. [stop]은 중복 호출해도 안전하다(idempotent). 안전장치로 시작 후 [_safety]
+/// 경과 시 자동 [stop]된다(호출측 stop 누락 대비).
+///
+/// ⚠️ 연속/패턴 진동은 OS 네이티브 미배선 → 짧은 임팩트의 타이머 반복 **근사**가
+/// 전부다. '따뜻하게 폰 전반으로 번지는' 심박의 실제 손맛은 실기기에서만 검증 가능.
+class HeartbeatHandle {
+  HeartbeatHandle._(this._engine);
+
+  final Haptics _engine;
+
+  /// lub→dub 간격(수축기). 짧고 또렷한 '두-근'의 앞 박.
+  static const Duration _lubToDub = Duration(milliseconds: 130);
+
+  /// 한 박동의 기본 주기(~72bpm). lub(0) → dub(130) → 휴지(~620) ≈ 830ms.
+  /// 자체 미세 변조(±25ms)를 얹어 기계적이지 않은 생체 리듬을 만든다.
+  static const int _periodMs = 830;
+
+  /// stop 누락 대비 자동 종료 시한(후광 구간 ~3.5s보다 넉넉히 김).
+  static const Duration _safety = Duration(milliseconds: 8000);
+
+  /// 다음 박동(재귀)·dub 발사용 타이머. 매 박동마다 갱신된다.
+  Timer? _beatTimer;
+  Timer? _dubTimer;
+  bool _stopped = false;
+
+  /// 박동 시작 시각 — 주기 미세 변조용 의사난수 시드(외부 의존 없이 결정적·가벼움).
+  final Stopwatch _watch = Stopwatch();
+
+  void _start() {
+    if (_stopped) return;
+    _watch.start();
+    _beat(); // 즉시 첫 박동(반응 지연 최소화)
+    // 안전장치: 시한 경과 시 자동 종료.
+    Future<void>.delayed(_safety, stop);
+  }
+
+  /// 한 박동: lub 즉시 발사 → 130ms 뒤 dub 1발 예약 → 한 주기 뒤 다음 박동 재귀 예약.
+  void _beat() {
+    if (_stopped) return;
+    _engine._heartPulse(isLub: true); // lub: medium, 폰 전반으로 묵직히
+    _dubTimer = Timer(_lubToDub, () {
+      if (_stopped) return;
+      _engine._heartPulse(isLub: false); // dub: light, 부드러운 둘째 박
+    });
+    _beatTimer = Timer(Duration(milliseconds: _nextPeriodMs()), _beat);
+  }
+
+  /// 다음 박동까지의 주기(ms). 기본 [_periodMs]에 ±25ms 미세 변조를 얹어
+  /// 너무 정확한 메트로놈이 아닌 살아있는 심박처럼 흔든다.
+  int _nextPeriodMs() {
+    // 경과 마이크로초 기반 의사난수 변조(-25..+25ms) — 결정적·가벼움.
+    final wobble = (_watch.elapsedMicroseconds % 51) - 25; // -25..+25
+    return (_periodMs + wobble).clamp(700, 950);
+  }
+
+  /// 심장박동 중지(+모든 예약 타이머 해제). 중복 호출 안전(idempotent).
+  void stop() {
+    if (_stopped) return;
+    _stopped = true;
+    _beatTimer?.cancel();
+    _beatTimer = null;
+    _dubTimer?.cancel();
+    _dubTimer = null;
+    _watch.stop();
+  }
+
+  /// [stop]의 별칭 — dispose 흐름에서 의도가 드러나도록.
+  void dispose() => stop();
 }

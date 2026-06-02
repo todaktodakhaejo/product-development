@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -11,9 +12,10 @@ import '../widgets/paper_card.dart';
 import '../widgets/particles.dart';
 
 // ── 보석함 상태머신 ──────────────────────────────────────────────────────────
-/// idle(종이 흩날림 float + 함 하단) → dragging(종이를 함으로 끌어내림) →
-/// inserting(종이 사라짐·뚜껑 닫힘) → rising(함이 후광 두르고 중앙으로 상승) →
-/// done(중앙에 빛나며 머묾 + 인플레이스 완료 멘트→버튼).
+/// idle(뚜껑 뒤로 젖혀 열림 + 종이 흩날림 + 함 하단) → dragging(종이를 함으로
+/// 끌어내림) → inserting(종이가 열린 함 속으로 사라짐·이어 뚜껑 닫힘) →
+/// rising(닫힘과 동시에 후광 펄스+심장박동 햅틱, 함이 두둥실 중앙으로 상승) →
+/// done(중앙에서 둥실둥실 떠 빛나며 머묾 + 인플레이스 완료 멘트→버튼).
 /// 간직형(keep) — 파괴가 아니라 보관. 함은 마지막에 사라지지 않고 중앙에 머문다.
 /// 완료는 라우트 전환 없이 같은 화면에서(태우기 패턴 이식).
 enum _Phase { idle, dragging, inserting, rising, done }
@@ -22,18 +24,27 @@ enum _Phase { idle, dragging, inserting, rising, done }
 const double _kApproach = 220.0;
 const double _kApproachThreshold = 0.8;
 
-/// 함 상승: 하단→중앙. easeOutCubic, 부드럽게 떠오름.
-const Duration _kRiseDuration = Duration(milliseconds: 900);
+/// 함 상승(두둥실): 하단→중앙. 느리고 부드럽게(easeInOutSine), 둥실 떠오름.
+/// (기존 900ms 급상승 → 느린 두둥실로 교체.)
+const Duration _kRiseDuration = Duration(milliseconds: 2800);
 
 /// 뚜껑 스프링 닫힘(easeOutBack, 점잖은 1회 오버슈트).
 const Duration _kLidDuration = Duration(milliseconds: 600);
 
-// ── 인플레이스 완료 타임라인(rising 완료=0 기준) ─────────────────────────────
-/// 함이 중앙에서 빛나는 여운 뒤 멘트 페이드인(+success 햅틱 1회).
-/// 보석함은 burn의 '재 흩날림 3초 홀드'가 없어 단축(간직 잔향 ~1.8s).
-const Duration _kMessageDelay = Duration(milliseconds: 1800);
+// ── 두둥실 bob / 후광 펄스(ticker clock의 sin으로 구동 — 별도 unbounded 금지) ──
+/// 상하 부유 진폭(px)·주기(s). 느린 sine — '둥실둥실 떠 있는' 잔잔한 흔들림.
+const double _kBobAmplitude = 8.0;
+const double _kBobPeriod = 3.4;
+
+/// 후광 펄스 주기(s). ~1초 주기로 부드럽게 커졌다 작아짐(심장박동 ~70bpm과 동조감).
+const double _kHaloPulsePeriod = 0.86;
+
+// ── 인플레이스 완료 타임라인(뚜껑 닫힘=0 기준) ───────────────────────────────
+/// 닫힘=0 → 후광 펄스+심장박동+두둥실 상승 시작. ~2.8s 중앙 안착(이후도 두둥실).
+/// ~3.5s 멘트 페이드인(이때 heartbeat.stop + success 1회). 그 뒤 ~1.3s 버튼.
+const Duration _kMessageDelay = Duration(milliseconds: 3500);
 const Duration _kMessageFade = Duration(milliseconds: 1400);
-const Duration _kButtonDelay = Duration(milliseconds: 3200);
+const Duration _kButtonDelay = Duration(milliseconds: 4800);
 const Duration _kButtonFade = Duration(milliseconds: 800);
 
 // ── 함 idle/중앙 기준 위치(화면 높이 비율) ──────────────────────────────────
@@ -61,14 +72,19 @@ class JewelryBoxRitualScreen extends StatefulWidget {
 
 class _JewelryBoxRitualScreenState extends State<JewelryBoxRitualScreen>
     with TickerProviderStateMixin {
-  late final AnimationController _lid; // 0(열림) → 1(닫힘)
-  late final AnimationController _halo; // 후광 페이드인(inserting에서)
-  late final AnimationController _rise; // 하단→중앙 상승(rising)
-  late final Ticker _ticker; // 파티클 60fps 구동(unbounded.repeat 금지)
+  late final AnimationController _lid; // 0(열림·뒤로 젖힘) → 1(닫힘)
+  late final AnimationController _halo; // 후광 페이드인(닫힘 직후 등장)
+  late final AnimationController _rise; // 하단→중앙 두둥실 상승(rising)
+  late final Ticker _ticker; // 파티클 60fps 구동 + 후광 펄스/두둥실 clock
   late final Animation<double> _lidCurve; // 스프링 닫힘(easeOutBack)
-  late final Animation<double> _riseCurve; // easeOutCubic
+  late final Animation<double> _riseCurve; // easeInOutSine(느린 두둥실)
+
+  /// 후광이 떠 있는 동안 도는 심장박동 햅틱 핸들(닫힘~멘트 구간).
+  /// haptics.dart의 startHeartbeat()가 반환. 멘트/도즈 안정화·dispose에서 stop.
+  HeartbeatHandle? _heartbeat;
 
   Duration _lastTick = Duration.zero; // dt 산출용
+  double _clock = 0; // ticker 누적 시간(초) — 후광 펄스/두둥실 bob 위상.
   final _field = ParticleField(maxParticles: 120);
   final _repaint = ValueNotifier(0);
 
@@ -99,10 +115,11 @@ class _JewelryBoxRitualScreenState extends State<JewelryBoxRitualScreen>
       }
     });
 
-    _halo = AnimationController(vsync: this, duration: const Duration(milliseconds: 1100));
+    _halo = AnimationController(vsync: this, duration: const Duration(milliseconds: 700));
 
     _rise = AnimationController(vsync: this, duration: _kRiseDuration);
-    _riseCurve = CurvedAnimation(parent: _rise, curve: Curves.easeOutCubic);
+    // 느리고 부드러운 상승 — 양 끝이 잔잔히 가속/감속(두둥실 톤).
+    _riseCurve = CurvedAnimation(parent: _rise, curve: Curves.easeInOutSine);
     _rise.addStatusListener((s) {
       if (s == AnimationStatus.completed && _phase == _Phase.rising) {
         _enterDone();
@@ -116,12 +133,14 @@ class _JewelryBoxRitualScreenState extends State<JewelryBoxRitualScreen>
   }
 
   /// 매 프레임 파티클 적분 + 리페인트. 상승 중엔 잔잔한 sparkle를 throttle 방출.
+  /// 누적 _clock으로 후광 펄스(sin)·두둥실 bob(sin)을 구동(별도 unbounded 금지).
   void _onTick(Duration elapsed) {
     final dt = _lastTick == Duration.zero
         ? 0.016
         : (elapsed - _lastTick).inMicroseconds / 1e6;
     _lastTick = elapsed;
     final cdt = dt.clamp(0.0, 0.05);
+    _clock += cdt;
 
     // 상승 중 잔잔한 금빛 반짝이(과하지 않게 ~120ms throttle).
     if (_phase == _Phase.rising && _boxCenter != Offset.zero) {
@@ -167,17 +186,16 @@ class _JewelryBoxRitualScreenState extends State<JewelryBoxRitualScreen>
 
   Future<void> _insert() async {
     setState(() {
-      _inserted = true;
+      _inserted = true; // 종이가 열린 함 입구로 들어가 사라짐.
       _phase = _Phase.inserting;
     });
-    // 안치 순간: 부드러운 안착 + 금빛 반짝이.
+    // 안치 순간: 부드러운 안착 + 함 입구 금빛 반짝이.
     Haptics.instance.fire(HapticLevel.light, throttle: false);
     _field.emitSparkle(origin: _boxCenter, count: 18, radius: 60);
-    // 삽입과 동시에 후광이 은은히 켜진다(이후 rising에서 강화).
-    _halo.forward();
-    await Future.delayed(const Duration(milliseconds: 120));
+    // 종이가 함 속으로 가라앉는 짧은 텀 뒤에 뚜껑이 앞으로 회전해 닫힌다.
+    await Future.delayed(const Duration(milliseconds: 180));
     if (!mounted) return;
-    await _lid.forward(); // 스프링(easeOutBack) 닫힘
+    await _lid.forward(); // 경첩축 앞으로 회전, 스프링(easeOutBack) 닫힘
     if (!mounted) return;
     // 뚜껑 닫힘 마무리: 부드러운 2펄스(keep 톤).
     Haptics.instance.softSuccess();
@@ -185,23 +203,27 @@ class _JewelryBoxRitualScreenState extends State<JewelryBoxRitualScreen>
     // 닫힘 완료 statusListener가 _enterRising()을 호출.
   }
 
+  /// 뚜껑 닫힘=0 기준. 후광 등장+펄스, 심장박동 햅틱, 두둥실 상승을 동시 시작.
+  /// 완료 멘트/버튼 타임라인도 여기(닫힘 기준)서 예약한다 — 상승 길이와 무관하게
+  /// '닫힘 후 ~3.5s 멘트'가 보장되도록.
   void _enterRising() {
     if (_phase != _Phase.inserting || !mounted) return;
     setState(() => _phase = _Phase.rising);
-    // 상승 시작 단발 햅틱(은은한 swell — 연속 진동 엔진 불필요).
-    Haptics.instance.fire(HapticLevel.medium, throttle: false);
-    // 후광이 풀 밝기까지 마저 켜지도록(보간은 _riseCurve 기준으로 강화).
-    if (_halo.status != AnimationStatus.completed) _halo.forward();
+    // 후광이 닫힘 직후 부드럽게 등장(이후 매 프레임 sin 펄스로 번쩍번쩍).
+    _halo.forward(from: 0);
+    // 후광이 번쩍이는 동안 심장박동 햅틱이 연속으로 돈다(따뜻·부드럽게 폰 전반).
+    // 멘트 시점에 stop. dispose에서도 stop.
+    _heartbeat?.stop();
+    _heartbeat = Haptics.instance.startHeartbeat();
     _rise.forward(from: 0);
-  }
 
-  void _enterDone() {
-    if (_phase != _Phase.done && _phase != _Phase.rising) return;
-    if (!mounted) return;
-    setState(() => _phase = _Phase.done);
     // ── 인플레이스 완료 시퀀스(라우트 전환 없음 — 같은 화면에 머문다) ──
+    // 닫힘=0 기준 ~3.5s 멘트, ~4.8s 버튼.
     Future.delayed(_kMessageDelay, () {
       if (!mounted) return;
+      // 심장박동 멈추고, 보관 완료의 따뜻한 success 1회(태우기 완료 톤).
+      _heartbeat?.stop();
+      _heartbeat = null;
       Haptics.instance.fire(HapticLevel.success, throttle: false);
       setState(() => _showMessage = true);
     });
@@ -209,6 +231,13 @@ class _JewelryBoxRitualScreenState extends State<JewelryBoxRitualScreen>
       if (!mounted) return;
       setState(() => _showButton = true);
     });
+  }
+
+  /// 상승 완료 → done 페이즈(이후 중앙에서 두둥실 + 후광 펄스 지속).
+  /// 완료 멘트/버튼은 _enterRising에서 닫힘 기준으로 이미 예약됨.
+  void _enterDone() {
+    if (_phase != _Phase.rising || !mounted) return;
+    setState(() => _phase = _Phase.done);
   }
 
   // '처음으로': 세션 리셋 + 홈 복귀(burn _backToHome과 동일).
@@ -219,7 +248,9 @@ class _JewelryBoxRitualScreenState extends State<JewelryBoxRitualScreen>
 
   @override
   void dispose() {
-    // 누수 0: ticker·컨트롤러·notifier 모두 정리.
+    // 누수 0: 심장박동 햅틱·ticker·컨트롤러·notifier 모두 정리.
+    _heartbeat?.stop();
+    _heartbeat = null;
     _ticker.dispose();
     _repaint.dispose();
     _lid.dispose();
@@ -239,37 +270,56 @@ class _JewelryBoxRitualScreenState extends State<JewelryBoxRitualScreen>
               _restCenter = Offset(c.maxWidth / 2, c.maxHeight * _kRestY);
               _screenCenter = Offset(c.maxWidth / 2, c.maxHeight * _kCenterY);
 
-              // 상승 보간(easeOutCubic). rising 이전엔 0, done엔 1.
+              // 모든 시변(時變) 모션을 한 AnimatedBuilder로 묶어 매 프레임 갱신.
+              // _repaint(ticker clock)로 후광 펄스·두둥실 bob을 구동하고,
+              // _lid/_halo/_rise 컨트롤러 보간도 함께 반영(리빌드 범위 최소화).
+              return AnimatedBuilder(
+                animation: Listenable.merge([_repaint, _lid, _halo, _rise]),
+                builder: (context, _) {
+              // 상승 보간(easeInOutSine, 느린 두둥실). rising 이전엔 0, done엔 1.
               final riseT = (_phase == _Phase.done) ? 1.0 : _riseCurve.value;
-              final boxCenter = Offset.lerp(_restCenter, _screenCenter, riseT)!;
+              // 두둥실 bob — rising/done에서 잔잔한 sine 상하(±_kBobAmplitude).
+              // 상승이 진행될수록(riseT) 부유감이 차오르고, done에선 계속 떠 있다.
+              final floating = _phase == _Phase.rising || _phase == _Phase.done;
+              final bob = floating
+                  ? math.sin(_clock * 2 * math.pi / _kBobPeriod) *
+                      _kBobAmplitude *
+                      (_phase == _Phase.done ? 1.0 : riseT)
+                  : 0.0;
+              final boxCenter =
+                  Offset.lerp(_restCenter, _screenCenter, riseT)! +
+                      Offset(0, bob);
               _boxCenter = boxCenter;
-              final scale = ui.lerpDouble(1.0, 1.18, riseT)!;
+              final scale = ui.lerpDouble(1.0, 1.15, riseT)!;
 
-              // 후광 강도: 삽입에서 _halo로 켜지고, 상승에서 riseT로 강화.
-              // alpha 0.6→0.95, 반경 320→380.
-              final haloAlpha = (0.6 + 0.35 * riseT) * _halo.value;
-              final haloRadius = ui.lerpDouble(320, 380, riseT)!;
+              // 후광 펄스: 닫힘 직후 _halo로 등장(0→1), 이후 매 프레임 sin으로
+              // 밝기가 ~1초 주기로 부드럽게 커졌다 작아짐(번쩍번쩍, 부드럽게).
+              final pulse = floating
+                  ? 0.5 + 0.5 * math.sin(_clock * 2 * math.pi / _kHaloPulsePeriod)
+                  : 0.0;
+              // 베이스 0.55 + 펄스 0.40 스윙 → alpha ~0.55~0.95 사이로 출렁.
+              // _halo.value(0→1, 700ms)로 닫힘 직후 부드럽게 등장한다.
+              final haloAlpha = (0.55 + 0.40 * pulse) * _halo.value;
+              // 펄스에 맞춰 반경도 살짝 호흡(360~400px).
+              final haloRadius = 360 + 40 * pulse;
 
               return Stack(
                 alignment: Alignment.center,
                 children: [
-                  // ── 후광(함 뒤 RadialGradient, 금빛) ──
+                  // ── 후광(함 뒤 RadialGradient, 금빛 펄스) ──
                   Positioned(
                     left: boxCenter.dx - haloRadius / 2,
                     top: boxCenter.dy - haloRadius / 2,
-                    child: AnimatedBuilder(
-                      animation: Listenable.merge([_halo, _rise]),
-                      builder: (_, __) => IgnorePointer(
-                        child: Container(
-                          width: haloRadius,
-                          height: haloRadius,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            gradient: RadialGradient(colors: [
-                              AppColors.emberYellow.withValues(alpha: haloAlpha),
-                              Colors.transparent,
-                            ]),
-                          ),
+                    child: IgnorePointer(
+                      child: Container(
+                        width: haloRadius,
+                        height: haloRadius,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: RadialGradient(colors: [
+                            AppColors.emberYellow.withValues(alpha: haloAlpha),
+                            Colors.transparent,
+                          ]),
                         ),
                       ),
                     ),
@@ -289,19 +339,16 @@ class _JewelryBoxRitualScreenState extends State<JewelryBoxRitualScreen>
                       ),
                     ),
 
-                  // ── 3D 입체 보석함(상승하며 살짝 커짐) ──
+                  // ── 3D 입체 보석함(두둥실 상승하며 살짝 커짐) ──
                   Positioned(
                     left: boxCenter.dx - 103,
                     top: boxCenter.dy - 70,
-                    child: AnimatedBuilder(
-                      animation: Listenable.merge([_lid, _rise]),
-                      builder: (_, __) => Transform.scale(
-                        scale: scale,
-                        child: IgnorePointer(
-                          child: CustomPaint(
-                            size: const Size(206, 158),
-                            painter: _JewelryBoxPainter(lid: _lidCurve.value),
-                          ),
+                    child: Transform.scale(
+                      scale: scale,
+                      child: IgnorePointer(
+                        child: CustomPaint(
+                          size: const Size(206, 158),
+                          painter: _JewelryBoxPainter(lid: _lidCurve.value),
                         ),
                       ),
                     ),
@@ -420,6 +467,8 @@ class _JewelryBoxRitualScreenState extends State<JewelryBoxRitualScreen>
                     ),
                 ],
               );
+                },
+              );
             },
           ),
         ),
@@ -537,16 +586,62 @@ class _JewelryBoxPainter extends CustomPainter {
         ..color = _gold.withValues(alpha: 0.6),
     );
 
-    // ── ⑥ 뚜껑(경첩 rotateX 열림→닫힘 + 광택) ──
+    // ── ⑥ 어두운 내부 캐비티(뚜껑이 열린 만큼 입구로 보임) ──
+    _drawCavity(canvas, cx, frontTop, topInset);
+
+    // ── ⑦ 뚜껑(뒤쪽 경첩축 rotateX 열림→닫힘 + 광택) ──
     _drawLid(canvas, cx, frontTop);
   }
 
-  /// 뚜껑: 경첩이 본체 뒤쪽에 있는 듯 위로 들렸다 내려오며 rotateX로 닫힘.
+  /// 함 입구의 어두운 내부. 뚜껑이 열릴수록(l→0) 입구가 위로 더 열려 깊게 보인다.
+  /// 윗면(원근 사다리꼴)의 안쪽에 어두운 사다리꼴을 깔아 '뚜껑 열어둔 보석함' 느낌.
+  void _drawCavity(Canvas canvas, double cx, double frontTop, double topInset) {
+    final open = 1 - lid.clamp(0.0, 1.0); // 1=완전 열림.
+    if (open <= 0.001) return; // 닫히면 캐비티 숨김.
+    // 입구 깊이: 열릴수록 위로 더 깊게(최대 _topFaceH + 22).
+    final mouthDepth = _topFaceH + 22 * open;
+    final lipY = frontTop - _topFaceH; // 윗면 상변(입구 뒤쪽 모서리).
+    final innerL = cx - _boxW / 2 + topInset;
+    final innerR = cx + _boxW / 2 - topInset;
+    // 입구 사다리꼴: 앞(아래·넓게) → 뒤(위·살짝 좁게), 어두운 안쪽.
+    final cavity = Path()
+      ..moveTo(innerL + 4, frontTop) // 앞 좌
+      ..lineTo(innerR - 4, frontTop) // 앞 우
+      ..lineTo(innerR - 10, lipY - (mouthDepth - _topFaceH)) // 뒤 우
+      ..lineTo(innerL + 10, lipY - (mouthDepth - _topFaceH)) // 뒤 좌
+      ..close();
+    // 안쪽 음영 그라데이션(앞은 덜 어둡고 뒤로 갈수록 깊은 어둠).
+    canvas.drawPath(
+      cavity,
+      Paint()
+        ..shader = LinearGradient(
+          begin: Alignment.bottomCenter,
+          end: Alignment.topCenter,
+          colors: [
+            const Color(0xFF35244B).withValues(alpha: 0.9 * open + 0.1),
+            const Color(0xFF1C1230).withValues(alpha: open),
+          ],
+        ).createShader(Rect.fromLTRB(
+            innerL, lipY - (mouthDepth - _topFaceH), innerR, frontTop)),
+    );
+    // 입구 앞턱 금빛 림(빛 받는 모서리).
+    canvas.drawLine(
+      Offset(innerL + 4, frontTop),
+      Offset(innerR - 4, frontTop),
+      Paint()
+        ..color = _gold.withValues(alpha: 0.5 * open)
+        ..strokeWidth = 1.2,
+    );
+  }
+
+  /// 뚜껑: 본체 뒤쪽 경첩을 축으로 뒤로 젖혀 열림(l=0) ↔ 앞으로 회전해 닫힘(l=1).
+  /// 열린 상태에선 뚜껑이 뒤로 ~80° 젖혀져 안쪽 캐비티가 드러난다.
   void _drawLid(Canvas canvas, double cx, double frontTop) {
     final l = lid.clamp(0.0, 1.0);
-    // 닫힘 진행에 따라 위로 들린 높이(top 오프셋)와 X축 회전이 0으로 수렴.
-    final lift = (1 - l) * 54; // 위로 들렸다 내려옴.
-    final tilt = (1 - l) * 0.9; // rotateX(라디안).
+    // 닫힘 진행에 따라 뒤로 젖힌 회전과 약간의 들림이 0으로 수렴.
+    // 열림(l=0): 뒤쪽 경첩축으로 ~80°(1.4rad) 젖혀 입구가 위로 열리고 캐비티가 보임.
+    final lift = (1 - l) * 30; // 경첩이 살짝 위로 들렸다 안착.
+    final tilt = (1 - l) * 1.4; // rotateX(라디안) — 열림 시 깊게 뒤로 젖힘.
 
     // 뚜껑은 본체 정면 상단(윗면 위)에 안착. 닫힘 시 뚜껑 하단 = frontTop - topFaceH.
     final lidBottom = frontTop - _topFaceH;
