@@ -303,6 +303,33 @@ class _JewelryBoxRitualScreenState extends State<JewelryBoxRitualScreen>
               // 펄스에 맞춰 반경도 살짝 호흡(360~400px).
               final haloRadius = 360 + 40 * pulse;
 
+              // ── 함 입구(mouth) 기하 — 종이가 '쏙' 빨려드는 목표/클립 기준 ──
+              // 페인터 좌표(206×158): frontTop=72, 입구 앞턱(lip front)=frontTop,
+              // 입구 뒤모서리=frontTop-_topFaceH. 함 left=boxCenter.dx-103,
+              // top=boxCenter.dy-70. scale은 boxCenter(=함 중심부) 기준이 아니라
+              // Positioned 좌상단 기준이므로 입구 y에 (scale-1) 보정은 미미 — idle
+              // (scale≈1)에서 정밀히 맞추고 상승 구간엔 _inserted라 종이는 없음.
+              const painterFrontTop = 156.0 - 84.0; // = 72
+              const painterTopFaceH = 16.0;
+              final boxTopLeftY = boxCenter.dy - 70;
+              // 입구 앞턱(클립 라인): 이 y '아래'로 내려간 종이 부분은 함 속으로
+              // 사라진다(앞벽 뒤로 들어감). 살짝 위(=뒤모서리쪽)로 잡아 입구 안으로
+              // 빨려드는 느낌을 강조.
+              final mouthClipY = boxTopLeftY +
+                  (painterFrontTop - painterTopFaceH * 0.4) * scale;
+              // 종이가 빨려드는 목표 중심(입구 안 살짝 아래). cavity 중앙 근처.
+              final mouthCenterY = boxTopLeftY +
+                  (painterFrontTop - painterTopFaceH * 0.5) * scale;
+
+                  // 종이 변형값(approachT에 따라 입구로 빨려듦).
+                  // 시작 위치: 화면 상단부. 목표: 입구 중심으로 수렴.
+                  final paperStartY = c.maxHeight * 0.42 - 160 + 150; // 카드 중심.
+                  final paperCenterY =
+                      ui.lerpDouble(paperStartY, mouthCenterY, _approachT)!;
+                  final paperScale = ui.lerpDouble(1.0, 0.18, _approachT)!;
+                  // 원근으로 상단이 뒤로 눕는 rotateX(입구로 빨려드는 느낌).
+                  final paperTilt = _approachT * 0.95; // 라디안(≈54°).
+
               return Stack(
                 alignment: Alignment.center,
                 children: [
@@ -325,21 +352,46 @@ class _JewelryBoxRitualScreenState extends State<JewelryBoxRitualScreen>
                     ),
                   ),
 
-                  // ── 종이(끌어내릴수록 작아지며 함으로) ──
+                  // ── 종이(입구로 빨려들며 함 속으로 담김) ──
+                  // z-순서 핵심: [후광/cavity 어둠] → 〈종이〉 → [함 앞벽·뚜껑·금테].
+                  // 종이는 함 painter '아래'(=뒤)에 쌓이고, ClipRect로 입구 라인
+                  // (mouthClipY) 위쪽만 보이게 잘라 — 내려간(이미 들어간) 부분은
+                  // 입구 안으로 사라진다(앞벽 뒤로 들어가 담기는 모핑).
                   if (!_inserted)
-                    Positioned(
-                      top: c.maxHeight * 0.42 - 160 + _drag,
-                      child: GestureDetector(
-                        onVerticalDragUpdate: _onDrag,
-                        onVerticalDragEnd: _onDragEnd,
-                        child: Transform.scale(
-                          scale: 1 - _approachT * 0.5,
-                          child: PaperCard(text: text, width: 220, height: 300),
+                    Positioned.fill(
+                      child: ClipRect(
+                        clipper: _MouthClipper(mouthClipY),
+                        child: Stack(
+                          alignment: Alignment.center,
+                          children: [
+                            Positioned(
+                              // Transform(alignment:center)가 박스 중심 기준 변형
+                              // → 레이아웃 중심을 paperCenterY에 두면 변형 후에도
+                              //   시각 중심이 paperCenterY에 고정(카드 높이 300).
+                              top: paperCenterY - 150,
+                              child: GestureDetector(
+                                onVerticalDragUpdate: _onDrag,
+                                onVerticalDragEnd: _onDragEnd,
+                                child: Transform(
+                                  alignment: Alignment.center,
+                                  transform: Matrix4.identity()
+                                    ..setEntry(3, 2, 0.0014)
+                                    ..rotateX(paperTilt)
+                                    ..scaleByDouble(
+                                        paperScale, paperScale, 1.0, 1.0),
+                                  child: PaperCard(
+                                      text: text, width: 220, height: 300),
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     ),
 
                   // ── 3D 입체 보석함(두둥실 상승하며 살짝 커짐) ──
+                  // 종이보다 '위'(=앞)에 그려져 앞벽·뚜껑·금테가 종이를 가린다 →
+                  // 입구 아래로 내려간 종이는 함 속으로 들어가 보인다.
                   Positioned(
                     left: boxCenter.dx - 103,
                     top: boxCenter.dy - 70,
@@ -475,6 +527,24 @@ class _JewelryBoxRitualScreenState extends State<JewelryBoxRitualScreen>
       ),
     );
   }
+}
+
+// ── 입구 클립: y=mouthY '위쪽'만 보이게 잘라 종이가 입구 아래로 사라지게 ──
+/// 종이 레이어를 함 입구 라인(mouthY) 위쪽만 남기고 잘라낸다. 드래그로 종이가
+/// 입구로 내려가면 mouthY '아래' 부분이 클립에 먹혀 함 속(앞벽 뒤)으로 사라진다.
+/// 진짜 함 통째 뒤로 숨는 게 아니라 '입구로 빨려드는' 모핑의 핵심.
+class _MouthClipper extends CustomClipper<Rect> {
+  const _MouthClipper(this.mouthY);
+
+  /// 입구 앞턱 y(이 아래로 내려간 종이는 보이지 않음).
+  final double mouthY;
+
+  @override
+  Rect getClip(Size size) =>
+      Rect.fromLTRB(0, 0, size.width, mouthY.clamp(0.0, size.height));
+
+  @override
+  bool shouldReclip(covariant _MouthClipper old) => old.mouthY != mouthY;
 }
 
 // ════════════════════════════════════════════════════════════════════════════
