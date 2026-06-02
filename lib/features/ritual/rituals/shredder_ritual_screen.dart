@@ -70,6 +70,7 @@ class _ShredderRitualScreenState extends State<ShredderRitualScreen>
 
   double _feed = 0; // feeding 동안 드래그로만 증가(투입 트리거 판정용).
   double _grind = 0; // grinding 동안 3초 컨트롤러로 0→1(드래그 무관).
+  double _feedAtGrindStart = 0; // grinding 진입 시 투입 강도(햅틱 연속용 기준점).
   Offset _slot = Offset.zero;
 
   // 3초 자동 분쇄 컨트롤러(반드시 bounded — unbounded()..repeat() 금지).
@@ -115,8 +116,10 @@ class _ShredderRitualScreenState extends State<ShredderRitualScreen>
     if (_phase != _Phase.grinding) return;
     // 종이 흡입을 ease-in-out으로(시작·끝 부드럽게, 중간 가속).
     _grind = Curves.easeInOut.transform(_grindCtrl.value);
-    // 햅틱 강도 곡선 동기(haptics 내부에서 §5.3 곡선 적용).
-    _grindHandle?.setProgress(_grindCtrl.value);
+    // 햅틱 강도 곡선 동기(haptics 내부에서 §5.3 곡선 적용). 투입 단계서 이어받은
+    // 강도(_feedAtGrindStart)에서 1.0까지 연속 상승 — 투입↔분쇄 사이 끊김 없음.
+    _grindHandle
+        ?.setProgress(_feedAtGrindStart + (1 - _feedAtGrindStart) * _grindCtrl.value);
     _emitGrindStrips();
     setState(() {}); // motor shake 진폭·종이 가시비율 갱신.
   }
@@ -185,9 +188,11 @@ class _ShredderRitualScreenState extends State<ShredderRitualScreen>
     if (_phase != _Phase.feeding) return; // grinding/bursting/done 중 입력 무시.
     _feed = (_feed + d.primaryDelta! / _paperSize.height).clamp(0.0, 1.0);
 
-    // 투입량 증가 시 슬릿에서 소량 strip 낙하(투입 피드백, 연속 진동 없음).
+    // 투입량 증가 시 슬릿에서 소량 strip 낙하(투입 피드백).
     if (_feed > _lastStripAt + 0.02) {
       _lastStripAt = _feed;
+      // 종이가 파쇄기로 들어가는(이빨에 닿는) 순간부터 갈리는 햅틱 시작.
+      _grindHandle ??= Haptics.instance.startShredGrind();
       _field.emitStrip(
         origin: _slot,
         width: _paperSize.width,
@@ -195,6 +200,8 @@ class _ShredderRitualScreenState extends State<ShredderRitualScreen>
         palette: const [AppColors.paper, AppColors.paperShadow],
       );
     }
+    // 투입량(_feed)에 비례해 갈림 강도 상승(더 밀어넣을수록 세게).
+    _grindHandle?.setProgress(_feed);
 
     // 즉시 투입 트리거: 드래그 중 임계 도달.
     if (_feed >= _kFeedThreshold) {
@@ -209,7 +216,9 @@ class _ShredderRitualScreenState extends State<ShredderRitualScreen>
     if (_feed >= _kFeedCommit) {
       _enterGrinding(); // 뗀 시점 커밋 임계 이상 → 분쇄 확정.
     } else {
-      // 끝까지 안 넣고 떼면 리셋(강요 없음).
+      // 끝까지 안 넣고 떼면 리셋(강요 없음) — 투입 중 시작된 갈림 햅틱도 정지.
+      _grindHandle?.stop();
+      _grindHandle = null;
       setState(() {
         _phase = _Phase.idle;
         _feed = 0;
@@ -226,8 +235,10 @@ class _ShredderRitualScreenState extends State<ShredderRitualScreen>
     // 진입 시점 _feed 값을 종이 위치로 고정, 이후는 _grind가 주도.
     _grind = _feed;
     _lastStripAt = 0; // grinding strip 방출 기준점 리셋.
-    // 연속 그라인드 햅틱 시작(haptics 소유 API).
-    _grindHandle = Haptics.instance.startShredGrind();
+    // 투입 단계서 이미 시작된 갈림 강도를 이어받아 끊김 없이 1.0까지 상승.
+    _feedAtGrindStart = _feed;
+    // 투입 중 이미 켜졌으면 유지, 아니면(임계 즉시도달 등) 지금 시작.
+    _grindHandle ??= Haptics.instance.startShredGrind();
     // 3초 자동 분쇄 시작.
     _grindCtrl.forward(from: 0);
     setState(() {});
