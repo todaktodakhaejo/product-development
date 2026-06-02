@@ -73,6 +73,9 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
   late final AnimationController _fly;
   // 구름 흩어짐 컨트롤러(done 진입 후 0→1, 잔향 구름이 옅어지며 흩어짐). bounded.
   late final AnimationController _cloudFade;
+  // 흔들림 위상 컨트롤러(0→1을 빠르게 반복 = sin 떨림 위상). bounded(repeat).
+  //  드래그(당기는) 동안에만 repeat, 놓으면 stop+reset. unbounded 미사용.
+  late final AnimationController _wobble;
   // 구름 퍼프 결정적 시드(재현성).
   static const int _cloudSeed = 20260601;
   // 천천히 멀어지는 느낌(easeInOutSine): 부드럽게 출발해 일정히 나아가며
@@ -95,6 +98,8 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
   // 당기는 동안 '긴장감' 피드백 누적(folded에서 드래그 시). 끌수록 틱이 촘촘·세짐.
   double _pullAccum = 0; // 마지막 틱 이후 끈 거리(틱 간격 판정).
   double _pullTotal = 0; // 총 끈 거리(긴장 강도 판정).
+  // 당기는 중 플래그(folded 드래그 동안 true). 흔들림 Transform 게이트.
+  bool _pulling = false;
 
   // 인플레이스 완료 토글.
   bool _showMessage = false;
@@ -111,6 +116,12 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     // 잔향 구름 흩어짐: done 진입 후 천천히(완료 멘트와 겹치지 않게 은은히).
     _cloudFade =
         AnimationController(vsync: this, duration: const Duration(seconds: 3));
+    // 흔들림 위상: 짧은 주기(120ms)로 0→1 반복 = 빠른 떨림. 값은 sin 위상으로만 사용.
+    //  bounded controller에 repeat() — unbounded()..repeat() 아님.
+    _wobble = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 120),
+    );
   }
 
   // ── 접기: 크리스 햅틱(직접 fire, fired-set 가드) ──────────────────────────
@@ -155,6 +166,10 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     if (_phase != _Phase.folded) return;
     _pullAccum = 0;
     _pullTotal = 0;
+    // 잡는 순간부터 다트가 흔들흔들(활시위 긴장). bounded controller repeat.
+    _pulling = true;
+    _wobble.repeat(); // 0→1 짧은 주기 반복 = sin 떨림 위상.
+    setState(() {}); // _buildObject folded 분기가 흔들림 Transform을 그리도록.
     Haptics.instance.fire(HapticLevel.selection); // 잡는 순간 미세한 신호.
   }
 
@@ -173,13 +188,36 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     }
   }
 
+  // 흔들림 종료(놓음/취소): repeat 정지 + 위상 리셋. 손을 떼면 더는 떨지 않음.
+  void _stopWobble() {
+    if (!_pulling) return;
+    _pulling = false;
+    _wobble.stop();
+    _wobble.value = 0; // 다음 당김을 위해 위상 리셋(잔류 떨림 0).
+  }
+
+  // 드래그 취소(시스템이 제스처를 가로챔 등) — 흔들림만 정리, 상태 유지.
+  void _onPullCancel() {
+    if (_phase != _Phase.folded) return;
+    _stopWobble();
+    setState(() {}); // 떨림 멈춘 정지 다트로 다시 그림.
+  }
+
   // ── 던지기(throw) — onPanEnd ──────────────────────────────────────────────
   void _throw(DragEndDetails d) {
     if (_phase != _Phase.folded) return;
+    // 놓는 순간 흔들림 종료(이후 비행은 기존 _throw 그대로).
+    _stopWobble();
     final v = d.velocity.pixelsPerSecond;
     final dist = v.distance;
-    if (dist == 0) return; // NaN 방지: 정규화 생략하고 즉시 return.
-    if (dist < _kThrowMin) return; // 약투 무시(제자리, 상태 유지).
+    if (dist == 0) {
+      setState(() {}); // 떨림 멈춘 정지 다트로 환원(상태 유지).
+      return; // NaN 방지: 정규화 생략하고 즉시 return.
+    }
+    if (dist < _kThrowMin) {
+      setState(() {}); // 약투 — 떨림만 멈춘 정지 다트로 환원(제자리).
+      return; // 약투 무시(제자리, 상태 유지).
+    }
     _flyDir = v / dist;
     _flySpeed = ((dist - _kThrowMin) / _kSpeedSpan).clamp(0.0, 1.0);
     // 글리프 코는 -y이므로 진행 방향 정렬 보정각 = atan2 + π/2.
@@ -232,6 +270,7 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
       ..removeStatusListener(_onFlyStatus)
       ..dispose();
     _cloudFade.dispose();
+    _wobble.dispose();
     super.dispose();
   }
 
@@ -253,9 +292,11 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
                   onPanStart: _phase == _Phase.folded ? _onPullStart : null,
                   onPanUpdate: _phase == _Phase.folded ? _onPullUpdate : null,
                   onPanEnd: _phase == _Phase.folded ? _throw : null,
+                  onPanCancel: _phase == _Phase.folded ? _onPullCancel : null,
                   behavior: HitTestBehavior.opaque,
                   child: AnimatedBuilder(
-                    animation: Listenable.merge([_fold, _flyCurve]),
+                    // _wobble 추가: folded 당김 중 다트 떨림이 매 프레임 갱신.
+                    animation: Listenable.merge([_fold, _flyCurve, _wobble]),
                     builder: (context, _) => _buildObject(context, text),
                   ),
                 ),
@@ -440,9 +481,30 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
       return const _SizedPaper(float: true);
     }
 
-    // folded: 정지 다트.
+    // folded: 정지 다트(당기지 않을 땐) / 당기는 동안엔 흔들흔들 떨림.
     if (_phase == _Phase.folded) {
-      return const PaperPlaneGlyph(size: _kGlyphSize, shadow: true);
+      const glyph = PaperPlaneGlyph(size: _kGlyphSize, shadow: true);
+      if (!_pulling) return glyph;
+      // ── 당김 중 떨림(활시위 긴장) ──
+      // 위상: _wobble(0→1)을 2π로. 회전·translate는 살짝 다른 주파수/위상의
+      //  sin을 겹쳐 '단조롭지 않게 부르르' 떨리게 한다(paint-only, 레이아웃 무관).
+      final phase = _wobble.value * 2 * pi;
+      // 당긴 정도에 따라 진폭 살짝 증가(0→1, 더 당길수록 긴장 ↑). 상한 클램프.
+      final tension = (_pullTotal / 160).clamp(0.0, 1.0);
+      // 회전 ±2°~±4°(라디안). 기본 2° + 긴장 2°.
+      final angAmp = (2.0 + tension * 2.0) * pi / 180;
+      final angle = sin(phase) * angAmp;
+      // 미세 translate ±2~3px(회전과 다른 위상/주파수로 떨림이 섞이게).
+      final tAmp = 2.0 + tension * 1.0; // 2~3px.
+      final dx = sin(phase * 1.7 + 0.6) * tAmp;
+      final dy = cos(phase * 1.3) * tAmp;
+      return Transform.translate(
+        offset: Offset(dx, dy),
+        child: Transform.rotate(
+          angle: angle,
+          child: glyph,
+        ),
+      );
     }
 
     // folding: 3단계 접기 모핑 + 막바지 글리프 크로스페이드.

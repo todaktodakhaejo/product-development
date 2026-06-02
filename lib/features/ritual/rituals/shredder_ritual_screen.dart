@@ -4,14 +4,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
 
 import '../../../core/haptics.dart';
+import '../../../core/strings.dart';
 import '../../../state/session.dart';
 import '../../../theme/app_theme.dart';
-import '../../complete/complete_screen.dart';
 import '../widgets/paper_card.dart';
 import '../widgets/particles.dart';
 
 /// 파쇄 의식 단계.
-/// idle → feeding(드래그=투입 트리거) → grinding(3초 자동) → bursting(폭죽) → done.
+/// idle → feeding(드래그=투입 트리거) → grinding(3초 자동) → bursting(~3초 폭죽
+/// 연쇄) → done(인플레이스 완료 멘트·버튼). 태우기와 동일한 인플레이스 완료 —
+/// 라우트 전환 없이 같은 파쇄기 화면에 머문다.
 enum _Phase { idle, feeding, grinding, bursting, done }
 
 // ── 투입/분쇄 임계 상수 (실기기 손맛 기준 미세조정 가능, 명세 §4.3·§11) ──
@@ -24,8 +26,21 @@ const double _kFeedCommit = 0.60;
 /// 투입 확정 후 고정 분쇄 시간(드래그 속도 무관).
 const Duration _kGrindDuration = Duration(milliseconds: 3000);
 
-/// 폭죽 트리거 후 완료 화면 전이까지.
-const Duration _kBurstToDone = Duration(milliseconds: 900);
+// ── 폭죽 피날레 / 인플레이스 완료 타임라인(폭죽 시작=0 기준) ────────────────
+/// 시각 폭죽 연쇄가 ~3초간 팡!…팡팡!! 터지는 총 길이. 이 시간이 지나야
+/// 완료 멘트가 떠오른다(폭죽이 가라앉을 여유 +0.2s 포함). 병렬로 추가되는
+/// `Haptics.fireworksFinale()`의 3초 햅틱 시퀀스와 길이를 맞춘다.
+const Duration _kFinaleDur = Duration(milliseconds: 3200);
+
+/// 완료 멘트가 다 뜬 뒤 '처음으로' 버튼이 떠오르기까지의 추가 지연
+/// (폭죽 시작 기준 ≈4.5s). 태우기 `_kButtonDelay` 톤과 동일한 호흡.
+const Duration _kButtonDelay = Duration(milliseconds: 4500);
+
+/// 완료 멘트 페이드인 시간(opacity 0→1, ease).
+const Duration _kMessageFade = Duration(milliseconds: 1300);
+
+/// '처음으로' 버튼 페이드인 시간(opacity 0→1).
+const Duration _kButtonFade = Duration(milliseconds: 800);
 
 /// RIT-04 파쇄기. 종이를 투입구로 밀어 넣으면 "투입 트리거"가 걸리고,
 /// 이후 드래그와 무관하게 3초간 자동 분쇄(연속 strip 낙하 + motor shake +
@@ -48,6 +63,11 @@ class _ShredderRitualScreenState extends State<ShredderRitualScreen>
   static const _paperSize = Size(240, 320);
 
   _Phase _phase = _Phase.idle;
+
+  // ── 완료 인플레이스 오버레이 시퀀스 토글(폭죽 후 Future.delayed로 구동) ──
+  bool _showMessage = false; // 폭죽 시작 +≈3.2s 멘트 페이드인.
+  bool _showButton = false; // +≈4.5s '처음으로' 버튼 페이드인.
+
   double _feed = 0; // feeding 동안 드래그로만 증가(투입 트리거 판정용).
   double _grind = 0; // grinding 동안 3초 컨트롤러로 0→1(드래그 무관).
   Offset _slot = Offset.zero;
@@ -61,6 +81,8 @@ class _ShredderRitualScreenState extends State<ShredderRitualScreen>
   // grinding 중 strip 방출 기준점(컨트롤러 value). 매 프레임 과방출 방지.
   double _lastStripAt = 0;
   final math.Random _stripRng = math.Random(0x5117); // 결정적 재현 시드
+  // 폭죽 연쇄 위치/입자 jitter용 결정적 시드(파티클 결정적 재현).
+  final math.Random _burstRng = math.Random(0xF1E5); // "fires"
 
   static const _palette = [
     AppColors.ballCore,
@@ -218,12 +240,48 @@ class _ShredderRitualScreenState extends State<ShredderRitualScreen>
     _phase = _Phase.bursting;
     _grind = 1.0;
 
-    // §6.2 계약: grind 정지를 burstPop 보다 '반드시 먼저'(겹쳐 뭉개짐 방지).
+    // §6.2 계약: grind 정지를 폭죽 햅틱보다 '반드시 먼저'(겹쳐 뭉개짐 방지).
     _grindHandle?.stop();
     _grindHandle = null;
-    Haptics.instance.burstPop();
+    // 폭죽 햅틱: 병렬로 추가되는 3초 진동 시퀀스를 1회 호출(기존 burstPop 대체).
+    // 시각 폭죽 연쇄(~3초)와 길이를 맞춰 팡!…팡팡!! 진동이 함께 간다.
+    Haptics.instance.fireworksFinale();
 
-    // 0ms 시각 폭죽(다색 120 + 삼각 confetti 40 동시).
+    // ── 0ms: 1차 큰 폭죽(다색 120 + 삼각 confetti 40 동시) ──
+    _bigBurst();
+
+    // ── 0~3s: 작은 폭죽들이 staggered로 연달아(팡!…팡팡!!) ──
+    // 결정적 시점·시드로 여러 번 터뜨린다. 중간중간 2~3발이 겹치는 '팡팡!!'
+    // 구간을 두어 폭죽다운 리듬을 만든다(완전 균일 X). 큰 폭죽 1발도 후반에 재투입.
+    _scheduleBurst(550, small: true);
+    _scheduleBurst(720, small: true); // 팡팡(겹침)
+    _scheduleBurst(1100, big: true); // 중반 큰 폭죽 재점화
+    _scheduleBurst(1500, small: true);
+    _scheduleBurst(1640, small: true); // 팡팡(겹침)
+    _scheduleBurst(1780, small: true); // 팡팡팡(3연)
+    _scheduleBurst(2200, small: true);
+    _scheduleBurst(2550, big: true); // 후반 큰 폭죽
+    _scheduleBurst(2700, small: true); // 잔불꽃
+    _scheduleBurst(2880, small: true);
+
+    // ── ≈3.2s: 폭죽이 가라앉으면 인플레이스 완료 멘트 페이드인(+success 1회) ──
+    Future.delayed(_kFinaleDur, () {
+      if (!mounted) return;
+      _phase = _Phase.done;
+      // 멘트가 떠오르는 순간 부드러운 success 햅틱 1회(태우기 완료 톤과 동일).
+      Haptics.instance.fire(HapticLevel.success, throttle: false);
+      setState(() => _showMessage = true);
+    });
+    // ── ≈4.5s: '처음으로' 버튼 페이드인 ──
+    Future.delayed(_kButtonDelay, () {
+      if (!mounted) return;
+      setState(() => _showButton = true);
+    });
+    setState(() {});
+  }
+
+  // 큰 폭죽 1발: 다색 120 + 삼각 confetti 40 + 반짝이 잔입자(+170ms).
+  void _bigBurst() {
     _field.emitBurst(
       origin: _slot,
       count: 120,
@@ -243,23 +301,45 @@ class _ShredderRitualScreenState extends State<ShredderRitualScreen>
       gravity: 700,
       shape: ParticleShape.triangle,
     );
-    // +220ms 잔입자 반짝이(burstPop의 2차 medium 팝과 동기).
-    Future.delayed(const Duration(milliseconds: 220), () {
+    Future.delayed(const Duration(milliseconds: 170), () {
       if (!mounted) return;
       _field.emitBurstSparkle(origin: _slot, count: 50, speed: 480);
     });
-    // 폭죽 후 완료 전이.
-    Future.delayed(_kBurstToDone, _complete);
-    setState(() {});
   }
 
-  void _complete() {
-    if (_phase == _Phase.done || !mounted) return;
-    _phase = _Phase.done;
-    Navigator.of(context).pushReplacement(MaterialPageRoute(
-      builder: (_) =>
-          const CompleteScreen(afterglow: Text('🎊', style: TextStyle(fontSize: 96))),
-    ));
+  // 작은 폭죽 1발: 슬롯 주변에서 살짝 흩어진 위치에 팡! (결정적 시드).
+  // 큰 폭죽보다 적은 입자·느린 속도로 '잔폭죽' 느낌. 위치 jitter로 매번 다른 곳.
+  void _smallBurst() {
+    final jx = (_burstRng.nextDouble() - 0.5) * 160;
+    final jy = (_burstRng.nextDouble() - 0.5) * 120 - 30; // 살짝 위쪽 편향
+    final origin = _slot + Offset(jx, jy);
+    _field.emitBurst(
+      origin: origin,
+      count: 36 + _burstRng.nextInt(24), // 36~59
+      palette: _palette,
+      speed: 560 + _burstRng.nextDouble() * 240, // 560~800
+      spread: 2.4,
+      gravity: 760,
+    );
+    _field.emitBurstSparkle(origin: origin, count: 18, speed: 360);
+  }
+
+  // 폭죽 1발을 delayMs 뒤 예약(mounted 가드). big/small 택1.
+  void _scheduleBurst(int delayMs, {bool big = false, bool small = false}) {
+    Future.delayed(Duration(milliseconds: delayMs), () {
+      if (!mounted || _phase == _Phase.done) return;
+      if (big) {
+        _bigBurst();
+      } else {
+        _smallBurst();
+      }
+    });
+  }
+
+  // ── '처음으로': 세션 리셋 + 홈 복귀(태우기 _backToHome와 동일) ──
+  void _backToHome() {
+    SessionScope.of(context).reset();
+    Navigator.of(context).popUntil((r) => r.isFirst);
   }
 
   @override
@@ -379,6 +459,89 @@ class _ShredderRitualScreenState extends State<ShredderRitualScreen>
                           style: TextStyle(color: Colors.white60)),
                     ),
                   ),
+
+                  // ── 완료 멘트(인플레이스 페이드인) — 화면 중앙 ──
+                  // 태우기와 동일 카피·스타일. 폭죽 위 가독성 위해 그림자.
+                  // 멘트가 다 떠야 버튼이 뜨므로 IgnorePointer.
+                  if (_phase == _Phase.done)
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: AnimatedOpacity(
+                          duration: _kMessageFade,
+                          curve: Curves.easeInOut,
+                          opacity: _showMessage ? 1.0 : 0.0,
+                          child: const Center(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  kCompletionMessage,
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    fontSize: 26,
+                                    fontWeight: FontWeight.w700,
+                                    shadows: [
+                                      Shadow(
+                                        blurRadius: 12,
+                                        color: Color(0x99000000),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                SizedBox(height: 12),
+                                Text(
+                                  '잘 보냈어요. 마음이 조금 가벼워졌길.',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    color: Colors.white60,
+                                    shadows: [
+                                      Shadow(
+                                        blurRadius: 10,
+                                        color: Color(0x80000000),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+
+                  // ── '처음으로' 버튼(멘트 뒤 페이드인) — 하단 고정 ──
+                  if (_phase == _Phase.done)
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      child: AnimatedOpacity(
+                        duration: _kButtonFade,
+                        curve: Curves.easeInOut,
+                        opacity: _showButton ? 1.0 : 0.0,
+                        child: IgnorePointer(
+                          ignoring: !_showButton,
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(32, 0, 32, 36),
+                            child: SizedBox(
+                              width: double.infinity,
+                              child: FilledButton(
+                                onPressed: _backToHome,
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: AppColors.ballGlow,
+                                  padding:
+                                      const EdgeInsets.symmetric(vertical: 16),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(16),
+                                  ),
+                                ),
+                                child: const Text('처음으로'),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
                 ],
               );
             },

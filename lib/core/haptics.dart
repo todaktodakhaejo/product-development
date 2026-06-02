@@ -124,8 +124,9 @@ class Haptics {
 
   /// 파쇄기 연속 그라인드(§5.3). 시작 즉시 모터 질감 연속 펄스가 돌기 시작한다.
   ///
-  /// 3초 동안 ~45ms 간격(말미 35ms)으로 임팩트를 반복해 '그르렁대는 모터'를
-  /// 흉내낸다. 강도는 자체 경과시간 기반 기본 곡선(medium→heavy 고조)으로도 동작하며,
+  /// 3초 동안 staccato 펄스 묶음(3발 tight + 공백 반복, 말미 더 촘촘)으로 임팩트를
+  /// 반복해 '잘게 끊기며 갈리는 모터'를 흉내낸다. 강도는 자체 경과시간 기반 기본
+  /// 곡선(medium→heavy 고조)으로도 동작하며,
   /// [GrindHandle.setProgress]로 화면 진행도(0~1)를 주입하면 그 곡선을 따른다.
   ///
   /// 반환된 [GrindHandle.stop]을 **bursting 진입·dispose에서 반드시 호출**한다
@@ -179,15 +180,17 @@ class Haptics {
 
   /// [BlazeHandle]이 1펄스 발사할 때 사용(throttle 우회).
   ///
-  /// blaze 강도(0~1)를 레벨로 양자화한다. 파쇄기 [_grindPulse]와 **동일 철학·
-  /// 동일 임계**(2026-06-01 실기기 피드백 반영) — 태우기도 **light를 쓰지 않고**
-  /// medium을 바닥, 중반 이후(≥0.62)와 최말미 정점 구간은 heavy를 상시 사용해
-  /// 약하지 않게 묵직한 화력감을 낸다.
+  /// blaze 강도(0~1)를 **3밴드**로 양자화한다(2026-06-02 '약→강 점진' 재적용) —
+  /// 점화 직후엔 light로 약하게 시작해, 화력이 오르면 medium을 거쳐, 후반·말미
+  /// 정점 구간(≥0.70 또는 spikeHeavy)에서 heavy로 묵직해진다. 파쇄기 [_grindPulse]
+  /// (medium 바닥)와 달리 태우기는 light 바닥을 허용해 '서서히 타오르는' 점진감을 낸다.
   /// (HapticFeedback의 천장은 heavyImpact. 더 센 '연속' 진동은 Core Haptics 필요.)
   void _blazePulse(double intensity, {bool spikeHeavy = false}) {
-    final level = (intensity >= 0.62 || spikeHeavy)
+    final level = (intensity >= 0.70 || spikeHeavy)
         ? HapticLevel.heavy
-        : HapticLevel.medium;
+        : intensity >= 0.42
+            ? HapticLevel.medium
+            : HapticLevel.light;
     fire(level, throttle: false);
   }
 
@@ -257,6 +260,52 @@ class Haptics {
         () => fire(HapticLevel.light, throttle: false));
     Future<void>.delayed(const Duration(milliseconds: 380),
         () => fire(HapticLevel.light, throttle: false)); // 마지막 잔향
+  }
+
+  /// 3초 폭죽 피날레(파쇄기 완료). 호출 즉시 내부 지연 타이머로 ~3초에 걸친
+  /// '팡! 팡팡!!' 연쇄 폭죽 진동을 발사한다.
+  ///
+  /// 진짜 폭죽처럼: 0ms에 큰 1발(heavy+success 겹침)로 터뜨린 뒤, ~3000ms까지
+  /// 여러 폭죽 묶음을 staggered로 쏜다. 각 묶음 = heavy(또는 medium) 1발 + 30~60ms
+  /// 간격으로 흩어지는 medium/light 2~4발('팡팡!!'). 묶음 사이는 ~250~500ms 불규칙
+  /// 간격(폭죽 터지는 리듬)이고, 후반으로 갈수록 약간 성기게 잦아든다.
+  ///
+  /// 전부 `throttle:false`. **외부 상태를 참조하지 않으므로** 화면이 도중에
+  /// dispose돼도 무해하다(엔진 싱글톤 + 짧은 독립 [Future.delayed] 타이머들).
+  /// 파쇄기 화면이 bursting 완료 순간 1회 호출한다. 미지원/웹에서는 무음 통과.
+  void fireworksFinale() {
+    // 0ms: 큰 1발 — heavy+success 겹침으로 묵직한 두께의 첫 폭발.
+    fire(HapticLevel.heavy, throttle: false);
+    fire(HapticLevel.success, throttle: false);
+
+    // 묶음 시작 시각(ms). ~3000ms까지, 후반으로 갈수록 간격을 벌려 잦아들게 한다.
+    // 간격: 280 → 320 → 360 → 420 → 480 → 540ms (점점 성기게).
+    const burstStartsMs = <int>[300, 620, 980, 1400, 1880, 2420];
+    // 묶음별 흩어지는 잔폭죽 수(팡팡!! 2~4발) — 초반 풍성, 후반 절제.
+    const scatterCounts = <int>[4, 3, 4, 3, 2, 2];
+    // 묶음 리드 레벨: heavy/medium 교차(초반 강, 후반 약).
+    const leadHeavy = <bool>[true, true, false, true, false, false];
+
+    for (var b = 0; b < burstStartsMs.length; b++) {
+      final start = burstStartsMs[b];
+      final lead = leadHeavy[b] ? HapticLevel.heavy : HapticLevel.medium;
+      // 묶음 리드 1발(팡!).
+      Future<void>.delayed(
+        Duration(milliseconds: start),
+        () => fire(lead, throttle: false),
+      );
+      // 흩어지는 잔폭죽(팡팡!!): 30~60ms 간격으로 medium/light 교차.
+      final n = scatterCounts[b];
+      for (var s = 0; s < n; s++) {
+        // 30~60ms 누적 간격(s마다 35+조금씩 벌어짐).
+        final offset = start + 35 + s * (30 + (s % 2) * 18);
+        final level = s.isEven ? HapticLevel.light : HapticLevel.medium;
+        Future<void>.delayed(
+          Duration(milliseconds: offset),
+          () => fire(level, throttle: false),
+        );
+      }
+    }
   }
 
   // ── 보석함(jewel box) 심장박동 전용 햅틱 ──────────────────────────
@@ -410,8 +459,8 @@ class RumbleHandle {
 /// [Haptics.startShredGrind]가 반환하는 파쇄기 연속 그라인드 제어 핸들(§5.3).
 ///
 /// [RumbleHandle]의 형제격이지만, grinding 고유의 '강도 고조 곡선(0.60→1.0)·
-/// 말미 촘촘함(35ms)·모터 지터'를 내장한다. 시작 시점에 ~45ms 타이머가 돌며,
-/// [stop]을 호출하면 즉시 멈춘다.
+/// staccato 펄스 묶음(3발 tight ~22ms + 공백 ~100ms, 말미 더 촘촘)·모터 지터'를
+/// 내장한다. 시작 시점에 타이머가 돌며, [stop]을 호출하면 즉시 멈춘다.
 ///
 /// **bursting 진입·화면 dispose에서 반드시 [stop]을 호출**해야 무한 진동·타이머
 /// 누수를 막는다. [stop]은 중복 호출해도 안전하다(idempotent). 안전장치로 시작
@@ -430,6 +479,12 @@ class GrindHandle {
   Timer? _timer;
   bool _stopped = false;
 
+  /// staccato 묶음 내 펄스 위치(0..[_burstLen]-1). 묶음 끝이면 다음은 공백 간격.
+  int _burstStep = 0;
+
+  /// 한 묶음당 펄스 수(짧은 펄스 3발 → 공백 반복으로 '잘게 끊기는' 질감).
+  static const int _burstLen = 3;
+
   /// 시작 시각 — setProgress 미호출 시 자체 경과시간으로 기본 곡선을 만든다.
   final Stopwatch _watch = Stopwatch();
 
@@ -440,6 +495,7 @@ class GrindHandle {
     if (_stopped) return;
     _watch.start();
     _engine._grindPulse(_curveIntensity()); // 즉시 첫 펄스(반응 지연 최소화)
+    _burstStep = (_burstStep + 1) % _burstLen;
     _schedule();
     // 안전장치: 시한 경과 시 자동 종료.
     Future<void>.delayed(_safety, stop);
@@ -473,18 +529,27 @@ class GrindHandle {
     return (base + wobble).clamp(0.0, 1.0);
   }
 
-  /// 진행도에 따른 펄스 간격. 기본 ~45ms, 말미(t≥0.9)는 35ms로 촘촘.
-  /// '도는 모터'감을 위해 ±8ms 지터를 얹는다.
+  /// 진행도/묶음 위치에 따른 다음 펄스 간격. **staccato**(잘게 끊김): 묶음 안
+  /// (`inBurst`)이면 짧게 붙이고(~22ms, 말미 18ms), 묶음 끝이면 공백을 둔다
+  /// (~100ms, 말미 78ms). '도는 모터'감을 위해 ±몇 ms 지터를 얹는다.
   Duration _nextInterval() {
     final t = _progress();
-    final baseMs = t >= 0.9 ? 35 : 45;
-    // 경과 ms 기반 의사난수 지터(±8ms) — 외부 의존 없이 결정적·가벼움.
-    final jitter = (_watch.elapsedMicroseconds % 17) - 8; // -8..+8
-    final ms = (baseMs + jitter).clamp(28, 60);
+    final tail = t >= 0.9;
+    // _start/_schedule에서 발사 직후 _burstStep을 증가시키므로, 지금 값이
+    // _burstLen-1 미만이면 아직 묶음 안(다음도 tight) — 아니면 묶음 끝(다음은 gap).
+    final inBurst = _burstStep < _burstLen - 1;
+    final baseMs = inBurst
+        ? (tail ? 18 : 22) // 묶음 내: 짧게 연달아
+        : (tail ? 78 : 100); // 묶음 사이: 공백
+    // 경과 us 기반 의사난수 지터 — 외부 의존 없이 결정적·가벼움.
+    final jitter = (_watch.elapsedMicroseconds % 9) - 4; // -4..+4
+    final lo = inBurst ? 14 : 60;
+    final hi = inBurst ? 30 : 130;
+    final ms = (baseMs + jitter).clamp(lo, hi);
     return Duration(milliseconds: ms);
   }
 
-  /// 매 펄스마다 간격을 재계산해 1발 발사하고 다음 펄스를 예약(가변 간격).
+  /// 매 펄스마다 간격을 재계산해 1발 발사하고 다음 펄스를 예약(가변 간격, staccato).
   void _schedule() {
     if (_stopped) return;
     _timer = Timer(_nextInterval(), () {
@@ -492,6 +557,7 @@ class GrindHandle {
       final t = _progress();
       // 최말미(≥0.9) 순간엔 heavy를 가끔 섞어 폭죽 직전 텐션.
       _engine._grindPulse(_curveIntensity(), spikeHeavy: t >= 0.9);
+      _burstStep = (_burstStep + 1) % _burstLen;
       _schedule();
     });
   }
@@ -519,8 +585,8 @@ class GrindHandle {
 
 /// [Haptics.startBurnBlaze]가 반환하는 태우기 연속 연소 제어 핸들(§4 햅틱).
 ///
-/// [GrindHandle]의 **형제**격이지만, 태우기 고유의 '아래→위 화력 고조 곡선
-/// (0.55→1.0)·말미 촘촘함(35ms)·불 일렁임 지터'를 내장한다. 시작 시점에 ~45ms
+/// [GrindHandle]의 **형제**격이지만, 태우기 고유의 '아래→위 화력 점진 곡선
+/// (0.28→1.0, 약→강)·말미 촘촘함(35ms)·불 일렁임 지터'를 내장한다. 시작 시점에 ~45ms
 /// 타이머가 돌며, [stop]을 호출하면 즉시 멈춘다.
 ///
 /// **전소(softSuccess 직전)·화면 dispose에서 반드시 [stop]을 호출**해야 무한
@@ -565,26 +631,26 @@ class BlazeHandle {
     return (_watch.elapsedMilliseconds / _duration.inMilliseconds).clamp(0.0, 1.0);
   }
 
-  /// 진행도 t(0~1) → 강도. §4(햅틱) 키프레임을 선형 보간한 0.55→1.0 상승 곡선에
-  /// '타오르는 불 일렁임'용 미세 sin 변조(±0.06)를 얹는다.
+  /// 진행도 t(0~1) → 강도. §4(햅틱) 키프레임을 선형 보간한 0.28→1.0 상승 곡선에
+  /// '타오르는 불 일렁임'용 미세 sin 변조(±0.05)를 얹는다.
   ///
-  /// 파쇄기 [GrindHandle._curveIntensity](0.60→1.0)보다 점화 직후가 살짝 낮게(0.55)
-  /// 출발하지만 medium 대역(≥0.62 미만)이라 톤은 일치 — '활활 고조'라 후반 가속이
-  /// 좀 더 가파르다(t=0.4→0.72, 0.7→0.88, 1.0→1.00).
+  /// '약→강 점진' 재적용(2026-06-02) — 점화 직후를 낮게(0.28, light 대역) 출발시켜
+  /// 서서히 타오르다 전소 직전 정점(1.00, heavy)으로 올린다. _blazePulse 3밴드
+  /// (light<0.42≤medium<0.70≤heavy)와 맞물려 light→medium→heavy로 자연 점진한다.
   double _curveIntensity() {
     final t = _progress();
-    // 키프레임(실기기 medium~heavy 톤): 0.0→0.55, 0.4→0.72, 0.7→0.88, 1.0→1.00.
-    // medium에서 출발해 heavy(≥0.62)로 올라 전소 직전 최고조.
+    // 키프레임('약→강 점진'): 0.0→0.28, 0.4→0.55, 0.7→0.80, 1.0→1.00.
+    // light에서 출발해 medium(≥0.42)·heavy(≥0.70)로 올라 전소 직전 최고조.
     final double base;
     if (t < 0.4) {
-      base = _lerp(0.55, 0.72, t / 0.4);
+      base = _lerp(0.28, 0.55, t / 0.4);
     } else if (t < 0.7) {
-      base = _lerp(0.72, 0.88, (t - 0.4) / 0.3);
+      base = _lerp(0.55, 0.80, (t - 0.4) / 0.3);
     } else {
-      base = _lerp(0.88, 1.00, (t - 0.7) / 0.3);
+      base = _lerp(0.80, 1.00, (t - 0.7) / 0.3);
     }
     // 불 일렁임: 약 4.5Hz로 강도를 흔든다(t를 위상으로 사용 — '타오르는 떨림').
-    final wobble = 0.06 * math.sin(t * 2 * math.pi * 4.5);
+    final wobble = 0.05 * math.sin(t * 2 * math.pi * 4.5);
     return (base + wobble).clamp(0.0, 1.0);
   }
 
