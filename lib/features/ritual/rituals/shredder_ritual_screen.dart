@@ -32,9 +32,12 @@ const Duration _kGrindDuration = Duration(milliseconds: 3000);
 /// `Haptics.fireworksFinale()`의 3초 햅틱 시퀀스와 길이를 맞춘다.
 const Duration _kFinaleDur = Duration(milliseconds: 3200);
 
+/// 폭죽이 가라앉은 뒤 파쇄기 본체가 완전히 사라지는 페이드(이게 끝난 다음 멘트).
+const Duration _kMachineFade = Duration(milliseconds: 600);
+
 /// 완료 멘트가 다 뜬 뒤 '처음으로' 버튼이 떠오르기까지의 추가 지연
-/// (폭죽 시작 기준 ≈4.5s). 태우기 `_kButtonDelay` 톤과 동일한 호흡.
-const Duration _kButtonDelay = Duration(milliseconds: 4500);
+/// 본체 소멸→멘트 페이드인이 끝난 뒤 '처음으로' 버튼(폭죽 시작 기준 ≈5.4s).
+const Duration _kButtonDelay = Duration(milliseconds: 5400);
 
 /// 완료 멘트 페이드인 시간(opacity 0→1, ease).
 const Duration _kMessageFade = Duration(milliseconds: 1300);
@@ -65,8 +68,9 @@ class _ShredderRitualScreenState extends State<ShredderRitualScreen>
   _Phase _phase = _Phase.idle;
 
   // ── 완료 인플레이스 오버레이 시퀀스 토글(폭죽 후 Future.delayed로 구동) ──
-  bool _showMessage = false; // 폭죽 시작 +≈3.2s 멘트 페이드인.
-  bool _showButton = false; // +≈4.5s '처음으로' 버튼 페이드인.
+  bool _hideMachine = false; // 폭죽 시작 +≈3.2s 파쇄기 본체 페이드아웃 시작.
+  bool _showMessage = false; // 본체 소멸 후 +≈3.8s 멘트 페이드인.
+  bool _showButton = false; // +≈5.4s '처음으로' 버튼 페이드인.
 
   double _feed = 0; // feeding 동안 드래그로만 증가(투입 트리거 판정용).
   double _grind = 0; // grinding 동안 3초 컨트롤러로 0→1(드래그 무관).
@@ -275,10 +279,17 @@ class _ShredderRitualScreenState extends State<ShredderRitualScreen>
     _scheduleBurst(2700, small: true); // 잔불꽃
     _scheduleBurst(2880, small: true);
 
-    // ── ≈3.2s: 폭죽이 가라앉으면 인플레이스 완료 멘트 페이드인(+success 1회) ──
+    // ── ≈3.2s: 폭죽이 가라앉으면 '먼저' 파쇄기 본체를 비운다(페이드아웃) ──
     Future.delayed(_kFinaleDur, () {
       if (!mounted) return;
-      _phase = _Phase.done;
+      setState(() {
+        _phase = _Phase.done;
+        _hideMachine = true; // 본체 페이드아웃 시작(_kMachineFade).
+      });
+    });
+    // ── ≈3.8s: 본체가 '완전히 사라진 뒤' 완료 멘트 페이드인(+success 1회) ──
+    Future.delayed(_kFinaleDur + _kMachineFade, () {
+      if (!mounted) return;
       // 멘트가 떠오르는 순간 부드러운 success 햅틱 1회(태우기 완료 톤과 동일).
       Haptics.instance.fire(HapticLevel.success, throttle: false);
       setState(() => _showMessage = true);
@@ -429,9 +440,9 @@ class _ShredderRitualScreenState extends State<ShredderRitualScreen>
                     right: 24,
                     top: slotY - 18,
                     child: AnimatedOpacity(
-                      duration: _kMessageFade,
+                      duration: _kMachineFade,
                       curve: Curves.easeInOut,
-                      opacity: _showMessage ? 0.0 : 1.0,
+                      opacity: _hideMachine ? 0.0 : 1.0,
                       child: Transform.translate(
                         offset: shake,
                         child: Container(
