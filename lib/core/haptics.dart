@@ -348,6 +348,58 @@ class Haptics {
     fire(isLub ? HapticLevel.medium : HapticLevel.light, throttle: false);
   }
 
+  // ── 종이비행기 하늘 부유(skyFloat) 전용 햅틱 ────────────────────────
+  // 종이비행기 완료 하늘 씬의 '두둥실 떠 있는' 연속 햅틱. 파쇄기 [startShredGrind]·
+  // 태우기 [startBurnBlaze]·비행 [startFlightHum]·심박 [startHeartbeat]의 **형제**
+  // 드라이버지만, 이들 중 **가장 가볍고 느린** 캐릭터다 —
+  //   · grind: medium~heavy staccato(묵직·잘게 끊김),
+  //   · blaze: light→heavy 고조(점점 세짐),
+  //   · flight: light 등속 hum(가볍지만 ~60ms로 촘촘·일정),
+  //   · heartbeat: lub-dub 두 박(medium→light, ~72bpm 또렷),
+  //   · skyFloat: **light/selection을 ~500~800ms 간격으로 성기게** 발사하고,
+  //     긴 sin swell(주기 ~3s)로 강도·간격이 부드럽게 오르내려 '무중력으로
+  //     떠올랐다 가라앉는 두둥실'을 만든다. heavy 절대 금지, medium은 swell
+  //     정점에서만 아주 가끔. 비행 hum보다 훨씬 성기고 느린 부유감.
+  //
+  // ⚠️ 연속/패턴 진동은 OS 네이티브 미배선 → 짧은 임팩트의 타이머 반복 **근사**가
+  // 전부다. '무중력 부유'의 실제 손맛(부드러운 swell·아주 약한 펄스)은 실기기에서만
+  // 검증 가능. 미지원/웹에서는 [fire]가 HapticFeedback 무음 통과 → 예외 없이 무동작.
+
+  /// 종이비행기 완료 하늘 씬의 '두둥실 떠 있는' 연속 햅틱. 하늘 씬 진입 시 시작,
+  /// '처음으로' 탭/dispose에서 [SkyFloatHandle.stop].
+  ///
+  /// 아주 가벼운 펄스(주로 light, 가끔 더 약한 selection)를 **느리고 성기게**
+  /// (~500~800ms 간격) 발사하되, 긴 sin swell(주기 ~3s)로 강도·간격을 부드럽게
+  /// 오르내린다 — swell이 높을 때(떠오름) 간격 ~500ms·light, 낮을 때(가라앉음)
+  /// 간격 ~800ms·selection. heavy는 절대 쓰지 않고, medium은 swell 정점에서만
+  /// 아주 가끔 섞어 '두둥실' 부유감을 낸다. 전부 `throttle:false`.
+  ///
+  /// 하늘에 오래 머물 수 있어 [safety](기본 12s, 화면이 더 길게 주입)로 stop 누락에
+  /// 대비한다. 반환된 [SkyFloatHandle.stop]을 **'처음으로' 탭·화면 dispose에서 반드시
+  /// 호출**해야 무한 진동·타이머 누수를 막는다. [stop]은 중복 호출해도 안전하다.
+  SkyFloatHandle startSkyFloat({Duration safety = const Duration(seconds: 12)}) {
+    final handle = SkyFloatHandle._(this, safety);
+    handle._start();
+    return handle;
+  }
+
+  /// [SkyFloatHandle]이 1펄스 발사할 때 사용(throttle 우회).
+  ///
+  /// grind/blaze/heartbeat와 정반대로 **가장 가벼움**이 목표다. 바닥은 selection
+  /// (가라앉음, 가장 약함), swell이 오르면 light(떠오름), 정점에서만 아주 가끔
+  /// medium([peak]=true)을 섞는다. **heavy는 절대 쓰지 않는다**(무중력 부유라
+  /// 날카로운 단계 금지).
+  void _skyFloatPulse({required bool light, bool peak = false}) {
+    fire(
+      peak
+          ? HapticLevel.medium
+          : light
+              ? HapticLevel.light
+              : HapticLevel.selection,
+      throttle: false,
+    );
+  }
+
   // ── P3 신규: 의식별 타임라인/스텝 큐 빌더 ────────────────────────
   // playTimeline(controller, cues)에 그대로 넣을 수 있는 List<HapticCue> 생성.
 
@@ -857,6 +909,108 @@ class HeartbeatHandle {
     _beatTimer = null;
     _dubTimer?.cancel();
     _dubTimer = null;
+    _watch.stop();
+  }
+
+  /// [stop]의 별칭 — dispose 흐름에서 의도가 드러나도록.
+  void dispose() => stop();
+}
+
+/// [Haptics.startSkyFloat]가 반환하는 종이비행기 하늘 '두둥실 부유' 제어 핸들.
+///
+/// [GrindHandle]/[BlazeHandle]/[FlightHandle]/[HeartbeatHandle]의 **형제**격이지만,
+/// 이들 중 **가장 가볍고 느린** 캐릭터다 — grind/blaze의 묵직한 고조도, flight의
+/// 촘촘한 등속 hum도, heartbeat의 또렷한 두 박도 아니다. 아주 약한 펄스(light/
+/// selection)를 ~500~800ms로 성기게 발사하되, 긴 sin swell(주기 [_swellMs]≈3s)로
+/// 강도·간격을 부드럽게 오르내려 '무중력으로 떠올랐다 가라앉는 두둥실'을 만든다.
+///
+/// 시작 시점에 첫 펄스가 즉시 발사되고, 매 펄스마다 swell 위상에 따라 다음 펄스를
+/// 재예약한다(가변 간격). [stop]을 호출하면 즉시 멈춘다.
+///
+/// **'처음으로' 탭·화면 dispose에서 반드시 [stop]을 호출**해야 무한 진동·타이머
+/// 누수를 막는다. [stop]은 중복 호출해도 안전하다(idempotent). 안전장치로 시작 후
+/// [_safety](생성 시 주입, 기본 12s — 하늘에 오래 머물 수 있어 길게) 경과 시 자동
+/// [stop]된다(호출측 stop 누락 대비).
+///
+/// ⚠️ 연속/패턴 진동은 OS 네이티브 미배선 → 짧은 임팩트의 타이머 반복 **근사**가
+/// 전부다. '무중력 부유'의 실제 손맛(부드러운 swell·아주 약한 펄스)은 실기기에서만
+/// 검증 가능.
+class SkyFloatHandle {
+  SkyFloatHandle._(this._engine, this._safety);
+
+  final Haptics _engine;
+
+  /// stop 누락 대비 자동 종료 시한(생성 시 주입). 하늘 씬은 '처음으로' 탭까지
+  /// 지속이라 길게 잡는다 — 화면 dispose가 항상 stop하므로 무한 진동 위험은 없다.
+  final Duration _safety;
+
+  /// swell 한 주기 길이(≈3s) — 강도·간격이 오르내리는 '떠올랐다 가라앉는' 호흡.
+  static const int _swellMs = 3000;
+
+  /// swell 정점(떠오름) 펄스 간격 — 성기게(느리게).
+  static const int _intervalPeakMs = 500;
+
+  /// swell 저점(가라앉음) 펄스 간격 — 더 성기게(가장 느리게).
+  static const int _intervalTroughMs = 800;
+
+  Timer? _timer;
+  bool _stopped = false;
+
+  /// swell 위상 기준 시각(경과로 sin 위상을 만든다). 외부 의존 없이 결정적·가벼움.
+  final Stopwatch _watch = Stopwatch();
+
+  void _start() {
+    if (_stopped) return;
+    _watch.start();
+    _firePulse(); // 즉시 첫 펄스(하늘 씬 진입 반응 지연 최소화)
+    _schedule();
+    // 안전장치: 시한 경과 시 자동 종료.
+    Future<void>.delayed(_safety, stop);
+  }
+
+  /// 현재 swell 값(0~1) — sin으로 부드럽게 오르내린다(0=가라앉음, 1=떠오름).
+  double _swell() {
+    final phase = (_watch.elapsedMilliseconds % _swellMs) / _swellMs; // 0~1
+    // 0.5 - 0.5cos(2πφ) → φ=0에서 0(저점) 시작해 부드럽게 상승·하강.
+    return 0.5 - 0.5 * math.cos(phase * 2 * math.pi);
+  }
+
+  /// 현재 swell에 따른 다음 펄스 간격. 떠오름(swell↑)일수록 촘촘(~500ms),
+  /// 가라앉음(swell↓)일수록 성김(~800ms). swell이 sin이라 경계는 부드럽게 연결된다.
+  /// '공중 부유'용 ±몇 ms 미세 변조만 얹어 너무 기계적이지 않게 한다.
+  Duration _nextInterval() {
+    final s = _swell();
+    final baseMs = _intervalTroughMs + (_intervalPeakMs - _intervalTroughMs) * s;
+    final jitter = (_watch.elapsedMicroseconds % 41) - 20; // -20..+20
+    final ms = (baseMs + jitter).clamp(450.0, 850.0).round();
+    return Duration(milliseconds: ms);
+  }
+
+  /// 현재 swell에 따라 1펄스 발사. 저점(swell<0.5)은 selection(가장 약함, 가라앉음),
+  /// 그 이상은 light(떠오름). 정점(swell≥0.85)에서만 아주 가끔 medium을 섞는다
+  /// — heavy는 절대 발사하지 않는다.
+  void _firePulse() {
+    final s = _swell();
+    final peak = s >= 0.85 && (_watch.elapsedMilliseconds ~/ 100).isEven;
+    _engine._skyFloatPulse(light: s >= 0.5, peak: peak);
+  }
+
+  /// 매 펄스마다 간격을 재계산해 1발 발사하고 다음 펄스를 예약(가변 간격, swell 동조).
+  void _schedule() {
+    if (_stopped) return;
+    _timer = Timer(_nextInterval(), () {
+      if (_stopped) return;
+      _firePulse();
+      _schedule();
+    });
+  }
+
+  /// 두둥실 부유 중지(+타이머 해제). 중복 호출 안전(idempotent).
+  void stop() {
+    if (_stopped) return;
+    _stopped = true;
+    _timer?.cancel();
+    _timer = null;
     _watch.stop();
   }
 

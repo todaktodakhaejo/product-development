@@ -32,6 +32,13 @@ const Duration _kMessageDelay = Duration(milliseconds: 900);
 /// 멘트 페이드인(opacity 0→1).
 const Duration _kMessageFade = Duration(milliseconds: 1400);
 
+/// done 진입 시 하늘 배경 페이드인(어두운 AppBackground → 평온한 하늘).
+/// '비행기가 솟아 사라진 뒤 사용자가 하늘 속으로 올라가 떠 있게 된' 메타포.
+const Duration _kSkyFadeIn = Duration(milliseconds: 1800);
+
+/// 두둥실 드리프트 1주기(아주 느린 상하 부유 = 무중력감). 길게 잡아 평온히.
+const Duration _kSkyDrift = Duration(seconds: 7);
+
 /// 멘트 뜬 뒤 '처음으로' 버튼까지(= 900 + 1300).
 const Duration _kButtonDelay = Duration(milliseconds: 2200);
 
@@ -61,6 +68,18 @@ const double _kFlickSpan = 2600;
 /// 발사 기본 상향 바이어스(거의 수직으로 당겨도 위 하늘로 솟게). 0~1.
 const double _kUpwardBias = 0.55;
 
+// ── done 하늘 씬 그라데이션(파스텔 평온, 앱 라벤더-핑크 톤과 조화) ──────────
+// 위쪽 부드러운 하늘빛/라벤더 → 중간 옅은 라벤더 → 아래쪽 따뜻한 핑크빛.
+// 어둡지 않게: 정화·평온. AppColors 신규 토큰 추가 없이 로컬 const로만.
+const List<Color> _kSkyGradient = [
+  Color(0xFFBFC9F2), // 상단: 맑은 하늘빛 라벤더
+  Color(0xFFD7CCF1), // 중상: 라벤더
+  Color(0xFFEED8EC), // 중하: 연한 핑크-라벤더
+  Color(0xFFFBE6DC), // 하단: 따뜻한 살구빛(노을 여운)
+];
+// 한쪽 상단 은은한 햇무리(따뜻한 흰-크림).
+const Color _kSunGlow = Color(0xFFFFF6E6);
+
 /// RIT-09 종이비행기. 종이를 3단계로 실제 접어(크리스 햅틱) 다트를 만든 뒤,
 /// 슬링샷처럼 **눌러 몸 쪽(아래)으로 당겼다 놓으면**(draw-back) 당긴 반대인
 /// 위 하늘로 솟아 구름 사이를 가르며 날아간다. 비행 후 같은 화면에 인플레이스 완료.
@@ -87,6 +106,13 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
   // 약투(거의 안 당김) 시 draw-back 위치 → 제자리로 튕겨 돌아가는 스프링. bounded.
   //  0→1로 elasticOut 진행하며 _drawOffset를 시작값에서 0으로 보간(_recoilFrom).
   late final AnimationController _recoil;
+  // done 하늘 씬: 어두운 배경 위로 하늘 그라데이션이 페이드인(0→1). bounded forward.
+  late final AnimationController _skyFade;
+  // done 하늘 씬: 구름 패럴랙스 흐름 + 두둥실 드리프트 위상(0→1 느린 repeat reverse).
+  //  bounded controller에 repeat(reverse:true) — unbounded()..repeat() 아님.
+  late final AnimationController _skyDrift;
+  // 하늘 구름 결정적 시드(재현성). 비행 경로 구름과 다른 시드로 별도 배치.
+  static const int _skyCloudSeed = 20260602;
   // 구름 퍼프 결정적 시드(재현성).
   static const int _cloudSeed = 20260601;
   // 천천히 멀어지는 느낌(easeInOutSine): 부드럽게 출발해 일정히 나아가며
@@ -105,6 +131,11 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
   // 비행 중 연속 '진공' 햅틱 핸들(던지는 순간 시작 → 완료/dispose에서 stop).
   // sensory-haptics가 haptics.dart에 추가하는 startFlightHum()/FlightHandle 사용.
   FlightHandle? _flightHandle;
+
+  // done 하늘 씬 동안 지속되는 '두둥실' 연속 햅틱 핸들(하늘에 떠 있는 부유감).
+  //  done 진입 시 시작 → '처음으로' 탭/dispose에서 stop. (보석함 heartbeat 패턴.)
+  //  sensory-haptics가 haptics.dart에 추가하는 startSkyFloat()/SkyFloatHandle 사용.
+  SkyFloatHandle? _skyFloat;
 
   // 당기는 동안 '긴장감' 피드백 누적(folded에서 드래그 시). 끌수록 틱이 촘촘·세짐.
   double _pullAccum = 0; // 마지막 틱 이후 끈 거리(틱 간격 판정).
@@ -145,6 +176,11 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
       vsync: this,
       duration: const Duration(milliseconds: 620),
     )..addListener(_onRecoilTick);
+    // done 하늘 페이드인: 1회 forward(0→1). done 진입 시 forward(from:0).
+    _skyFade = AnimationController(vsync: this, duration: _kSkyFadeIn);
+    // 두둥실 드리프트: 아주 느린 0→1 왕복(상하 부유 + 구름 흐름 위상).
+    //  done 진입 시 repeat(reverse:true) 시작 → dispose에서 정지.
+    _skyDrift = AnimationController(vsync: this, duration: _kSkyDrift);
   }
 
   // 약투 복귀: _recoilFrom → 0으로 elasticOut 보간(살짝 튕기며 제자리).
@@ -312,6 +348,13 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     setState(() => _phase = _Phase.done);
     // 비행기는 먼 하늘로 사라짐 — 경로에 피어난 잔향 구름을 천천히 흩어지게.
     _cloudFade.forward(from: 0);
+    // ── done 하늘 씬 ──
+    // 어두운 AppBackground 위로 평온한 하늘이 페이드인(비행 구름이 잦아드는 동안
+    //  하늘 구름이 떠오르며 자연 전환). '하늘로 올라가 그 안에 떠 있게 된' 메타포.
+    _skyFade.forward(from: 0);
+    _skyDrift.repeat(reverse: true); // 아주 느린 상하 부유 + 구름 흐름 위상.
+    // 하늘에 떠 있는 동안 '두둥실' 연속 진동(부유감). 처음으로/dispose에서 stop.
+    _skyFloat = Haptics.instance.startSkyFloat(safety: const Duration(minutes: 10));
 
     Future.delayed(_kMessageDelay, () {
       if (!mounted) return;
@@ -327,6 +370,9 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
 
   // ── '처음으로': 세션 리셋 + 홈 복귀(태우기·CompleteScreen과 동일) ──
   void _backToHome() {
+    // 하늘에 떠 있는 동안 돌던 '두둥실' 진동 종료(누수/잔향 방지, stop은 idempotent).
+    _skyFloat?.stop();
+    _skyFloat = null;
     SessionScope.of(context).reset();
     Navigator.of(context).popUntil((r) => r.isFirst);
   }
@@ -336,6 +382,9 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     // 비행 도중 화면 이탈 시 연속 햅틱 누수 방지(stop은 idempotent).
     _flightHandle?.stop();
     _flightHandle = null;
+    // done 하늘 씬 진입 후 이탈 시 '두둥실' 연속 햅틱 누수 방지.
+    _skyFloat?.stop();
+    _skyFloat = null;
     _fold
       ..removeListener(_onFoldTick)
       ..removeStatusListener(_onFoldStatus)
@@ -348,6 +397,8 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     _recoil
       ..removeListener(_onRecoilTick)
       ..dispose();
+    _skyFade.dispose();
+    _skyDrift.dispose();
     super.dispose();
   }
 
@@ -400,6 +451,35 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
                             flySpeed: _flySpeed,
                             dissipate: _cloudFade.value, // done 후 흩어짐(0→1).
                             seed: _cloudSeed,
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ),
+
+              // ── done 하늘 씬(평온한 하늘로 페이드 전환) ──
+              // 비행기가 솟아 사라진 뒤(done) 어두운 배경 위로 평온한 하늘이
+              // 페이드인되고, 여러 겹 구름이 서로 다른 속도로 흘러가며(패럴랙스)
+              // 씬 전체가 아주 느린 sin으로 상하 부유한다 → '하늘 위를 두둥실'.
+              //  멘트/버튼 레이어는 이 아래 Stack 순서상 위에 그려져 가독성 유지.
+              if (_phase == _Phase.done)
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: AnimatedBuilder(
+                      animation: Listenable.merge([_skyFade, _skyDrift]),
+                      builder: (context, _) {
+                        final size = MediaQuery.of(context).size;
+                        // 두둥실 위상(0→2π): _skyDrift 0↔1 왕복을 sin 위상으로.
+                        final drift = _skyDrift.value;
+                        return Opacity(
+                          opacity: Curves.easeInOut.transform(_skyFade.value),
+                          child: CustomPaint(
+                            size: size,
+                            painter: _SkyScenePainter(
+                              drift: drift,
+                              seed: _skyCloudSeed,
+                            ),
                           ),
                         );
                       },
@@ -1119,4 +1199,214 @@ class _CloudFieldPainter extends CustomPainter {
       old.center != center ||
       old.dir != dir ||
       old.flySpeed != flySpeed;
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// done 하늘 씬 페인터: '하늘 위를 두둥실 나는' 평온한 씬.
+//   ① 하늘 그라데이션(상단 라벤더 하늘빛 → 하단 따뜻한 살구빛).
+//   ② 한쪽 상단 은은한 햇무리(따뜻한 광원 글로우).
+//   ③ 흘러가는 구름(3겹 패럴랙스): 먼 겹은 작고 느리고 옅게, 앞 겹은 크고 빠르고
+//      또렷이 가로로 흘러 → '하늘을 가르며 떠가는' 깊이감. wrap-around로 끊김 없음.
+//   ④ 두둥실 드리프트: 각 겹이 아주 느린 sin으로 상하 미세 부유(겹마다 다른
+//      진폭/위상) → 무중력으로 떠 있는 느낌(비행기 rising/bob과 톤 일치).
+//   - 결정적: Random(seed)로 구름 배치 고정(프레임 점프 0).
+//   - drift(0→1, _skyDrift 왕복): 흐름 위상·부유 위상의 단일 시간 소스.
+// ════════════════════════════════════════════════════════════════════════
+class _SkyScenePainter extends CustomPainter {
+  _SkyScenePainter({required this.drift, required this.seed});
+
+  /// _skyDrift(0↔1 왕복). 흐름/부유 위상의 시간 기준.
+  final double drift;
+  final int seed;
+
+  // 구름 톤(_CloudFieldPainter와 동일 톤 — 흰~연한 라벤더, 어둡지 않게).
+  static const Color _cloudWhite = Color(0xFFFFFFFF);
+  static const Color _cloudLavender = Color(0xFFF1ECFB);
+  static const Color _cloudShade = Color(0xFFD8CEF0);
+
+  // 패럴랙스 겹 정의: (구름 수, 속도배수, 크기배수, 불투명도, 세로위치비, 부유진폭).
+  //  먼 겹(느리고 작고 옅음) → 앞 겹(빠르고 크고 또렷). 프레임 예산 내 총 11덩이.
+  static const List<_SkyLayer> _layers = [
+    _SkyLayer(count: 4, speed: 0.018, scale: 0.62, opacity: 0.42, bandY: 0.26, bobAmp: 5),
+    _SkyLayer(count: 4, speed: 0.034, scale: 0.92, opacity: 0.62, bandY: 0.50, bobAmp: 8),
+    _SkyLayer(count: 3, speed: 0.058, scale: 1.30, opacity: 0.80, bandY: 0.74, bobAmp: 12),
+  ];
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final w = size.width;
+    final h = size.height;
+    final full = Offset.zero & size;
+
+    // ── ① 하늘 그라데이션 ──
+    canvas.drawRect(
+      full,
+      Paint()
+        ..shader = const LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: _kSkyGradient,
+          stops: [0.0, 0.42, 0.72, 1.0],
+        ).createShader(full),
+    );
+
+    // ── ② 햇무리(한쪽 상단 은은한 따뜻한 광원) ──
+    final sunCenter = Offset(w * 0.80, h * 0.16);
+    final sunRadius = size.shortestSide * 0.55;
+    final sunRect = Rect.fromCircle(center: sunCenter, radius: sunRadius);
+    canvas.drawRect(
+      sunRect,
+      Paint()
+        ..blendMode = BlendMode.plus // 빛이 더해지는 따뜻한 글로우.
+        ..shader = RadialGradient(
+          colors: [
+            _kSunGlow.withValues(alpha: 0.42),
+            _kSunGlow.withValues(alpha: 0.10),
+            _kSunGlow.withValues(alpha: 0.0),
+          ],
+          stops: const [0.0, 0.45, 1.0],
+        ).createShader(sunRect),
+    );
+
+    // ── ③+④ 패럴랙스 구름 + 두둥실 부유 ──
+    // drift(0↔1 왕복)를 부유 sin 위상으로, 누적 흐름은 별도 위상(painter 호출마다
+    //  drift 값으로 결정적 — wrap-around라 경계 점프 없음).
+    final bob = sin(drift * pi); // 0→1→0 (왕복이므로 부드러운 ±부유).
+    final rnd = Random(seed);
+
+    for (var li = 0; li < _layers.length; li++) {
+      final layer = _layers[li];
+      // 이 겹의 흐름 위상(0→1, wrap). drift를 속도배수로 환산 — 느린 겹은 천천히.
+      //  drift가 0↔1 왕복이라 단조 증가가 아니므로, 가로 흐름은 위상을 |sin|이 아닌
+      //  연속 좌우 스윙으로 둔다(부드럽게 좌↔우로 흘러가며 '가르는' 느낌).
+      final flowPhase = sin(drift * pi * 2 * layer.speed * 30);
+      for (var i = 0; i < layer.count; i++) {
+        // 결정적 파라미터(분기 무관하게 RNG 스트림 고정).
+        final baseX = rnd.nextDouble(); // 0~1 가로 기준 위치.
+        final yJit = (rnd.nextDouble() - 0.5) * 0.10; // 밴드 내 세로 지터.
+        final sizeJit = 0.82 + rnd.nextDouble() * 0.40;
+        final phaseJit = rnd.nextDouble() * pi * 2; // 부유 위상 개체차.
+        final tint = rnd.nextDouble() < 0.5 ? _cloudLavender : _cloudWhite;
+        final lobeSeed = rnd.nextInt(1 << 30);
+
+        // 가로 흐름: 기준 위치 + 겹 흐름 스윙. wrap-around로 화면 밖→반대편 등장.
+        final span = w * 1.4; // 화면보다 넓게 깔아 양끝이 비지 않게.
+        var x = (baseX * span + flowPhase * w * 0.5) % span - w * 0.2;
+        // 세로: 겹 밴드 + 지터 + 개체별 두둥실 부유(sin, 느린 공통 bob).
+        final y = h * (layer.bandY + yJit) +
+            sin(phaseJit + drift * pi) * layer.bobAmp +
+            bob * layer.bobAmp * 0.4;
+
+        final r = 40 * layer.scale * sizeJit;
+        _drawCloud(canvas, Offset(x, y), r, layer.opacity, tint, lobeSeed);
+      }
+    }
+  }
+
+  // ── 뭉게구름 한 덩이(평평한 밑면 + 둥근 봉우리들, soft blur) ──
+  //   _CloudFieldPainter._cumulus와 동일 실루엣 기법(아래 평평/위 봉우리 union +
+  //   아랫면 라벤더 그늘 + 본체 흰 채움 + 윗면 하이라이트). done 씬용 경량 변형.
+  void _drawCloud(Canvas canvas, Offset c, double r, double opacity, Color tint,
+      int lobeSeed) {
+    final rnd = Random(lobeSeed);
+    final lobeCount = 3 + rnd.nextInt(2); // 3 또는 4 봉우리.
+    final baseY = c.dy + r * 0.42;
+
+    final lobes = <(Offset, double)>[];
+    for (var i = 0; i < lobeCount; i++) {
+      final u = lobeCount == 1
+          ? 0.0
+          : (i / (lobeCount - 1)) * 2 - 1 + (rnd.nextDouble() - 0.5) * 0.18;
+      final centerness = 1 - u.abs();
+      final lobeR = r * (0.55 + centerness * 0.42 + rnd.nextDouble() * 0.08);
+      final cx = c.dx + u * r * 0.92;
+      final cy = baseY - lobeR * (0.78 + centerness * 0.30);
+      lobes.add((Offset(cx, cy), lobeR));
+    }
+
+    var silhouette = Path();
+    for (final (lc, lr) in lobes) {
+      silhouette = Path.combine(
+        PathOperation.union,
+        silhouette,
+        Path()..addOval(Rect.fromCircle(center: lc, radius: lr)),
+      );
+    }
+    final clip = Path()
+      ..addRect(Rect.fromLTRB(c.dx - r * 2, c.dy - r * 2, c.dx + r * 2, baseY));
+    final body = Path.combine(PathOperation.intersect, silhouette, clip);
+
+    final blur = MaskFilter.blur(BlurStyle.normal, r * 0.14);
+
+    // 아랫면 옅은 라벤더 그늘.
+    canvas.save();
+    canvas.clipPath(body);
+    final shadeRect =
+        Rect.fromLTRB(c.dx - r * 1.4, c.dy - r * 0.2, c.dx + r * 1.4, baseY + r * 0.2);
+    canvas.drawRect(
+      shadeRect,
+      Paint()
+        ..shader = LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            _cloudShade.withValues(alpha: 0.0),
+            _cloudShade.withValues(alpha: opacity * 0.45),
+          ],
+        ).createShader(shadeRect),
+    );
+    canvas.restore();
+
+    // 본체 흰(틴트) 채움 + soft 외곽.
+    canvas.drawPath(
+      body,
+      Paint()
+        ..maskFilter = blur
+        ..color = tint.withValues(alpha: opacity),
+    );
+
+    // 윗면 하이라이트(빛이 위에서).
+    canvas.save();
+    canvas.clipPath(body);
+    for (final (lc, lr) in lobes) {
+      final hc = lc + Offset(-lr * 0.18, -lr * 0.30);
+      final hRect = Rect.fromCircle(center: hc, radius: lr * 0.7);
+      canvas.drawCircle(
+        hc,
+        lr * 0.7,
+        Paint()
+          ..maskFilter = MaskFilter.blur(BlurStyle.normal, lr * 0.22)
+          ..shader = RadialGradient(
+            colors: [
+              _cloudWhite.withValues(alpha: opacity * 0.5),
+              _cloudWhite.withValues(alpha: 0.0),
+            ],
+          ).createShader(hRect),
+      );
+    }
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(covariant _SkyScenePainter old) =>
+      old.drift != drift || old.seed != seed;
+}
+
+/// done 하늘 씬 패럴랙스 한 겹 정의(원근 깊이별 속도/크기/불투명도/부유).
+class _SkyLayer {
+  const _SkyLayer({
+    required this.count,
+    required this.speed,
+    required this.scale,
+    required this.opacity,
+    required this.bandY,
+    required this.bobAmp,
+  });
+
+  final int count; // 이 겹 구름 수.
+  final double speed; // 가로 흐름 속도배수(작을수록 먼 겹).
+  final double scale; // 크기배수.
+  final double opacity; // 기본 불투명도.
+  final double bandY; // 세로 배치 비율(0=상단, 1=하단).
+  final double bobAmp; // 두둥실 상하 부유 진폭(px).
 }
