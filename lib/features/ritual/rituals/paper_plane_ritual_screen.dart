@@ -37,7 +37,7 @@ const Duration _kMessageFade = Duration(milliseconds: 1400);
 const Duration _kSkyFadeIn = Duration(milliseconds: 1800);
 
 /// 두둥실 드리프트 1주기(아주 느린 상하 부유 = 무중력감). 길게 잡아 평온히.
-const Duration _kSkyDrift = Duration(seconds: 7);
+const Duration _kSkyDrift = Duration(seconds: 20);
 
 /// 멘트 뜬 뒤 '처음으로' 버튼까지(= 900 + 1300).
 const Duration _kButtonDelay = Duration(milliseconds: 2200);
@@ -68,17 +68,8 @@ const double _kFlickSpan = 2600;
 /// 발사 기본 상향 바이어스(거의 수직으로 당겨도 위 하늘로 솟게). 0~1.
 const double _kUpwardBias = 0.55;
 
-// ── done 하늘 씬 그라데이션(파스텔 평온, 앱 라벤더-핑크 톤과 조화) ──────────
-// 위쪽 부드러운 하늘빛/라벤더 → 중간 옅은 라벤더 → 아래쪽 따뜻한 핑크빛.
-// 어둡지 않게: 정화·평온. AppColors 신규 토큰 추가 없이 로컬 const로만.
-const List<Color> _kSkyGradient = [
-  Color(0xFFBFC9F2), // 상단: 맑은 하늘빛 라벤더
-  Color(0xFFD7CCF1), // 중상: 라벤더
-  Color(0xFFEED8EC), // 중하: 연한 핑크-라벤더
-  Color(0xFFFBE6DC), // 하단: 따뜻한 살구빛(노을 여운)
-];
-// 한쪽 상단 은은한 햇무리(따뜻한 흰-크림).
-const Color _kSunGlow = Color(0xFFFFF6E6);
+// done 하늘 씬: 하늘 그라데이션·햇무리 제거(사용자 요청) — 원래 다크 배경 위에
+// 구름만 천천히 떠다닌다(그라데이션/햇무리 색 상수도 함께 제거).
 
 /// RIT-09 종이비행기. 종이를 3단계로 실제 접어(크리스 햅틱) 다트를 만든 뒤,
 /// 슬링샷처럼 **눌러 몸 쪽(아래)으로 당겼다 놓으면**(draw-back) 당긴 반대인
@@ -1236,37 +1227,7 @@ class _SkyScenePainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final w = size.width;
     final h = size.height;
-    final full = Offset.zero & size;
-
-    // ── ① 하늘 그라데이션 ──
-    canvas.drawRect(
-      full,
-      Paint()
-        ..shader = const LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: _kSkyGradient,
-          stops: [0.0, 0.42, 0.72, 1.0],
-        ).createShader(full),
-    );
-
-    // ── ② 햇무리(한쪽 상단 은은한 따뜻한 광원) ──
-    final sunCenter = Offset(w * 0.80, h * 0.16);
-    final sunRadius = size.shortestSide * 0.55;
-    final sunRect = Rect.fromCircle(center: sunCenter, radius: sunRadius);
-    canvas.drawRect(
-      sunRect,
-      Paint()
-        ..blendMode = BlendMode.plus // 빛이 더해지는 따뜻한 글로우.
-        ..shader = RadialGradient(
-          colors: [
-            _kSunGlow.withValues(alpha: 0.42),
-            _kSunGlow.withValues(alpha: 0.10),
-            _kSunGlow.withValues(alpha: 0.0),
-          ],
-          stops: const [0.0, 0.45, 1.0],
-        ).createShader(sunRect),
-    );
+    // 하늘 그라데이션·햇무리 제거(사용자 요청) — 원래 다크 배경 위에 구름만 떠다닌다.
 
     // ── ③+④ 패럴랙스 구름 + 두둥실 부유 ──
     // drift(0↔1 왕복)를 부유 sin 위상으로, 누적 흐름은 별도 위상(painter 호출마다
@@ -1279,7 +1240,7 @@ class _SkyScenePainter extends CustomPainter {
       // 이 겹의 흐름 위상(0→1, wrap). drift를 속도배수로 환산 — 느린 겹은 천천히.
       //  drift가 0↔1 왕복이라 단조 증가가 아니므로, 가로 흐름은 위상을 |sin|이 아닌
       //  연속 좌우 스윙으로 둔다(부드럽게 좌↔우로 흘러가며 '가르는' 느낌).
-      final flowPhase = sin(drift * pi * 2 * layer.speed * 30);
+      final flowPhase = sin(drift * pi * 2 * layer.speed * 16);
       for (var i = 0; i < layer.count; i++) {
         // 결정적 파라미터(분기 무관하게 RNG 스트림 고정).
         final baseX = rnd.nextDouble(); // 0~1 가로 기준 위치.
