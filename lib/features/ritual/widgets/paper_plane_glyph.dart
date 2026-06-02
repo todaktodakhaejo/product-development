@@ -25,6 +25,56 @@ class PaperPlaneGlyph extends StatelessWidget {
   }
 }
 
+/// 종이비행기 다트의 기하 정점(논리 좌표). glyph painter와 접기 모핑
+/// 페인터(_FoldMorphPainter)가 **동일 비율**을 공유해 progress=1에서 끝 모양이
+/// 정확히 일치하도록, 다트의 모든 정점을 한 곳에서 산출한다.
+///
+/// 1:1.25 비율 박스를 정사각 `size` 안에 중앙 배치(여백 8%)한 기준으로 계산.
+class PaperPlaneDartGeometry {
+  PaperPlaneDartGeometry._({
+    required this.nose,
+    required this.tailL,
+    required this.tailR,
+    required this.keelBottom,
+    required this.notchL,
+    required this.notchR,
+    required this.box,
+  });
+
+  final Offset nose; // 코(상단 중앙).
+  final Offset tailL; // 좌측 날개 뒷전(하단 바깥).
+  final Offset tailR; // 우측 날개 뒷전(하단 바깥).
+  final Offset keelBottom; // 동체 하단 중앙(keel 끝, 날개 사이 V홈).
+  final Offset notchL; // 좌측 꼬리 안쪽 노치.
+  final Offset notchR; // 우측 꼬리 안쪽 노치.
+  final Rect box; // 다트가 배치된 1:1.25 박스(접기 시작 사각형 참조용).
+
+  /// 정사각 `size` 박스에 맞춘 다트 정점을 산출한다.
+  factory PaperPlaneDartGeometry.forSquare(Size size) {
+    final pad = size.width * 0.08;
+    final boxW = size.width - pad * 2;
+    final boxH = boxW * 1.25;
+    final left = pad;
+    final top = (size.height - boxH) / 2;
+
+    final cx = left + boxW / 2; // 동체 keel x(중앙).
+    final noseY = top; // 코 꼭짓점(상단 중앙).
+    final tailY = top + boxH; // 뒷전(하단).
+    final keelBottomY = top + boxH * 0.96; // 동체 하단(살짝 위 — 꼬리 갈라짐).
+    final halfW = boxW / 2;
+
+    return PaperPlaneDartGeometry._(
+      nose: Offset(cx, noseY),
+      tailL: Offset(left, tailY),
+      tailR: Offset(left + boxW, tailY),
+      keelBottom: Offset(cx, keelBottomY),
+      notchL: Offset(cx - halfW * 0.16, top + boxH * 0.82),
+      notchR: Offset(cx + halfW * 0.16, top + boxH * 0.82),
+      box: Rect.fromLTWH(left, top, boxW, boxH),
+    );
+  }
+}
+
 /// 종이비행기 다트 painter. 색은 테마 토큰과 동일한 **로컬 const**로 둔다
 /// (신규 색 토큰 추가 금지).
 class _PlanePainter extends CustomPainter {
@@ -39,31 +89,14 @@ class _PlanePainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    // 1:1.25 비율 박스를 정사각 size 안에 중앙 배치(여백 8%).
-    final pad = size.width * 0.08;
-    final boxW = size.width - pad * 2;
-    final boxH = boxW * 1.25;
-    final left = pad;
-    final top = (size.height - boxH) / 2;
-
-    // 논리 좌표(다트 폭 boxW, 높이 boxH).
-    final cx = left + boxW / 2; // 동체 keel x(중앙).
-    final noseY = top; // 코 꼭짓점(상단 중앙).
-    final tailY = top + boxH; // 뒷전(하단).
-    final keelBottomY = top + boxH * 0.96; // 동체 하단(살짝 위로 — 꼬리 갈라짐 표현).
-
-    final halfW = boxW / 2;
-
-    // 코(상단 중앙).
-    final nose = Offset(cx, noseY);
-    // 좌/우 날개 뒷전(하단 바깥).
-    final tailL = Offset(left, tailY);
-    final tailR = Offset(left + boxW, tailY);
-    // 동체 하단 중앙(keel 아래 끝) — 날개 사이 V홈.
-    final keelBottom = Offset(cx, keelBottomY);
-    // 날개 뒷전 안쪽 노치(꼬리가 살짝 패인 다트 실루엣).
-    final notchL = Offset(cx - halfW * 0.16, top + boxH * 0.82);
-    final notchR = Offset(cx + halfW * 0.16, top + boxH * 0.82);
+    // 다트 정점을 공유 기하에서 산출(접기 모핑 페인터와 끝 모양 일치).
+    final g = PaperPlaneDartGeometry.forSquare(size);
+    final nose = g.nose;
+    final tailL = g.tailL;
+    final tailR = g.tailR;
+    final keelBottom = g.keelBottom;
+    final notchL = g.notchL;
+    final notchR = g.notchR;
 
     // ── 그림자(선택) ──
     if (shadow) {

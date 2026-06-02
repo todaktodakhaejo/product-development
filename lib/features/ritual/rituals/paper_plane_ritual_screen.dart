@@ -21,8 +21,9 @@ const Duration _kFoldDuration = Duration(milliseconds: 1500);
 /// 길게 잡아 궤적이 충분히 펼쳐지고, 막판 원근 축소가 '머얼리' 사라지게 한다.
 const Duration _kFlyDuration = Duration(milliseconds: 4000);
 
-// (텍스트 종이 → 다트 글리프 크로스페이드는 접기 막바지 ~80ms ≈ wings 구간의
-//  마지막 ~16%를 progress 비율로 구동한다 — _FoldingPaper.glyphT 참조.)
+// (기하 모핑: 사각 종이 외곽 path가 progress로 다트 외곽 path까지 연속 보간된다.
+//  crossfade 팝 제거 — progress=1에서 PaperPlaneGlyph 다트와 정확히 일치하므로
+//  folded 진입 시 글리프로 교체해도 팝이 없다 — _FoldMorphPainter 참조.)
 
 // ── 인플레이스 완료 타임라인(다트 소멸=0 기준) — 태우기와 톤 일치 ──────────
 /// 다트가 사라진 뒤 멘트가 뜨기 전 여운(비행기는 잔향 없으니 짧게).
@@ -530,13 +531,17 @@ class _SizedPaper extends StatelessWidget {
 }
 
 // ════════════════════════════════════════════════════════════════════════
-// 접기 모핑 위젯: 단일 progress(0→1)를 3구간으로 나눠 Matrix4 perspective로
-// 실제 종이접기를 근사한다.
-//   ① center crease (0.00–0.33): 오른쪽 절반 플랩이 안쪽으로 접혀 넘어가는
-//      rotateY 3D 회전(perspective). 접힌 면 음영↑ + 중앙 크리스 라인.
-//   ② nose (0.33–0.66): 상단 양 모서리가 중앙으로 모여 삼각 코.
-//   ③ wings (0.66–1.00): 양 날개가 동체 기준 아래로 꺾여 다트. 막바지에
-//      텍스트 종이 → PaperPlaneGlyph 크로스페이드(~80ms).
+// 접기 기하 모핑 위젯(crossfade 팝 제거): 단일 CustomPaint로 사각 종이의
+// 외곽·면·크리스선 자체를 progress(0→1)로 다트까지 **연속 보간**한다.
+//   ① center crease (0.00–0.33): 가운데 세로 크리스가 또렷이 생기고, 종이 폭이
+//      미세하게 좁아지며 좌우 면이 능선(중앙선) 기준 살짝 각을 가진다.
+//   ② nose       (0.33–0.66): 윗 양 모서리가 중앙선으로 접혀 내려와 삼각 코를
+//      형성. 상단 실루엣이 사각 → 삼각으로 연속 변형(접힌 플랩 음영).
+//   ③ wings      (0.66–1.00): 좌우 바깥변이 keel 기준으로 접혀 내려가 날개가
+//      되고 전체 실루엣이 다트로 수렴. keel 좌/우 면 음영으로 V자 단면.
+//   progress=1 외곽 = PaperPlaneDartGeometry(글리프와 동일 비율) → folded 진입
+//   시 글리프로 교체해도 팝 없음.
+//   텍스트: 사각 종이엔 보이고, nose 진입(코 접힘)부터 접힌 면에 덮여 페이드아웃.
 // ════════════════════════════════════════════════════════════════════════
 class _FoldingPaper extends StatelessWidget {
   const _FoldingPaper({required this.progress, required this.text});
@@ -544,224 +549,250 @@ class _FoldingPaper extends StatelessWidget {
   final double progress; // 0→1.
   final String text;
 
-  // perspective 깊이(원근). 작을수록 약한 원근.
-  static const double _kPerspective = 0.0014;
-
   @override
   Widget build(BuildContext context) {
-    // 구간 정규화(각 구간 내 0→1, easeInOut으로 "탁" 눌리는 느낌).
-    final c1 = Curves.easeInOut.transform((progress / 0.33).clamp(0.0, 1.0));
-    final c2 = Curves.easeInOut
-        .transform(((progress - 0.33) / 0.33).clamp(0.0, 1.0));
-    final c3 = Curves.easeInOut
-        .transform(((progress - 0.66) / 0.34).clamp(0.0, 1.0));
-
-    // 막바지(③ 후반)에 다트 글리프로 크로스페이드.
-    // 80ms ≈ wings 구간(0.66–1.00, 510ms)의 마지막 ~16%.
-    final glyphT = ((progress - 0.84) / 0.16).clamp(0.0, 1.0);
+    // 텍스트 페이드: 사각 종이(progress~0)엔 또렷, nose 진입(0.33~0.45)에서
+    // 접힌 면에 덮여 자연스럽게 사라진다(갑작스런 toggle 금지 — 부드러운 페이드).
+    final textOpacity =
+        (1.0 - ((progress - 0.33) / 0.12)).clamp(0.0, 1.0);
 
     return SizedBox(
       width: _kPaperW,
       height: _kPaperH,
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          // 접히는 종이(글리프가 다 뜨면 페이드아웃).
-          Opacity(
-            opacity: (1 - glyphT).clamp(0.0, 1.0),
-            child: _buildFoldingPaper(c1, c2, c3),
-          ),
-          // 완성 다트(막바지 크로스페이드 등장).
-          if (glyphT > 0)
-            Opacity(
-              opacity: glyphT,
-              child: const PaperPlaneGlyph(size: _kGlyphSize, shadow: true),
-            ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildFoldingPaper(double c1, double c2, double c3) {
-    // ③ wings: 동체 폭이 좁아지며 세로로 길쭉(다트 실루엣 수렴) + 살짝 위로.
-    final wingNarrow = 1.0 - c3 * 0.55; // 가로 수축.
-    final wingTall = 1.0 + c3 * 0.10; // 세로 신장.
-
-    // ② nose: 상단이 삼각으로 모이며 전체가 살짝 위로 솟는 느낌(원근 tilt).
-    final noseTilt = c2 * 0.18; // rotateX 근사(상단이 멀어짐).
-
-    // ★ 중앙 보정: ① center-crease의 오른쪽 플랩이 rotateY(c1·π)로 안쪽으로
-    //   접히면, 보이는 종이의 시각 무게중심이 hinge(중앙)쪽=왼쪽으로 쏠려
-    //   "접기가 중앙에서 벗어나" 보인다. 두 절반의 합성 centroid가 다시 중앙(0)에
-    //   오도록 오른쪽으로 dx만큼 보정 translate.
-    //   centroid_x = (W/8)(cos(c1·π) − 1) ≤ 0  →  보정 dx = −centroid_x.
-    final creaseDx = (_kPaperW / 8) * (1 - cos(c1 * pi));
-
-    return Transform(
-      alignment: Alignment.center,
-      transform: Matrix4.identity()
-        ..setEntry(3, 2, _kPerspective)
-        ..rotateX(noseTilt)
-        ..scaleByDouble(wingNarrow, wingTall, 1, 1)
-        // 마지막 op = 자식 좌표에 먼저 적용 → 종이 로컬 프레임에서 수평 보정.
-        ..translateByDouble(creaseDx, 0, 0, 1),
-      child: SizedBox(
-        width: _kPaperW,
-        height: _kPaperH,
-        child: Stack(
-          children: [
-            // ── ① 왼쪽 절반(고정 면) ──
-            Align(
-              alignment: Alignment.centerLeft,
-              child: _half(left: true, foldT: c1, noseT: c2),
-            ),
-            // ── ① 오른쪽 절반(안쪽으로 접혀 넘어가는 플랩) ──
-            Align(
-              alignment: Alignment.centerLeft,
-              child: Transform(
-                alignment: Alignment.centerLeft, // 중앙 크리스를 경첩으로.
-                transform: Matrix4.identity()
-                  ..setEntry(3, 2, _kPerspective)
-                  // rotateY 0→π 근사(안쪽으로 접혀 넘어감). c1로 구동.
-                  ..rotateY(c1 * pi),
-                child: _half(
-                  left: false,
-                  foldT: c1,
-                  noseT: c2,
-                  // 접혀 넘어가는 면은 점점 음영↑(뒷면 그늘).
-                  shade: c1,
-                ),
-              ),
-            ),
-            // ── 중앙 크리스 라인(1px, ink 20%) ──
-            Positioned(
-              left: _kPaperW / 2 - 0.5,
-              top: 0,
-              bottom: 0,
-              child: Opacity(
-                opacity: (c1 * 0.8).clamp(0.0, 1.0),
-                child: Container(
-                  width: 1,
-                  color: const Color(0xFF2B2B33).withValues(alpha: 0.20),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// 종이 절반(좌/우). foldT=center crease 진행, noseT=상단 삼각 코 진행.
-  Widget _half({
-    required bool left,
-    required double foldT,
-    required double noseT,
-    double shade = 0,
-  }) {
-    return SizedBox(
-      width: _kPaperW / 2,
-      height: _kPaperH,
-      child: ClipRect(
-        child: Stack(
-          children: [
-            // 절반 종이 본체(텍스트 일부). 텍스트는 코접힘 단계에서 숨겨 깔끔히.
-            Positioned(
-              // 두 절반을 합쳐 온전한 종이로 보이도록 텍스트 패딩 정렬.
-              left: left ? 0 : -_kPaperW / 2,
-              top: 0,
-              width: _kPaperW,
-              height: _kPaperH,
-              child: Opacity(
-                opacity: (1 - noseT).clamp(0.0, 1.0) * 0.0 + 1.0,
-                child: _SizedPaperFace(
-                  text: noseT > 0.05 ? '' : text,
-                ),
-              ),
-            ),
-            // ② nose 삼각면 음영: 상단 모서리(좌/우)가 중앙으로 접힌 삼각 그늘.
-            if (noseT > 0)
-              Positioned.fill(
-                child: CustomPaint(
-                  painter: _NoseShadePainter(t: noseT, left: left),
-                ),
-              ),
-            // ① 접힌 면 그늘(오른쪽 플랩이 넘어가며 어두워짐).
-            if (shade > 0)
-              Positioned.fill(
-                child: IgnorePointer(
-                  child: ColoredBox(
-                    color: const Color(0xFF2B2B33)
-                        .withValues(alpha: 0.22 * shade),
-                  ),
-                ),
-              ),
-          ],
+      // 기하 모핑 페인터: 사각 → 다트 외곽/면/크리스 + 텍스트(클립)를 한 번에.
+      child: CustomPaint(
+        size: const Size(_kPaperW, _kPaperH),
+        painter: _FoldMorphPainter(
+          progress: progress,
+          text: text,
+          textOpacity: textOpacity,
         ),
       ),
     );
   }
 }
 
-/// 접기용 종이 면(그림자·float 없이 순수 면 — Matrix4 변형 대상).
-class _SizedPaperFace extends StatelessWidget {
-  const _SizedPaperFace({required this.text});
+/// 종이 사각형 → 다트 기하 모핑 페인터.
+///
+/// 핵심: 사각형 외곽 4점을 progress로 다트 정점들로 `Offset.lerp` 하고, 내부
+/// 접힘 면(삼각 코 플랩 2개, 좌우 날개 면)과 크리스 선(중앙 keel, 코 접힘선,
+/// 날개 접힘선)을 단계별로 나타낸다. progress=1 외곽은
+/// `PaperPlaneDartGeometry`와 정확히 일치한다.
+class _FoldMorphPainter extends CustomPainter {
+  _FoldMorphPainter({
+    required this.progress,
+    required this.text,
+    required this.textOpacity,
+  });
+
+  final double progress; // 0→1.
   final String text;
+  final double textOpacity;
 
-  @override
-  Widget build(BuildContext context) {
-    return PaperCard(
-      text: text,
-      width: _kPaperW,
-      height: _kPaperH,
-      shadow: false,
-      float: false,
-    );
-  }
-}
+  // 색(테마 토큰과 동일 값 — 신규 토큰 추가 금지).
+  static const Color _paper = AppColors.paper; // 밝은 면.
+  static const Color _paperShadow = AppColors.paperShadow; // 그늘 면.
+  static const Color _ink = AppColors.ink; // keel·외곽·크리스 선.
 
-/// ② nose 단계: 상단 모서리가 중앙으로 접힌 삼각 코의 음영(paperShadow).
-/// 좌/우 절반에 각각 안쪽 위 모서리에서 내려오는 삼각형 그늘을 그린다.
-class _NoseShadePainter extends CustomPainter {
-  _NoseShadePainter({required this.t, required this.left});
-
-  final double t; // 0→1 nose 진행.
-  final bool left;
-
-  static const Color _paperShadow = Color(0xFFE7DEC9);
+  // 구간 정규화(각 구간 내 0→1, easeInOut으로 단계 경계서 "탁" 눌리는 느낌).
+  static double _c1(double p) =>
+      Curves.easeInOut.transform((p / 0.33).clamp(0.0, 1.0));
+  static double _c2(double p) =>
+      Curves.easeInOut.transform(((p - 0.33) / 0.33).clamp(0.0, 1.0));
+  static double _c3(double p) =>
+      Curves.easeInOut.transform(((p - 0.66) / 0.34).clamp(0.0, 1.0));
 
   @override
   void paint(Canvas canvas, Size size) {
-    final w = size.width;
-    // 삼각 코: 위쪽 바깥 모서리 → 중앙선(안쪽)으로 접힌 삼각면.
-    // left 절반은 오른쪽(안쪽=중앙)이 keel, right 절반은 왼쪽이 keel.
-    final innerX = left ? w : 0.0; // 중앙선 쪽.
-    final outerX = left ? 0.0 : w; // 바깥쪽.
-    final apexY = size.height * (0.45 * t); // 접힌 삼각의 아래 꼭짓점(t로 깊어짐).
+    final c1 = _c1(progress); // center crease.
+    final c2 = _c2(progress); // nose.
+    final c3 = _c3(progress); // wings.
 
-    final path = Path()
-      ..moveTo(outerX, 0)
-      ..lineTo(innerX, 0)
-      ..lineTo(innerX, apexY)
+    // ── 다트 타깃 정점(글리프와 동일 비율) ──
+    final g = PaperPlaneDartGeometry.forSquare(size);
+
+    // ── 사각 종이 시작 정점(중앙 정렬, 글리프 박스와 같은 폭으로 두어 끝이
+    //    매끄럽게 이어지게 — box 폭은 _kPaperW의 84%이지만, 종이 자체는 전체
+    //    캔버스를 쓰므로 시작 사각형은 캔버스 가장자리에서 출발) ──
+    // center-crease가 폭을 미세하게 좁히므로(능선) 시작 좌우변을 c1로 살짝 모음.
+    final w = size.width;
+    final h = size.height;
+    final cx = w / 2;
+    // ① 폭 미세 수축(접힌 종이의 능선). 좌우 바깥변을 안쪽으로 c1·6% 당김.
+    final squeeze = c1 * w * 0.06;
+
+    // 사각형 4꼭짓점(좌상·우상·우하·좌하) — 시작 형상.
+    final sqTL = Offset(squeeze, 0);
+    final sqTR = Offset(w - squeeze, 0);
+    final sqBR = Offset(w - squeeze, h);
+    final sqBL = Offset(squeeze, h);
+
+    // ── ② nose: 상단 좌우 꼭짓점이 중앙선(코)으로 모인다 ──
+    // 상단 두 점을 c2로 코(g.nose) 쪽으로 끌어당겨 사각→삼각 상단 실루엣.
+    final topL = Offset.lerp(sqTL, g.nose, c2)!;
+    final topR = Offset.lerp(sqTR, g.nose, c2)!;
+
+    // ── ③ wings: 좌우 바깥변(하단)이 다트 뒷전으로, 상단은 코로 수렴 ──
+    // 외곽 정점 최종 보간:
+    //   - 상단 좌/우 → 코(완전 합류)
+    //   - 하단 좌/우 → 날개 뒷전(tailL/tailR)
+    final outNoseL = Offset.lerp(topL, g.nose, c3)!;
+    final outNoseR = Offset.lerp(topR, g.nose, c3)!;
+    final outTailL = Offset.lerp(sqBL, g.tailL, c3)!;
+    final outTailR = Offset.lerp(sqBR, g.tailR, c3)!;
+    // 다트 꼬리 V홈(keelBottom)과 노치는 wings 후반에 나타난다.
+    final keelBottom = Offset.lerp(
+        Offset(cx, h), g.keelBottom, c3)!;
+    final notchL = Offset.lerp(Offset(cx, h), g.notchL, c3)!;
+    final notchR = Offset.lerp(Offset(cx, h), g.notchR, c3)!;
+
+    // ── 외곽 실루엣 path ──
+    // c3<1에선 단순 사각/삼각 외곽(상단 코, 하단 좌우), c3가 차오르며 꼬리
+    // 노치·keel V홈이 파여 다트 외곽으로 수렴.
+    final outline = Path()
+      ..moveTo(outNoseR.dx, outNoseR.dy)
+      ..lineTo(outTailR.dx, outTailR.dy)
+      ..lineTo(notchR.dx, notchR.dy)
+      ..lineTo(keelBottom.dx, keelBottom.dy)
+      ..lineTo(notchL.dx, notchL.dy)
+      ..lineTo(outTailL.dx, outTailL.dy)
+      ..lineTo(outNoseL.dx, outNoseL.dy)
       ..close();
 
+    // ── drop shadow(종이 질감, 살짝) ──
     canvas.drawPath(
-      path,
-      Paint()..color = _paperShadow.withValues(alpha: 0.85 * t),
-    );
-    // 접힌 모서리 선(살짝 진하게).
-    canvas.drawLine(
-      Offset(outerX, 0),
-      Offset(innerX, apexY),
+      outline.shift(const Offset(0, 7)),
       Paint()
-        ..color = const Color(0xFF2B2B33).withValues(alpha: 0.12 * t)
-        ..strokeWidth = 1,
+        ..color = const Color(0x33000000)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 9),
+    );
+
+    // ── 본체 채움(밝은 면) ──
+    canvas.drawPath(outline, Paint()..color = _paper);
+
+    // ── ③ keel 우측 면(그늘): 코→keelBottom→우측 뒷전 면을 paperShadow로 ──
+    // wings가 진행될수록 또렷해져 '접힌 V자 단면' 입체. c3로 페이드인.
+    if (c3 > 0.001) {
+      final rightFace = Path()
+        ..moveTo(outNoseR.dx, outNoseR.dy)
+        ..lineTo(outTailR.dx, outTailR.dy)
+        ..lineTo(notchR.dx, notchR.dy)
+        ..lineTo(keelBottom.dx, keelBottom.dy)
+        ..close();
+      canvas.drawPath(
+        rightFace,
+        Paint()..color = _paperShadow.withValues(alpha: c3),
+      );
+    }
+
+    // ── ② nose 삼각 코 플랩 음영(좌/우 접힌 삼각면) ──
+    // 상단 모서리가 중앙선으로 접혀 내려온 삼각 플랩을 paperShadow로 그늘짐.
+    // c2로 깊어지고, wings(c3)에서 keel 면 음영에 흡수되며 완전히 옅어진다
+    // (progress=1에 잔여 0 → 글리프 교체 시 팝 없음).
+    final flapAlpha = (c2 * (1.0 - c3)).clamp(0.0, 1.0);
+    if (flapAlpha > 0.001) {
+      // 코에서 좌/우로 내려오는 접힘선의 아래 끝(중앙선상, c2로 깊어짐).
+      final apex = Offset.lerp(
+          Offset(cx, 0), Offset(cx, h * 0.46), c2)!;
+      // 좌측 삼각 플랩: 코 - 좌상(접히기 전 모서리 흔적) - 중앙선 apex.
+      final flapL = Path()
+        ..moveTo(outNoseL.dx, outNoseL.dy)
+        ..lineTo(topL.dx, topL.dy)
+        ..lineTo(apex.dx, apex.dy)
+        ..close();
+      final flapR = Path()
+        ..moveTo(outNoseR.dx, outNoseR.dy)
+        ..lineTo(topR.dx, topR.dy)
+        ..lineTo(apex.dx, apex.dy)
+        ..close();
+      final flapPaint = Paint()
+        ..color = _paperShadow.withValues(alpha: 0.7 * flapAlpha);
+      canvas.drawPath(flapL, flapPaint);
+      canvas.drawPath(flapR, flapPaint);
+      // 코 접힘선(모서리 선).
+      final foldLine = Paint()
+        ..color = _ink.withValues(alpha: 0.12 * flapAlpha)
+        ..strokeWidth = 1
+        ..style = PaintingStyle.stroke;
+      canvas.drawLine(topL, apex, foldLine);
+      canvas.drawLine(topR, apex, foldLine);
+    }
+
+    // ── 텍스트(종이 위 글) — 외곽 path로 클립, textOpacity로 페이드 ──
+    if (textOpacity > 0.01 && text.isNotEmpty) {
+      canvas.save();
+      canvas.clipPath(outline);
+      final tp = TextPainter(
+        text: TextSpan(
+          text: text,
+          style: TextStyle(
+            color: _ink.withValues(alpha: textOpacity),
+            fontSize: 15,
+            height: 1.6,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+        maxLines: 12,
+        ellipsis: '…',
+      )..layout(maxWidth: w - 40);
+      tp.paint(canvas, const Offset(20, 20));
+      canvas.restore();
+    }
+
+    // ── 크리스 선들(progress로 나타남) ──
+    // ① 중앙 세로 크리스(center crease): c1로 또렷이. wings(c3)에서 keel 선이
+    //    이를 이어받으므로 c3로 페이드아웃(이중선 방지 — 글리프와 일치).
+    final creaseAlpha = (0.18 * (0.5 + 0.5 * c1) * (1.0 - c3)).clamp(0.0, 1.0);
+    if (creaseAlpha > 0.001) {
+      // 능선 윗끝(코로 수렴)·아랫끝(keelBottom으로 수렴).
+      final topPt = Offset.lerp(Offset(cx, 0), g.nose, c2)!;
+      final botPt = Offset.lerp(Offset(cx, h), g.keelBottom, c3)!;
+      canvas.drawLine(
+        topPt,
+        botPt,
+        Paint()
+          ..color = _ink.withValues(alpha: creaseAlpha)
+          ..strokeWidth = size.shortestSide * 0.006
+          ..strokeCap = StrokeCap.round,
+      );
+    }
+
+    // ③ keel 선(다트 동체: 코→keelBottom) — wings에서 또렷.
+    if (c3 > 0.001) {
+      canvas.drawLine(
+        g.nose,
+        keelBottom,
+        Paint()
+          ..color = _ink.withValues(alpha: 0.20 * c3)
+          ..strokeWidth = size.shortestSide * 0.012
+          ..strokeCap = StrokeCap.round,
+      );
+      // 날개 접힘선(코→날개 뒷전) — 좌우 바깥변이 keel 기준 접힌 능선.
+      final wingFold = Paint()
+        ..color = _ink.withValues(alpha: 0.10 * c3)
+        ..strokeWidth = size.shortestSide * 0.008
+        ..style = PaintingStyle.stroke
+        ..strokeJoin = StrokeJoin.round;
+      canvas.drawLine(g.nose, outTailL, wingFold);
+      canvas.drawLine(g.nose, outTailR, wingFold);
+    }
+
+    // ── 외곽 미세 stroke(종이 가장자리 암시, ink 10%) — 글리프와 동일 톤 ──
+    canvas.drawPath(
+      outline,
+      Paint()
+        ..color = _ink.withValues(alpha: 0.10)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = size.shortestSide * 0.008
+        ..strokeJoin = StrokeJoin.round,
     );
   }
 
   @override
-  bool shouldRepaint(covariant _NoseShadePainter old) =>
-      old.t != t || old.left != left;
+  bool shouldRepaint(covariant _FoldMorphPainter old) =>
+      old.progress != progress ||
+      old.text != text ||
+      old.textOpacity != textOpacity;
 }
 
 // ════════════════════════════════════════════════════════════════════════
