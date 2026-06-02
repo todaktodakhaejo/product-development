@@ -42,10 +42,10 @@ const Duration _kFlameReturn = Duration(milliseconds: 600);
 // ── 전폭 '불의 벽'(연소 중) 기하 ───────────────────────────────────────────
 /// 종이 좌우로 넘쳐 감싸 올라가는 폭(±). 종이 폭(250)에 더해진다.
 /// 화르륵 강화: 좌우로 더 넘쳐 종이를 통째로 집어삼키는 느낌.
-const double _kWallOverflow = 22;
+const double _kWallOverflow = 45; // 종이를 다 감싸도록 폭 확대(사용자 요청)
 /// 벽 box 높이(가장 큰 혀 + 베이스 글로우 + 열기 글로우 여유). box bottom=burnY 근처.
 /// 화르륵 강화: 혀 최대 240px + 글로우/스파크 여유 → 360px로 상향.
-const double _kWallHeight = 360;
+const double _kWallHeight = 420; // 더 큰 화력(큰 혀 수용)
 
 // ── 흰 재 / 탄자국 로컬 색 (app_theme 미수정) ──────────────────────────────
 // 따뜻한 갈탄 — 남은 종이 하단 탄자국(어둡지 않게).
@@ -859,9 +859,9 @@ class FlamePainter extends CustomPainter {
   // 혀 개수↑(10→16)로 빈틈 없이 빽빽한 불의 벽. 혀 키 대폭 상향(84~158 →
   // 90~240, 진행도 비례)으로 맹렬히 치솟는 화력. 진행도(burn)는 paint에서 받아
   // 혀 높이·flicker 속도·글로우를 정점까지 끌어올린다.
-  static const int _tongueCount = 16; // 가로로 배열되는 큰 혀 수.
-  static const double _tongueMinH = 90; // 혀 최소 높이.
-  static const double _tongueMaxH = 240; // 혀 최대 높이(활활·정점).
+  static const int _tongueCount = 19; // 가로로 배열되는 큰 혀 수(넓어진 폭에 밀도 유지).
+  static const double _tongueMinH = 120; // 혀 최소 높이(화력↑).
+  static const double _tongueMaxH = 300; // 혀 최대 높이(활활·정점, 화력↑).
 
   @override
   void paint(Canvas canvas, Size size) {
