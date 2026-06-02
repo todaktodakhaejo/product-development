@@ -92,6 +92,10 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
   // sensory-haptics가 haptics.dart에 추가하는 startFlightHum()/FlightHandle 사용.
   FlightHandle? _flightHandle;
 
+  // 당기는 동안 '긴장감' 피드백 누적(folded에서 드래그 시). 끌수록 틱이 촘촘·세짐.
+  double _pullAccum = 0; // 마지막 틱 이후 끈 거리(틱 간격 판정).
+  double _pullTotal = 0; // 총 끈 거리(긴장 강도 판정).
+
   // 인플레이스 완료 토글.
   bool _showMessage = false;
   bool _showButton = false;
@@ -143,6 +147,30 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     _firedCrease.clear();
     setState(() => _phase = _Phase.folding); // float:false 전환(접기와 충돌 방지).
     _fold.forward(from: 0);
+  }
+
+  // ── 당기는 동안 긴장감 피드백(folded 드래그) ─────────────────────────────
+  // 활시위를 당기듯, 끌수록 틱이 촘촘하고 살짝 세진다(약한 긴장감). 발사 전 빌드업.
+  void _onPullStart(DragStartDetails d) {
+    if (_phase != _Phase.folded) return;
+    _pullAccum = 0;
+    _pullTotal = 0;
+    Haptics.instance.fire(HapticLevel.selection); // 잡는 순간 미세한 신호.
+  }
+
+  void _onPullUpdate(DragUpdateDetails d) {
+    if (_phase != _Phase.folded) return;
+    final step = d.delta.distance;
+    _pullAccum += step;
+    _pullTotal += step;
+    // 끌수록 틱 간격이 16px→8px로 좁아진다(긴장 빌드업).
+    final tickStep = (16.0 - (_pullTotal / 40).clamp(0.0, 8.0));
+    if (_pullAccum >= tickStep) {
+      _pullAccum = 0;
+      // 약한 긴장감: 초반 selection(아주 미세) → 더 당기면 light로 살짝 세짐.
+      Haptics.instance
+          .fire(_pullTotal < 110 ? HapticLevel.selection : HapticLevel.light);
+    }
   }
 
   // ── 던지기(throw) — onPanEnd ──────────────────────────────────────────────
@@ -221,6 +249,9 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
               Center(
                 child: GestureDetector(
                   onTap: _phase == _Phase.idle ? _startFold : null,
+                  // folded: 당기는 동안 긴장감 틱 → 놓으면 발사.
+                  onPanStart: _phase == _Phase.folded ? _onPullStart : null,
+                  onPanUpdate: _phase == _Phase.folded ? _onPullUpdate : null,
                   onPanEnd: _phase == _Phase.folded ? _throw : null,
                   behavior: HitTestBehavior.opaque,
                   child: AnimatedBuilder(
