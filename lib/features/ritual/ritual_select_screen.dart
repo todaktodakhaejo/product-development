@@ -63,11 +63,14 @@ class RitualSelectScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 24),
                 Expanded(
-                  child: GridView.count(
-                    crossAxisCount: 2,
-                    mainAxisSpacing: 16,
-                    crossAxisSpacing: 16,
-                    childAspectRatio: 0.95,
+                  child: GridView(
+                    gridDelegate:
+                        const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 2,
+                      mainAxisSpacing: 16,
+                      crossAxisSpacing: 16,
+                      mainAxisExtent: 210, // 카드 높이 고정: 설명 2줄 + 여유
+                    ),
                     children: [
                       for (final r in Ritual.values)
                         _RitualCard(
@@ -86,6 +89,14 @@ class RitualSelectScreen extends StatelessWidget {
     );
   }
 }
+
+/// 줄바꿈 금지 문자(word-joiner, U+2060).
+final String _wordJoiner = String.fromCharCode(0x2060);
+
+/// 한글이 글자 단위로 끊기지 않고 띄어쓰기(어절)에서만 줄바꿈되도록,
+/// 각 단어의 글자 사이에 word-joiner를 넣어 단어를 통째로 묶는다.
+String _wrapByWord(String text) =>
+    text.split(' ').map((w) => w.split('').join(_wordJoiner)).join(' ');
 
 class _RitualCard extends StatelessWidget {
   const _RitualCard(
@@ -111,20 +122,26 @@ class _RitualCard extends StatelessWidget {
           mainAxisAlignment: MainAxisAlignment.center,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(emoji, style: const TextStyle(fontSize: 44)),
-            const Spacer(),
+            Text(emoji, style: const TextStyle(fontSize: 40)),
+            const SizedBox(height: 12),
             Row(
               children: [
-                Text(ritual.label,
-                    style: const TextStyle(
-                        fontSize: 18, fontWeight: FontWeight.w600)),
+                Flexible(
+                  child: Text(ritual.label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 18, fontWeight: FontWeight.w600)),
+                ),
                 const SizedBox(width: 6),
                 if (keep)
                   const Icon(Icons.bookmark, size: 14, color: Colors.white38),
               ],
             ),
             const SizedBox(height: 4),
-            Text(ritual.tagline,
+            Text(_wrapByWord(ritual.tagline),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
                 style: const TextStyle(color: Colors.white54, fontSize: 13)),
           ],
         ),
