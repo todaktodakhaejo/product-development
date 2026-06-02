@@ -24,16 +24,18 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
   bool _folded = false;
   bool _finished = false;
   Offset _flyDir = const Offset(1, -1);
+  double _flySpeed = 0; // 던지기 속도 정규화(0~1) → 비행 거리
+
+  // 비행 글라이드 곡선(부드럽게 감속).
+  late final Animation<double> _flyCurve =
+      CurvedAnimation(parent: _fly, curve: Curves.easeOutCubic);
 
   @override
   void initState() {
     super.initState();
     _fold = AnimationController(vsync: this, duration: const Duration(milliseconds: 900));
-    _detachFoldHaptics = Haptics.instance.playTimeline(_fold, const [
-      HapticCue(0.2, HapticLevel.light), // 접는 선 1
-      HapticCue(0.5, HapticLevel.light), // 접는 선 2
-      HapticCue(0.85, HapticLevel.medium), // 마무리 각
-    ]);
+    // 접기 단계감: light·light·medium(마지막 접힘이 가장 단단). 큐를 빌더로 통일.
+    _detachFoldHaptics = Haptics.instance.playTimeline(_fold, Haptics.foldStepCue());
     _fly = AnimationController(vsync: this, duration: const Duration(milliseconds: 1100));
     _fly.addStatusListener((s) {
       if (s == AnimationStatus.completed) _complete();
@@ -50,7 +52,9 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     final v = d.velocity.pixelsPerSecond;
     if (v.distance < 300) return; // 약하면 무시
     _flyDir = v / v.distance;
-    Haptics.instance.fire(HapticLevel.heavy, throttle: false);
+    // 던지기 속도 → 비행 거리·햅틱 강도가 같은 v.distance에서 파생되도록.
+    _flySpeed = ((v.distance - 300) / 2300).clamp(0.0, 1.0);
+    Haptics.instance.impactBySpeed(v.distance); // 세게 던질수록 강하게
     _fly.forward();
   }
 
@@ -82,11 +86,20 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
                 child: GestureDetector(
                   onPanEnd: _throw,
                   child: AnimatedBuilder(
-                    animation: Listenable.merge([_fold, _fly]),
+                    animation: Listenable.merge([_fold, _flyCurve]),
                     builder: (context, _) {
                       final size = MediaQuery.of(context).size;
-                      final flight = _fly.value;
-                      final offset = _flyDir * (flight * size.longestSide * 1.2);
+                      final t = _flyCurve.value; // 부드럽게 감속하는 글라이드
+                      // 직선 성분: 빠르게 던질수록 멀리.
+                      final dist = size.longestSide * (0.7 + _flySpeed * 0.7);
+                      final base = _flyDir * dist * t;
+                      // 약한 sin 흔들림 + 살짝 떠올랐다 내려가는 포물선(착지 시 안정).
+                      final wobble = Offset(
+                        sin(t * pi * 2) * 18 * (1 - t),
+                        -sin(t * pi) * 40,
+                      );
+                      final flight = t;
+                      final offset = base + wobble;
                       final angle = atan2(_flyDir.dy, _flyDir.dx);
                       return Transform.translate(
                         offset: offset,

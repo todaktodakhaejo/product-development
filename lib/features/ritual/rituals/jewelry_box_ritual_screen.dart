@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart' show Ticker;
 
 import '../../../core/haptics.dart';
 import '../../../state/session.dart';
 import '../../../theme/app_theme.dart';
 import '../../complete/complete_screen.dart';
 import '../widgets/paper_card.dart';
+import '../widgets/particles.dart';
 
 /// RIT-10 보석함 보관. 종이를 함에 넣고 뚜껑을 닫으면 뒤로 후광이 빛난다.
 /// 소멸이 아닌 '간직'형 의식.
@@ -19,19 +21,42 @@ class _JewelryBoxRitualScreenState extends State<JewelryBoxRitualScreen>
     with TickerProviderStateMixin {
   late final AnimationController _lid; // 0(열림) → 1(닫힘)
   late final AnimationController _halo; // 후광
+  late final Ticker _ticker; // 파티클 60fps 구동
+  late final Animation<double> _lidCurve; // 스프링 닫힘(easeOutBack)
+  Duration _lastTick = Duration.zero; // dt 산출용
+  final _field = ParticleField(maxParticles: 120); // sparkle는 적게
+  final _repaint = ValueNotifier(0);
   double _drag = 0; // 종이를 아래로 끈 거리
   bool _inserted = false;
   bool _finished = false;
+  bool _snapped = false; // 스냅 햅틱 1회만 발사하기 위한 가드
+  Offset _boxCenter = Offset.zero; // 함 입구 좌표(sparkle origin)
   static const _approach = 220.0;
 
   @override
   void initState() {
     super.initState();
     _lid = AnimationController(vsync: this, duration: const Duration(milliseconds: 600));
+    // 점잖은 1회 오버슈트(keep 톤). elasticOut은 진폭 과다라 비권장.
+    _lidCurve = CurvedAnimation(parent: _lid, curve: Curves.easeOutBack);
     _halo = AnimationController(vsync: this, duration: const Duration(milliseconds: 1100));
     _halo.addStatusListener((s) {
       if (s == AnimationStatus.completed) _complete();
     });
+    // 파티클 갱신용 틱(burn·shredder와 동일하게 Ticker 사용).
+    // ※ AnimationController.unbounded + repeat()는 lowerBound가 -∞라
+    //   '_initialT >= 0.0' assertion으로 크래시 → Ticker로 직접 구동한다.
+    _ticker = createTicker(_onTick)..start();
+  }
+
+  /// 매 프레임 파티클 적분 + 리페인트. dt는 직전 프레임과의 실제 경과.
+  void _onTick(Duration elapsed) {
+    final dt = _lastTick == Duration.zero
+        ? 0.016
+        : (elapsed - _lastTick).inMicroseconds / 1e6;
+    _lastTick = elapsed;
+    _field.update(dt.clamp(0.0, 0.05));
+    _repaint.value++;
   }
 
   double get _approachT => (_drag / _approach).clamp(0.0, 1.0);
@@ -39,6 +64,13 @@ class _JewelryBoxRitualScreenState extends State<JewelryBoxRitualScreen>
   void _onDrag(DragUpdateDetails d) {
     if (_inserted) return;
     setState(() => _drag = (_drag + d.primaryDelta!).clamp(0.0, _approach));
+    // 함 근처 임계 진입 순간 1회만 부드러운 스냅 햅틱(자석처럼 살짝 끌림).
+    if (!_snapped && _approachT >= 0.8) {
+      _snapped = true;
+      Haptics.instance.fire(HapticLevel.selection);
+    } else if (_snapped && _approachT < 0.8) {
+      _snapped = false; // 다시 멀어지면 재무장
+    }
   }
 
   void _onDragEnd(DragEndDetails d) {
@@ -52,11 +84,16 @@ class _JewelryBoxRitualScreenState extends State<JewelryBoxRitualScreen>
 
   Future<void> _insert() async {
     setState(() => _inserted = true);
-    Haptics.instance.fire(HapticLevel.medium, throttle: false); // 함에 넣음
+    // 안치 순간: 부드러운 안착 + 금빛 반짝이.
+    Haptics.instance.fire(HapticLevel.light, throttle: false);
+    _field.emitSparkle(origin: _boxCenter, count: 18, radius: 60);
     await Future.delayed(const Duration(milliseconds: 120));
-    Haptics.instance.fire(HapticLevel.light); // 뚜껑 닫기 시작
-    await _lid.forward();
-    Haptics.instance.fire(HapticLevel.medium); // 닫힘
+    await _lid.forward(); // 스프링(easeOutBack) 닫힘
+    if (!mounted) return;
+    // 뚜껑 닫힘 마무리: heavy 단발 금지 → 부드러운 2펄스(keep 톤).
+    Haptics.instance.softSuccess();
+    // 닫힘 직후 작게 한 번 더 반짝.
+    _field.emitSparkle(origin: _boxCenter, count: 10, radius: 40);
     _halo.forward(); // 후광 → 완료
   }
 
@@ -70,6 +107,8 @@ class _JewelryBoxRitualScreenState extends State<JewelryBoxRitualScreen>
 
   @override
   void dispose() {
+    _ticker.dispose(); // 파티클 틱 누수 방지
+    _repaint.dispose();
     _lid.dispose();
     _halo.dispose();
     super.dispose();
@@ -84,6 +123,7 @@ class _JewelryBoxRitualScreenState extends State<JewelryBoxRitualScreen>
           child: LayoutBuilder(
             builder: (context, c) {
               final boxCenter = Offset(c.maxWidth / 2, c.maxHeight * 0.68);
+              _boxCenter = boxCenter; // sparkle origin(함 입구)
               return Stack(
                 alignment: Alignment.center,
                 children: [
@@ -123,7 +163,13 @@ class _JewelryBoxRitualScreenState extends State<JewelryBoxRitualScreen>
                   Positioned(
                     left: boxCenter.dx - 90,
                     top: boxCenter.dy - 40,
-                    child: _JewelryBox(lid: _lid),
+                    child: _JewelryBox(lid: _lidCurve),
+                  ),
+                  // sparkle 파티클(안치 반짝이)
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: CustomPaint(painter: ParticlePainter(_field, _repaint)),
+                    ),
                   ),
                   Positioned(
                     left: 0,
