@@ -89,7 +89,7 @@ class _HomeScreenState extends State<HomeScreen>
   static const Duration _shakeCooldown = Duration(milliseconds: 90); // 140→90
 
   // 드래그 판별 임계(v6 §2 — 속도 기반). 거리·방향전환 기반 상수는 폐기.
-  static const double kRollSpeed = 420; // px/s, 손가락 속도가 이를 넘으면 굴리기
+  static const double kRollSpeed = 900; // px/s, 손가락 속도가 이를 넘으면 굴리기(§1 완화: 420→900)
   static const double kRollNet = 1.2; // ×radius, 느려도 이만큼 끌면 굴리기
   // 손가락 속도 EMA/clamp 상수(v6 §1).
   static const double kDragMinDt = 0.004; // 이보다 짧은 dt 샘플은 속도 계산서 제외
@@ -99,7 +99,8 @@ class _HomeScreenState extends State<HomeScreen>
   // 굴리기 fling 평활/clamp 상수(v5 §1).
   static const double kFlingMinDt = 0.004; // 이보다 짧은 dt 샘플은 속도 계산서 제외
   static const double kFlingSpikeClamp = 3000; // 순간속도 magnitude 스파이크 컷(px/s)
-  static const double kFlingReleaseClamp = 2400; // release 시 최종 속도 크기 상한(px/s)
+  static const double kFlingReleaseClamp =
+      3200; // release 시 최종 속도 크기 상한(px/s, §3: 2400→3200 동적범위↑)
 
   @override
   void initState() {
@@ -122,10 +123,21 @@ class _HomeScreenState extends State<HomeScreen>
         if (now.difference(_lastShake) < _shakeCooldown) return;
         _lastShake = now;
 
-        // 임펄스 강도: 약하게 흔들어도 공이 벽까지 튀도록 하한 0.6 보장(§1).
+        // 임펄스 강도(§2): 세기 범위를 넓혀 "흔드는 맛". 하한을 0.4로 낮춰
+        // 살살 흔들면 작게(0.4), 세게는 1.0까지 대비가 커진다.
         final strength =
             ((mag - kShakeOn) / (kShakeMax - kShakeOn)).clamp(0.0, 1.0);
-        _ball?.addImpulse(_randomUnitVector(), max(0.6, strength));
+        // 방향(§2): 랜덤 단위벡터 폐기 → 흔든 가속도 벡터를 화면 방향으로 추종.
+        // 포트레이트 기준 x=화면 가로, y는 부호 반전해 화면 세로로 매핑한다.
+        final accel = Offset(e.x, -e.y);
+        final aLen = accel.distance;
+        // 가속도가 사실상 0이면(정지/노이즈) 난수로 폴백, 아니면 정규화한 방향.
+        final base = aLen > 0.001 ? accel / aLen : _randomUnitVector();
+        // 생동감 위해 22%만 난수를 섞어 매 흔들기를 미세하게 다르게 한다.
+        final dir = base * 0.78 + _randomUnitVector() * 0.22;
+        final d = dir.distance;
+        final unit = d > 0.001 ? dir / d : base; // 재정규화(0이면 base 폴백)
+        _ball?.addImpulse(unit, max(0.4, strength));
         // 진동 강화(§1): light 폐기. 게이트 통과한 흔들기는 항상 묵직하게 —
         // mag<13 → medium, mag>=13 → heavy. 매 발동마다 느껴지게 throttle:false.
         final level = mag < 13 ? HapticLevel.medium : HapticLevel.heavy;
