@@ -9,6 +9,7 @@ class AppColors {
   // 감정 오브제(공) 색
   static const Color ballCore = Color(0xFFB8C7FF);
   static const Color ballGlow = Color(0xFF8AA0E8);
+  static const Color ballShade = Color(0xFF5A6AB0); // 구체 3D 음영용 짙은 쿨 라벤더
 
   // 배경 그라데이션 (밤하늘 톤, HOME-01 시간대 변화는 2차 스펙이라 단색 베이스)
   static const List<Color> bgGradient = [
