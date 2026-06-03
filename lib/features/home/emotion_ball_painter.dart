@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 
 import '../../theme/app_theme.dart';
@@ -42,14 +44,15 @@ class EmotionBallPainter extends CustomPainter {
     if (pd > 0.001) {
       // 덴트 축으로 눌리고 직교축으로 부푸는 추가 squash(깊은 홀드까지 수용해
       // along 0.26까지·cross 0.16까지 — 깊어도 말랑하게 부풀어 넘침).
-      final along = 1 - pd * 0.26;
-      final cross = 1 + pd * 0.16;
-      final horizontal = ball.pressDir.dx.abs() > ball.pressDir.dy.abs();
-      if (horizontal) {
-        canvas.scale(along, cross);
-      } else {
-        canvas.scale(cross, along);
-      }
+      // v4 §2: 가로/세로 스냅(if horizontal) 제거 → pressDir 임의 각도로 회전 변형.
+      // pressDir 축으로 회전해 그 축을 x축에 정렬한 뒤 along(압축)·cross(부풀음)를
+      // 적용하고 되돌린다. 대각선에서 눌러도 그 방향으로 정확히 납작해진다.
+      final along = 1 - pd * 0.26; // pressDir축 압축
+      final cross = 1 + pd * 0.16; // 직교축 부풀음
+      final ang = atan2(ball.pressDir.dy, ball.pressDir.dx);
+      canvas.rotate(ang);
+      canvas.scale(along, cross);
+      canvas.rotate(-ang);
       // 손가락 쪽으로 본체를 미세 이동(들어가는 방향감, 깊이 비례 0.16까지).
       canvas.translate(dent.dx * ball.radius * 0.16 * pd,
           dent.dy * ball.radius * 0.16 * pd);

@@ -78,10 +78,11 @@ class EmotionBall {
 
   /// 흔들기/던지기 임펄스 추가. [strength]는 0~1.
   ///
-  /// 기준 속도 1700(v3 유지): 약 구간에서도 체감되도록 상향. 안정화(§5)의
-  /// 2단 마찰·정지 임계가 빠르게 잡아주므로 무한 잔진동 없이 "처음 활발→곧 정지".
+  /// 기준 속도 3400(v4 §1: 1700→2배). 약하게 흔들어도(strength 0.6) ≈2040px/s로
+  /// 벽까지 튀고, 세게 흔들면 3400+로 화면을 가로질러 통통 튄다. 안정화(§5)의
+  /// 2단 마찰·정지 임계가 빠르게 잡아주므로 흔들기를 멈추면 ~1.2s에 정착한다.
   void addImpulse(Offset dir, double strength) {
-    vel += dir * (strength * 1700);
+    vel += dir * (strength * 3400);
     _bumpWobble(strength);
   }
 
@@ -163,13 +164,24 @@ class EmotionBall {
   }
 
   /// 손으로 잡아 끌기(굴리기 GST-02). [target]은 손가락 위치.
-  void grab(Offset target) {
+  ///
+  /// [ease]는 추종 강도(v4 §3):
+  /// - 1.0(기본·roll 커밋 후): clamped target으로 full 추종(pos=target, vel=delta*14).
+  /// - <1.0(pending용): 현재 pos에서 clamped target 쪽으로 ease 비율만 이동하는
+  ///   부드러운 부분 추종(살짝 따라오되 확 안 날아감). vel·squash·wobble은 모두
+  ///   "실제 이동량(delta)" 기준이라 작은 출렁임만 나고 위치는 거의 제자리 유지.
+  ///   builder는 pending에서 `grab(pos, ease:0.3)`, roll 커밋 후 `grab(pos)`를 부른다.
+  void grab(Offset target, {double ease = 1.0}) {
     grabbed = true;
+    final e = ease.clamp(0.0, 1.0);
     final clamped = Offset(
       target.dx.clamp(bounds.left + radius, bounds.right - radius),
       target.dy.clamp(bounds.top + radius, bounds.bottom - radius),
     );
-    final delta = clamped - pos;
+    // ease<1이면 target 쪽으로 ease 비율만 이동(부분 추종). ease=1이면 next=clamped.
+    final next = e >= 1.0 ? clamped : pos + (clamped - pos) * e;
+    // 실제 이동량(delta) 기준으로 출렁임·변형 유발 — pending은 작게, roll은 크게.
+    final delta = next - pos;
     // 손가락 추종 속도 → 출렁임 유발. v3 §3: 12→14로 살짝 더 붙게(즉각 추종 유지).
     vel = delta * 14;
     // 변형은 끄는 반대 방향으로
@@ -179,7 +191,7 @@ class EmotionBall {
       squashDir = delta / d;
     }
     _bumpWobble(min(0.4, d / radius));
-    pos = clamped;
+    pos = next;
   }
 
   void release() {
@@ -194,12 +206,8 @@ class EmotionBall {
     grabbed = true; // update의 물리 적분을 멈춰 제자리 유지
     final len = step.distance;
     if (len > 0.001) {
-      // 손가락 방향으로 아주 약하게만 끌려옴(원위치 이탈 최소화)
-      pos += step * 0.06;
-      pos = Offset(
-        pos.dx.clamp(bounds.left + radius, bounds.right - radius),
-        pos.dy.clamp(bounds.top + radius, bounds.bottom - radius),
-      );
+      // v4 §3: 공은 전혀 움직이지 않는다(완전 제자리). 표면 출렁임/squash만 키워
+      // "공은 가만, 표면만 반응"하게 — 굴리기와 명확히 구분. (이전 `pos += step*0.06` 제거)
       // 쓸리는 방향으로 약한 squash (dreamy: 천천히 차오르도록 계수 낮춤).
       // 누르기 덴트와 달리 얕게 유지(상한 0.18) — v3 §2 차별화.
       squash = min(0.18, squash + len / radius * 0.35);
