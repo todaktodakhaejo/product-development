@@ -149,32 +149,8 @@ class EmotionBallPainter extends CustomPainter {
       canvas.drawCircle(contact, ball.radius * (0.34 + 0.10 * pd), dimple);
     }
 
-    // v9 §4: 손가락 닿은 자리에 "뽁" 국소 오목 덴트 — pressContact 위치에 그린다.
-    // 위 dent(축 방향 본체 휘어짐)와 공존하되, 이건 접촉점 그 자리가 안으로 쑥
-    // 들어간 듯한 국소 오목감을 만든다. 깊이·크기 모두 pressDepth 비례.
-    // 광원은 top-left(스펙큘러와 동일)로 가정.
-    if (pd > 0.001) {
-      final c = ball.pressContact;
-      final dentR = ball.radius * (0.26 + 0.14 * pd); // 오목 반경(깊을수록 넓게)
-      // (1) 안쪽 부드러운 오목 음영 — 팔레트 내 짙은 쿨톤, 저알파, blur.
-      //     표면이 안으로 들어가 광원을 덜 받는 느낌. 검은색·하드엣지 금지.
-      //     음영 중심을 살짝 광원 쪽(top-left)으로 치우쳐 오목 바닥의 그늘을 암시.
-      final shadeOffset = const Offset(-0.12, -0.14) * (ball.radius * pd);
-      final concave = Paint()
-        ..color = coolShade.withValues(alpha: (0.16 + 0.22 * pd).clamp(0.0, 0.40))
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, 6 + 10 * pd);
-      canvas.drawCircle(c + shadeOffset, dentR, concave);
-      // (2) 둘레(빛 반대쪽=우하단)에 얇은 림 하이라이트 — 오목 입체의 경계.
-      //     오목한 벽이 광원을 향해 살짝 솟아 빛을 받는 가장자리. white 저알파, 가는 stroke.
-      final rim = Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = (1.2 + 1.6 * pd).clamp(1.0, 3.0)
-        ..color = Colors.white.withValues(alpha: (0.10 + 0.20 * pd).clamp(0.0, 0.32))
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.5);
-      // 빛 반대쪽(우하단) 호만 강조되도록 림 중심을 우하단으로 살짝 밀어 그린다.
-      final rimOffset = const Offset(0.10, 0.12) * (ball.radius * pd);
-      canvas.drawCircle(c + rimOffset, dentR * 0.96, rim);
-    }
+    // (v9에서 도입했던 "뽁" 국소 오목 덴트(접촉점 오목 음영+림 하이라이트)는
+    //  사용자 피드백으로 제거 — 누르기는 v8 표현(방향 납작 + 화이트 bloom)으로 복귀.)
 
     // 쓰다듬기 위치 반응(GST-04, v8 §1-B) — 손가락 닿는 자리를 따라다니는 광택.
     // 전역 strokeEnergy 글로우(본체 뒤 은은한 발광)와 달리, 이건 본체 표면 위
