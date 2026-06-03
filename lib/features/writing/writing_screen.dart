@@ -33,8 +33,6 @@ class _WritingScreenState extends State<WritingScreen> {
 
   @override
   void dispose() {
-    // 화면을 떠날 때(뒤로가기 등) 작성 중인 글을 세션에 임시 보존.
-    _session.saveDraft(_controller.text);
     _controller.dispose();
     super.dispose();
   }
@@ -87,7 +85,13 @@ class _WritingScreenState extends State<WritingScreen> {
                   child: TextField(
                     controller: _controller,
                     autofocus: true,
-                    onChanged: (_) => setState(() {}),
+                    onChanged: (_) {
+                      // 입력할 때마다 세션에 초안 임시 보존(알림 없음).
+                      // dispose에서 저장하면 의식 완료 reset 직후 다시 덮어써져
+                      // 초기화가 안 되므로, 저장 시점을 입력으로 옮긴다.
+                      _session.saveDraft(_controller.text);
+                      setState(() {});
+                    },
                     maxLines: null,
                     expands: true,
                     textAlignVertical: TextAlignVertical.top,
