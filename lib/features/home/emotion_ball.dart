@@ -19,6 +19,8 @@ class Ripple {
 ///   [lastImpact]에 충돌 세기를 남겨 햅틱을 트리거한다.
 /// - 손으로 끌면([grab]) 손가락을 따라와 굴러가고(GST-02), 놓으면 관성으로 fling 한다.
 /// - 제자리 쓰다듬으면([stroke]) 원위치 근처에서 표면만 출렁인다(GST-04).
+/// - 본체 위를 누르고 있으면([pressStart]) 누른 시간만큼 점점 깊이 침몰하고,
+///   떼면([pressEnd]) elastic으로 차오른다(GST-03 홀드, v3 §2).
 /// - [update]의 [gravity] 인자는 타 화면(의식 등) 재사용성을 위해 유지하되,
 ///   홈 화면에서는 `Offset.zero`를 전달한다.
 class EmotionBall {
@@ -43,17 +45,25 @@ class EmotionBall {
   double lastImpact = 0;
   Offset lastImpactDir = Offset.zero;
 
-  // ── 누르기 푸딩감(GST-03) 상태 ──────────────────────────────
-  // 본체가 탭 지점 방향으로 쑤욱 침몰(squash 덴트)했다가 elastic으로 차오른다.
-  // 시간 진행은 [update]에서 관리하며, painter는 [pressDepth]/[pressDir]를 읽기만 한다.
-  double _pressT = -1; // 진행 시간(s). <0이면 비활성
+  // ── 누르기 홀드(GST-03, v3 §2) 상태 ──────────────────────────
+  // 본체 위에서 손가락을 누르고 있는 동안 깊이가 시간 비례로 차오르고(상한 1.0),
+  // 떼면 현재 깊이에서 elastic으로 0까지 복원한다. 시간 진행은 [update]가 관리하며,
+  // painter는 [pressDepth]/[pressDir]만 읽는다.
+  bool _holding = false; // 손가락이 본체를 누르고 있는 중
+  double _holdT = 0; // 홀드 누적 시간(s) — 침몰 깊이 계산용
+  double _releaseDepth = 0; // 뗀 순간의 깊이(elastic 복원 시작점)
+  double _releaseT = -1; // 복원 진행 시간(s). <0이면 복원 비활성
+  double _curDepth = 0; // 현재 깊이(0~1) — pressDepth가 그대로 반환
   Offset _pressDir = Offset.zero; // 탭 지점 → 중심 방향(덴트 축)
-  bool _pressReleased = false; // 복원 정점 도달 플래그(consume으로 1회 소비)
-  bool _pressPeakArmed = false; // 침몰 정점을 지나 복원 구간 진입 여부
 
-  // 침몰 ~90ms, 복원 ~520ms elastic. (§11-5 motion 재량 튜닝)
-  static const double _pressInDur = 0.09;
-  static const double _pressOutDur = 0.52;
+  // 미세 틱(pressHoldTick) — 침몰 중 0.5·0.85 통과 정점에서 1회씩.
+  bool _tick50Armed = false;
+  bool _tick85Armed = false;
+  bool _tickPending = false;
+
+  // 침몰 0.45s(ease-out), 복원 0.5s elasticOut. (v3 §2)
+  static const double _holdInDur = 0.45;
+  static const double _releaseDur = 0.5;
 
   static double _radiusFor(Rect b) => (b.shortestSide * 0.22).clamp(64.0, 150.0);
 
@@ -68,54 +78,73 @@ class EmotionBall {
 
   /// 흔들기/던지기 임펄스 추가. [strength]는 0~1.
   ///
-  /// 기준 속도 1700(§6.1): 약 구간에서도 체감되도록 상향. 안정화(§7)의
+  /// 기준 속도 1700(v3 유지): 약 구간에서도 체감되도록 상향. 안정화(§5)의
   /// 2단 마찰·정지 임계가 빠르게 잡아주므로 무한 잔진동 없이 "처음 활발→곧 정지".
   void addImpulse(Offset dir, double strength) {
     vel += dir * (strength * 1700);
     _bumpWobble(strength);
   }
 
-  /// 누르기(GST-03): 탭 지점 방향으로 본체를 침몰시킨다.
+  /// 누르기 홀드 시작(GST-03, v3 §2). [localPos]는 누른 화면 좌표.
   ///
-  /// [localPos]는 탭한 화면 좌표. 침몰 축([pressDir])은 "탭 지점 → 중심" 방향이며,
-  /// 시간 진행은 [update]가 처리한다(침몰 ~90ms → 복원 ~520ms elastic).
-  /// painter는 [pressDepth]/[pressDir]만 읽어 본체 변형으로 표현한다.
-  void press(Offset localPos) {
+  /// 침몰 축([pressDir])은 "누른 지점 → 중심" 방향(정중앙이면 위에서 누른 듯
+  /// `Offset(0, -1)`). 이후 떼기 전까지 [update]가 깊이를 0.45s에 걸쳐 0→1로
+  /// 차올린다. painter는 [pressDepth]/[pressDir]만 읽어 본체 변형으로 표현한다.
+  void pressStart(Offset localPos) {
     final toCenter = pos - localPos;
     final d = toCenter.distance;
-    // 정중앙 탭이면 위에서 누른 듯 아래로 살짝 들어가게(영벡터 회피).
+    // 정중앙이면 영벡터 회피 — 위에서 누른 느낌으로 위쪽(-y)을 기본 축.
     _pressDir = d > 0.001 ? toCenter / d : const Offset(0, -1);
-    _pressT = 0;
-    _pressReleased = false;
-    _pressPeakArmed = false;
+    _holding = true;
+    // 진행 중이던 복원이 있더라도 현재 깊이에서 이어 눌리도록 _curDepth 유지.
+    // 홀드 시간은 현재 깊이에 해당하는 시점부터 다시 적분(이어 누르기 자연스럽게).
+    _holdT = _depthToHoldTime(_curDepth);
+    _releaseT = -1;
+    // 미세 틱: 이미 통과한 정점은 다시 울리지 않도록 현재 깊이 기준으로 무장.
+    _tick50Armed = _curDepth >= 0.5;
+    _tick85Armed = _curDepth >= 0.85;
   }
 
-  /// painter가 읽는 현재 침몰 깊이(0~1). 0=평소, peak=최대 침몰.
-  double get pressDepth {
-    if (_pressT < 0) return 0;
-    if (_pressT < _pressInDur) {
-      // 침몰: 빠르게 들어감(가속). 0→1
-      final t = (_pressT / _pressInDur).clamp(0.0, 1.0);
-      return t * t * (3 - 2 * t); // smoothstep
-    }
-    // 복원: elasticOut으로 천천히 차오르며 살짝 오버슈트. 1→0
-    final t = ((_pressT - _pressInDur) / _pressOutDur).clamp(0.0, 1.0);
-    return (1 - _elasticOut(t)).clamp(0.0, 1.0);
+  /// 누르기 홀드 종료(v3 §2). 현재 깊이에서 elastic 복원을 시작한다.
+  void pressEnd() {
+    if (!_holding) return;
+    _holding = false;
+    _releaseDepth = _curDepth;
+    _releaseT = 0;
   }
 
-  /// 덴트 축(탭 지점 → 중심 정규화). painter 본체 변형 방향.
+  /// painter가 읽는 현재 침몰 깊이(0~1). 0=평소, 1=최대 침몰.
+  double get pressDepth => _curDepth;
+
+  /// 덴트 축(누른 지점 → 중심 정규화). painter 본체 변형 방향.
   Offset get pressDir => _pressDir;
 
-  /// 복원 정점 도달 프레임에 true를 1회 반환하고 소비(이후 false).
+  /// 침몰 중 깊이가 0.5·0.85 정점을 통과한 프레임에 true를 1회 반환하고 소비.
   ///
-  /// home_screen `_onTick`이 읽어 `pressRelease()` 햅틱을 발사한다 — 물리 타이밍과
-  /// 한 소스에서 동기되어 desync를 방지한다(§6.3-B).
-  bool consumePressRelease() {
-    if (_pressReleased) {
-      _pressReleased = false;
+  /// home_screen `_onTick`이 읽어 미세 틱 햅틱([pressHoldTick])을 발사한다 —
+  /// 물리 깊이와 한 소스에서 동기되어 desync를 방지한다(v3 §2, 계약 v3).
+  bool consumePressHoldTick() {
+    if (_tickPending) {
+      _tickPending = false;
       return true;
     }
     return false;
+  }
+
+  /// 홀드 깊이(ease-out: 처음 빠르게, 끝으로 느리게)를 깊이값으로 환산.
+  /// t=0→0, t=_holdInDur→1. easeOutCubic(1-(1-x)^3).
+  static double _holdDepthFor(double holdT) {
+    final x = (holdT / _holdInDur).clamp(0.0, 1.0);
+    final inv = 1 - x;
+    return 1 - inv * inv * inv;
+  }
+
+  /// 깊이값을 ease-out 곡선의 역으로 환산(이어 누르기 시 홀드 시간 복원용).
+  static double _depthToHoldTime(double depth) {
+    final d = depth.clamp(0.0, 1.0);
+    // depth = 1-(1-x)^3  →  x = 1 - (1-depth)^(1/3)
+    final x = 1 - pow(1 - d, 1 / 3).toDouble();
+    return x * _holdInDur;
   }
 
   /// elasticOut 근사(Flutter Curves.elasticOut와 동형, period 0.4).
@@ -133,7 +162,7 @@ class EmotionBall {
     wobbleAmp = min(1.0, wobbleAmp + s * 0.6);
   }
 
-  /// 손으로 잡아 끌기(문지르기). [target]은 손가락 위치.
+  /// 손으로 잡아 끌기(굴리기 GST-02). [target]은 손가락 위치.
   void grab(Offset target) {
     grabbed = true;
     final clamped = Offset(
@@ -141,7 +170,8 @@ class EmotionBall {
       target.dy.clamp(bounds.top + radius, bounds.bottom - radius),
     );
     final delta = clamped - pos;
-    vel = delta * 12; // 손가락 추종 속도 → 출렁임 유발
+    // 손가락 추종 속도 → 출렁임 유발. v3 §3: 12→14로 살짝 더 붙게(즉각 추종 유지).
+    vel = delta * 14;
     // 변형은 끄는 반대 방향으로
     final d = delta.distance;
     if (d > 0.001) {
@@ -171,14 +201,13 @@ class EmotionBall {
         pos.dy.clamp(bounds.top + radius, bounds.bottom - radius),
       );
       // 쓸리는 방향으로 약한 squash (dreamy: 천천히 차오르도록 계수 낮춤).
-      // 누르기 덴트와 달리 얕게 유지(상한 0.18) — §5 차별화 표.
+      // 누르기 덴트와 달리 얕게 유지(상한 0.18) — v3 §2 차별화.
       squash = min(0.18, squash + len / radius * 0.35);
       squashDir = step / len;
     }
     vel = Offset.zero; // fling 금지
     // 매 move마다 살짝씩만 더해 부드럽게 출렁이게(스파이크 방지) — update의
     // wobbleAmp 감쇠(-dt*1.4)와 맞물려 멈추면 자연 감쇠한다.
-    // v2: 잔잔히 더 번지도록 출렁임 계수·상한을 소폭 상향(요구2, 위로받는 텍스처).
     _bumpWobble(min(0.30, len / radius * 0.75));
   }
 
@@ -190,19 +219,24 @@ class EmotionBall {
     wobbleAmp = (wobbleAmp - dt * 1.4).clamp(0.0, 1.0);
     squash = (squash - dt * 3.0).clamp(0.0, 1.0);
 
-    // ── 누르기 침몰/복원 시간 진행(§6.3) ──
-    // grabbed 여부와 무관하게 진행(쓰다듬기 중 탭은 없지만 안전하게 항상 갱신).
-    if (_pressT >= 0) {
-      _pressT += dt;
-      // 침몰 정점(_pressInDur)을 지나면 복원 구간 진입을 무장.
-      if (!_pressPeakArmed && _pressT >= _pressInDur) {
-        _pressPeakArmed = true;
-      }
-      // 복원 완료 정점에 도달하면 햅틱 플래그를 1회 올리고 상태 종료.
-      if (_pressPeakArmed && _pressT >= _pressInDur + _pressOutDur) {
-        _pressReleased = true; // consumePressRelease()가 1회 소비
-        _pressT = -1;
-        _pressPeakArmed = false;
+    // ── 누르기 홀드 침몰 / elastic 복원(v3 §2) ──
+    // grabbed 여부와 무관하게 항상 갱신(누르기는 제자리 홀드라 grab과 배타적이지만
+    // 안전하게 매 프레임 진행).
+    if (_holding) {
+      // 떼기 전까지 시간 누적 → 0.45s 상한에서 깊이 1.0에 머묾.
+      _holdT = (_holdT + dt).clamp(0.0, _holdInDur);
+      final prev = _curDepth;
+      _curDepth = _holdDepthFor(_holdT);
+      _armHoldTicks(prev, _curDepth);
+    } else if (_releaseT >= 0) {
+      // 복원: _releaseDepth에서 elasticOut으로 0까지(살짝 오버슈트), 0.5s.
+      _releaseT += dt;
+      final t = (_releaseT / _releaseDur).clamp(0.0, 1.0);
+      // (1 - elasticOut)에 시작 깊이를 곱해 현재 깊이에서부터 차오르게.
+      _curDepth = (_releaseDepth * (1 - _elasticOut(t))).clamp(0.0, 1.0);
+      if (t >= 1.0) {
+        _curDepth = 0;
+        _releaseT = -1;
       }
     }
 
@@ -211,30 +245,43 @@ class EmotionBall {
     // 중력(기울기) 적용
     vel += gravity * dt;
 
-    // ── 2단 마찰(§7): 빠르면 활발히 튀게 약감속, 느리면 빠르게 잦아듦 ──
+    // ── 2단 마찰(v3 §5): 빠르면 활발히 튀게 약감속, 느리면 부드럽게 잦아듦 ──
+    // v2(1.0/3.2)에서 완화 → 흔들기·fling이 미끄러지듯 ~1.2s에 멈춤.
     final speed = vel.distance;
-    final friction = speed > _kFastSpeed ? 1.0 : 3.2;
+    final friction = speed > _kFastSpeed ? 0.9 : 1.7;
     vel *= (1 - friction * dt);
 
     pos += vel * dt;
 
     final collided = _collideWalls();
 
-    // ── 정지 임계(snap-to-stop, §7): 저속이면 vel=0으로 떨림 종결 ──
+    // ── 정지 임계(snap-to-stop, v3 §5): 거의 멈췄을 때만 살짝 정리(10px/s) ──
     // 벽 충돌 직후 프레임은 제외(튕김 속도를 죽이지 않도록).
     if (!collided && vel.distance < _kStopSpeed) {
       vel = Offset.zero;
     }
   }
 
-  // 안정화 튜닝 상수(§7·§11-4, 실기기 체감 조정 대상)
-  static const double _kFastSpeed = 900; // px/s 초과 시 약감속
-  static const double _kStopSpeed = 26; // px/s 미만 시 snap-to-stop
+  /// 침몰 중 깊이가 0.5·0.85 정점을 (상향) 통과하면 미세 틱 1회 무장.
+  void _armHoldTicks(double prev, double cur) {
+    if (!_tick50Armed && prev < 0.5 && cur >= 0.5) {
+      _tick50Armed = true;
+      _tickPending = true;
+    }
+    if (!_tick85Armed && prev < 0.85 && cur >= 0.85) {
+      _tick85Armed = true;
+      _tickPending = true;
+    }
+  }
+
+  // 안정화 튜닝 상수(v3 §5, 실기기 체감 조정 대상)
+  static const double _kFastSpeed = 900; // px/s 초과 시 약감속(0.9)
+  static const double _kStopSpeed = 10; // px/s 미만 시 snap-to-stop(거의 멈췄을 때만)
 
   /// 벽 충돌 처리. 이번 프레임에 실제 반발(튕김)이 일어났으면 true.
   /// (정지 임계가 튕김 직후 속도를 죽이지 않도록 호출부가 참고.)
   bool _collideWalls() {
-    const restitution = 0.5; // v2: 0.62→0.5, 튕김 횟수↓·빠른 정착(탱탱함 유지)
+    const restitution = 0.55; // v3 §5: 0.5→0.55, 살짝 더 탱탱.
     double impact = 0;
     Offset dir = Offset.zero;
 

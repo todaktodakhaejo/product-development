@@ -14,9 +14,9 @@ import 'emotion_ball_painter.dart';
 
 /// 2단계 첫 화면(홈). 감정 오브제(공)와 4종 제스처 인터랙션의 무대.
 ///
-///  - GST-01 흔들기 : 자이로 각속도 3구간(약/중/강) 임펄스 + light/medium/heavy 햅틱
+///  - GST-01 흔들기 : 선형 가속도 3구간(약/중/강) 임펄스 + light/medium/heavy 햅틱
 ///  - GST-02 굴리기 : 손가락 드래그 추종 + 이동거리 기반 마찰 틱 → 놓으면 관성 fling
-///  - GST-03 누르기 : 본체 탭 → 물결 + 침몰 덴트(press) + 2단 햅틱(down/release)
+///  - GST-03 누르기 : 본체 홀드 → 누르는 동안 점점 침몰(pressStart/End) + 햅틱(down/tick/release)
 ///  - GST-04 쓰다듬기: 제자리 왕복 드래그 → 표면 출렁임 + 글로우 + 연속 약진동(strokeSoft)
 ///
 /// 굴리기·쓰다듬기는 둘 다 단일 포인터 드래그라, 드래그 메트릭(직진성·방향전환)
@@ -39,8 +39,8 @@ class _HomeScreenState extends State<HomeScreen>
   EmotionBall? _ball;
   final List<Ripple> _ripples = [];
 
-  // 센서: 흔들기(GST-01)용 자이로 각속도 1개만 구독.
-  StreamSubscription? _gyroSub;
+  // 센서: 흔들기(GST-01)용 선형 가속도(중력 제거) 1개만 구독.
+  StreamSubscription? _accelSub;
   bool _shakeArmed = true; // 재발동 게이트(연속 폭주 방지)
   DateTime _lastShake = DateTime.fromMillisecondsSinceEpoch(0);
 
@@ -70,19 +70,21 @@ class _HomeScreenState extends State<HomeScreen>
 
   static const double _slop = 14;
 
-  // 흔들기(GST-01) 자이로 각속도 임계(rad/s)
-  static const double kShakeOn = 3.5; // 발동 임계
-  static const double kShakeOff = 2.0; // 해제(재발동 허용) 임계
-  static const double kShakeMax = 12.0; // 정규화 상한
-  static const Duration _shakeCooldown = Duration(milliseconds: 120);
+  // 흔들기(GST-01) 선형 가속도 임계(m/s²). userAccelerometer는 중력이 제거돼
+  // 정지 시 ≈0, 직선으로 흔들면 즉시 큰 값이 잡힌다(자이로와 달리 비틀 필요 없음).
+  static const double kShakeOn = 12.0; // 발동 임계
+  static const double kShakeOff = 6.0; // 해제(재발동 허용) 임계
+  static const double kShakeMax = 32.0; // 정규화 상한
+  static const Duration _shakeCooldown = Duration(milliseconds: 140);
 
-  // 드래그 판별 임계(§6.2)
+  // 드래그 판별 임계(§4 — stroke 관대화, roll 약간 상향)
   static const double kTurnDot = -0.1; // 방향전환 인정 내적(약 95°)
-  static const double kStrokeStraight = 0.45; // 미만 + 잦은 전환 → stroke
-  static const double kRollStraight = 0.65; // 초과 + 큰 net → roll
+  static const double kStrokeStraight = 0.55; // 미만 + 1회 이상 전환 → stroke
+  static const double kRollStraight = 0.72; // 초과 + 큰 net → roll
   static const double kRollNetFactor = 0.8; // net > radius * 0.8
-  static const int kStrokeTurns = 2; // 전환 횟수 임계
+  static const int kStrokeTurns = 1; // 전환 횟수 임계(완화: 2→1)
   static const double kMinStep = 2.0; // px, 노이즈 컷
+  static const double kStrokeNetFactor = 0.5; // net < path*0.5 → 제자리 맴돔
 
   @override
   void initState() {
@@ -92,37 +94,37 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   void _listenSensors() {
-    // 흔들기(GST-01): 자이로 각속도. 미지원 기기/웹에서는 onError로 무시되어
-    // 흔들기만 비활성화되고 터치 제스처는 정상 동작한다.
-    _gyroSub = gyroscopeEventStream().listen(
+    // 흔들기(GST-01): 선형 가속도(중력 제거, m/s²). v2의 자이로는 회전 각속도라
+    // 직선 흔들기에 거의 안 잡혀 먹통이었음 → 가속도로 교체(§1). 미지원 기기/웹
+    // 에서는 onError로 무시되어 흔들기만 비활성화되고 터치 제스처는 정상 동작한다.
+    _accelSub = userAccelerometerEventStream().listen(
       (e) {
-        final w = sqrt(e.x * e.x + e.y * e.y + e.z * e.z); // 각속도 크기(rad/s)
-        if (w < kShakeOff) {
+        final mag = sqrt(e.x * e.x + e.y * e.y + e.z * e.z); // 가속도 크기(m/s²)
+        if (mag < kShakeOff) {
           _shakeArmed = true; // 충분히 잦아들면 다음 흔들기 허용
           return;
         }
-        if (w < kShakeOn || !_shakeArmed) return;
+        if (mag < kShakeOn || !_shakeArmed) return;
         // 쿨다운(연속 발사 폭주 방지)
         final now = DateTime.now();
         if (now.difference(_lastShake) < _shakeCooldown) return;
         _lastShake = now;
         _shakeArmed = false;
 
+        // 임펄스 강도: 약하게 흔들어도 공이 눈에 띄게 튀도록 하한 0.35 보장(§1).
         final strength =
-            ((w - kShakeOn) / (kShakeMax - kShakeOn)).clamp(0.0, 1.0);
-        _ball?.addImpulse(_randomUnitVector(), strength);
-        // 흔들기 강도 체감(요구1, §6.1): 1차의 연속식 impactByStrength는 임계
-        // 부근에서 light에만 머물러 "확연한 차이"가 안 났다. 각속도 w를 직접
-        // 3구간(약/중/강)으로 나눠 light/medium/heavy를 명시 발사하면 손에서
-        // 단차가 보장된다. 임펄스는 strength 단일값으로 연속 비례(안정화가 잡아줌).
+            ((mag - kShakeOn) / (kShakeMax - kShakeOn)).clamp(0.0, 1.0);
+        _ball?.addImpulse(_randomUnitVector(), max(0.35, strength));
+        // 흔들기 강도 체감(§1): 가속도 mag를 직접 3구간(약/중/강)으로 나눠
+        // light/medium/heavy를 명시 발사 → 세게 흔들수록 손에 단차가 확연.
         // 게이트를 통과한 흔들기는 매번 손에 느껴져야 하므로 throttle:false.
         final HapticLevel level;
-        if (w < 5.5) {
-          level = HapticLevel.light; // 약 (3.5~5.5 rad/s)
-        } else if (w < 8.5) {
-          level = HapticLevel.medium; // 중 (5.5~8.5 rad/s)
+        if (mag < 19) {
+          level = HapticLevel.light; // 약 (12~19 m/s²)
+        } else if (mag < 26) {
+          level = HapticLevel.medium; // 중 (19~26 m/s²)
         } else {
-          level = HapticLevel.heavy; // 강 (8.5+ rad/s)
+          level = HapticLevel.heavy; // 강 (26+ m/s²)
         }
         Haptics.instance.fire(level, throttle: false);
         if (_showComfort) setState(() => _showComfort = false);
@@ -157,11 +159,11 @@ class _HomeScreenState extends State<HomeScreen>
       Haptics.instance.impactByStrength(ball.lastImpact);
     }
 
-    // 누르기 복원 정점 햅틱(요구4, §6.3-B): 침몰→복원 정점 타이밍을 ball이 소유한
-    // 물리에서 단일 소스로 내보낸다. 정점 프레임에 한 번만 true를 소비해 'pressRelease'
-    // (차오르는 톡)을 발사 → 시각 복원과 햅틱이 desync 없이 동기.
-    if (ball.consumePressRelease()) {
-      Haptics.instance.pressRelease();
+    // 누르기 홀드 중 미세 틱(§2): 침몰 깊이가 깊어지는 정점(0.5·0.85 통과)을 ball이
+    // 물리에서 단일 소스로 내보낸다. 프레임당 1회만 소비해 미세 틱 햅틱을 발사 →
+    // 시각 침몰과 햅틱이 desync 없이 동기. (시작 pressDown·뗄 때 pressRelease는 포인터에서.)
+    if (ball.consumePressHoldTick()) {
+      Haptics.instance.pressHoldTick();
     }
 
     for (final r in _ripples) {
@@ -177,8 +179,9 @@ class _HomeScreenState extends State<HomeScreen>
     if (_pointerId != null) return;
     final ball = _ball;
     if (ball == null) return;
+    final pos = e.localPosition;
     _pointerId = e.pointer;
-    _downPos = _lastPos = e.localPosition;
+    _downPos = _lastPos = pos;
     _lastMoveTime = e.timeStamp;
     _moved = false;
     // 드래그 메트릭 초기화
@@ -187,6 +190,14 @@ class _HomeScreenState extends State<HomeScreen>
     _turnCount = 0;
     _lastMoveDir = Offset.zero;
     _rollAccum = 0; // 굴리기 마찰 누적 리셋
+
+    // 누르기 홀드(GST-03, §2): 본체 위에서 누르기 시작 → 누르는 동안 침몰.
+    // 이동(slop 초과)이 시작되면 _onPointerMove에서 pressEnd로 전환된다.
+    // 본체 밖이면 누르기 침몰 없이(Ripple은 떼는 순간 onPointerUp에서) 진행.
+    if (ball.hitTest(pos)) {
+      ball.pressStart(pos);
+      Haptics.instance.pressDown();
+    }
     if (_showComfort) setState(() => _showComfort = false); // HOME-04
   }
 
@@ -200,6 +211,9 @@ class _HomeScreenState extends State<HomeScreen>
 
     if (!_moved && (pos - _downPos).distance > _slop) {
       _moved = true;
+      // 누르기 → 드래그 전환(§2): 홀드 침몰을 즉시 복원 시작. 손을 뗀 게 아니라
+      // 끌기로 바뀐 것이므로 pressRelease 햅틱은 생략(pressDown만 이미 울렸음).
+      ball.pressEnd();
       // 잠정 roll로 시작(공이 손가락을 따라오는 즉각 반응이 직관적).
       _dragMode = _DragMode.roll;
       Haptics.instance.fire(HapticLevel.light); // 굴리기 모드 진입 알림 1회
@@ -220,10 +234,13 @@ class _HomeScreenState extends State<HomeScreen>
       final net = (pos - _downPos).distance;
       final straightness = net / max(_pathLen, 1);
 
-      // 히스테리시스 판정: 0.45~0.65 데드존으로 모드 떨림 방지.
+      // 히스테리시스 판정(§4): 데드존(0.55~0.72)으로 모드 떨림 방지하되 stroke를
+      // 관대하게. stroke 진입 = (꺾임이 있고 직진성 낮음) 또는 (제자리 맴돔:
+      // net이 경로 길이의 절반 미만). roll 진입은 직진성·net 문턱을 약간 상향.
+      final inPlace = net < _pathLen * kStrokeNetFactor && _pathLen > _slop;
       if (_dragMode != _DragMode.stroke &&
-          straightness < kStrokeStraight &&
-          _turnCount >= kStrokeTurns) {
+          ((straightness < kStrokeStraight && _turnCount >= kStrokeTurns) ||
+              inPlace)) {
         _dragMode = _DragMode.stroke; // 경로는 긴데 시작점 근처를 맴돔
       } else if (_dragMode != _DragMode.roll &&
           straightness > kRollStraight &&
@@ -270,14 +287,16 @@ class _HomeScreenState extends State<HomeScreen>
 
     if (ball == null) return;
     if (!_moved) {
-      // 누르기(GST-03, 요구4): 물결은 항상. 단 공 본체 위 탭일 때만 침몰 덴트 +
-      // 2단 햅틱의 1단(pressDown, 눌리는 무게감). 빈 배경 탭은 물결만(덴트·햅틱 없음)
-      // 으로 자연스러움 유지. 복원 정점의 pressRelease는 _onTick에서 발사(§6.3-B).
+      // 누르기 홀드 종료(GST-03, §2): 드래그로 전환되지 않고 제자리에서 손을 뗌.
+      // pressStart는 _onPointerDown(본체 위)에서 이미 걸렸으므로 여기서 복원 시작 +
+      // 떼는 톡(pressRelease) 발사. 짧게 톡 친 탭도 같은 경로(얕게 들어갔다 톡).
+      // 물결은 항상(본체 안팎 무관). 본체 밖 탭은 pressStart가 없었으니 pressEnd는
+      // 무해(holding=false) — 물결만 남는다.
       final pos = e.localPosition;
       _ripples.add(Ripple(pos));
-      if (ball.hitTest(pos)) {
-        ball.press(pos);
-        Haptics.instance.pressDown();
+      if (ball.hitTest(_downPos)) {
+        ball.pressEnd();
+        Haptics.instance.pressRelease();
       }
     } else if (_dragMode == _DragMode.roll) {
       ball.release();
@@ -298,7 +317,7 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void dispose() {
     _ticker.dispose();
-    _gyroSub?.cancel();
+    _accelSub?.cancel();
     _frame.dispose();
     super.dispose();
   }

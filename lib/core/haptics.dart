@@ -75,10 +75,12 @@ class Haptics {
   // 네이티브 채널이 있어야 진짜로 살아난다 → 실기기/네이티브 작업 필요(이번 범위 밖).
 
   DateTime _strokeLast = DateTime.fromMillisecondsSinceEpoch(0);
-  final Duration _strokeGap = const Duration(milliseconds: 40);
+  // v3: 40ms → 50ms로 완화. 너무 자주 울리면 "자글대는 결"이 되어 잔잔함이
+  // 깨진다 → 간격을 늘려 더 부드럽고 흐르는 텍스처로(쓰다듬기=위로 느낌 강화).
+  final Duration _strokeGap = const Duration(milliseconds: 50);
 
   /// 쓰다듬기(GST-04) 연속 약진동. 위로받는 잔잔한 텍스처.
-  /// [rubTick]의 딱딱한 light 반복보다 부드럽게, ~40ms 간격으로 흐르듯 발사.
+  /// [rubTick]의 딱딱한 light 반복보다 부드럽게, ~50ms 간격으로 흐르듯 발사.
   /// home_screen이 stroke 모드 매 move마다 호출 → 내부 throttle로 폭주 차단.
   void strokeSoft() {
     final now = DateTime.now();
@@ -112,6 +114,27 @@ class Haptics {
   /// 누르기(GST-03) 복원 정점. 차오르며 톡 올라오는 느낌 — light 1회.
   /// 복원 정점 프레임의 단발이므로 throttle 무시(§12.1).
   void pressRelease() => HapticFeedback.lightImpact();
+
+  DateTime _holdTickLast = DateTime.fromMillisecondsSinceEpoch(0);
+  // pressDown/pressRelease와 달리 침몰 도중 여러 번 불릴 수 있으므로(깊이 정점
+  // 통과 시) 독립 60ms 게이트로 연속 호출을 안전하게 흡수한다. 전역 _allow()나
+  // stroke/roll 게이트와 공유하지 않는다 — 서로 잡아먹지 않도록 메서드 전용.
+  final Duration _holdTickGap = const Duration(milliseconds: 60);
+
+  /// 누르기(GST-03) 홀드 중 미세 틱. 손가락이 그대로 있는데 본체가 "쑥 더
+  /// 들어가는" 깊이감을 촉각으로 보조한다. home_screen이 침몰 깊이 정점
+  /// (0.5·0.85 통과 등)에서 호출 → 내부 60ms throttle로 연속 호출 안전.
+  ///
+  /// 아주 약하게: selectionClick은 lightImpact보다 가벼워 "깊어짐"을 방해하지
+  /// 않고 살짝 결만 더한다(pressDown medium과 대비되는 미세 신호).
+  /// (Core Haptics 가변 강도라면 깊이에 비례해 amplitude를 키우는 게 이상적 —
+  ///  실기기/네이티브 작업 필요.)
+  void pressHoldTick() {
+    final now = DateTime.now();
+    if (now.difference(_holdTickLast) < _holdTickGap) return;
+    _holdTickLast = now;
+    HapticFeedback.selectionClick();
+  }
 
   // ── 타임라인 햅틱 ────────────────────────────────────────────────
   // 애니메이션 컨트롤러(0~1)에 cue 목록을 붙여 진행도가 지점을 넘을 때 발사.

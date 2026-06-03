@@ -29,29 +29,30 @@ class EmotionBallPainter extends CustomPainter {
     }
 
     final scale = ball.scale;
-    // 누르기 덴트(GST-03): 본체를 덴트 축으로 살짝 납작하게(푸딩 squash) +
-    // 손가락 쪽으로 본체를 미세 이동시켜 "쑤욱 들어간" 느낌. 어두운 inner shadow
-    // 대신 본체 변형 + 하이라이트 이동으로 claymorphism 말랑함을 유지한다(§9).
+    // 누르기 홀드 덴트(GST-03, v3 §2): 홀드로 깊이가 1까지 커지므로 깊게 침몰해도
+    // 어두운 inner shadow 대신 본체 변형(납작+부풀음) + 하이라이트 이동 + 화이트
+    // bloom으로 claymorphism 말랑함을 유지한다. "손가락에 점토가 밀려 눌리는" 느낌.
     final pd = ball.pressDepth.clamp(0.0, 1.0);
-    // pressDir = 탭 지점→중심 방향. 덴트는 그 반대(손가락 쪽)로 들어간다.
+    // pressDir = 누른 지점→중심 방향. 덴트는 그 반대(손가락 쪽)로 들어간다.
     final dent = pd > 0.001 ? -ball.pressDir : Offset.zero;
 
     canvas.save();
     canvas.translate(ball.pos.dx, ball.pos.dy);
     canvas.scale(scale.dx, scale.dy);
     if (pd > 0.001) {
-      // 덴트 축으로 눌리고 직교축으로 부푸는 추가 squash(전체 0.16까지).
-      final along = 1 - pd * 0.16;
-      final cross = 1 + pd * 0.10;
+      // 덴트 축으로 눌리고 직교축으로 부푸는 추가 squash(깊은 홀드까지 수용해
+      // along 0.26까지·cross 0.16까지 — 깊어도 말랑하게 부풀어 넘침).
+      final along = 1 - pd * 0.26;
+      final cross = 1 + pd * 0.16;
       final horizontal = ball.pressDir.dx.abs() > ball.pressDir.dy.abs();
       if (horizontal) {
         canvas.scale(along, cross);
       } else {
         canvas.scale(cross, along);
       }
-      // 손가락 쪽으로 본체를 미세 이동(들어가는 방향감).
-      canvas.translate(dent.dx * ball.radius * 0.10 * pd,
-          dent.dy * ball.radius * 0.10 * pd);
+      // 손가락 쪽으로 본체를 미세 이동(들어가는 방향감, 깊이 비례 0.16까지).
+      canvas.translate(dent.dx * ball.radius * 0.16 * pd,
+          dent.dy * ball.radius * 0.16 * pd);
     }
 
     // 쓰다듬기 글로우 (GST-04) — 폭신하게 번지는 발광. 또렷한 링 금지.
@@ -87,22 +88,23 @@ class EmotionBallPainter extends CustomPainter {
       ).createShader(Rect.fromCircle(center: Offset.zero, radius: ball.radius));
     canvas.drawCircle(Offset.zero, ball.radius, body);
 
-    // 하이라이트 — 누르기 중엔 덴트 쪽으로 살짝 끌려가 본체가 휘어 보이게.
+    // 하이라이트 — 누르기 중엔 덴트 쪽으로 끌려가 본체가 휘어 보이게(깊을수록 더).
     final hiBase = Offset(-ball.radius * 0.32, -ball.radius * 0.36);
     final hiPos = pd > 0.001
-        ? hiBase + dent * (ball.radius * 0.14 * pd)
+        ? hiBase + dent * (ball.radius * 0.20 * pd)
         : hiBase;
     final hi = Paint()..color = Colors.white.withValues(alpha: 0.5);
     canvas.drawCircle(hiPos, ball.radius * 0.16, hi);
 
-    // 누르기 접촉부 부드러운 광택(어두운 음영 대신 밝게 번지는 점토 눌림감, §9).
+    // 누르기 접촉부 부드러운 광택(어두운 음영 대신 밝게 번지는 점토 눌림감).
     // dent 방향(손가락 쪽) 표면에 은은한 화이트 bloom — 또렷한 링 금지.
+    // 깊은 홀드(pd→1)에서도 어둡지 않게: 밝기·번짐만 키워 "눌려도 보송한" 점토감.
     if (pd > 0.001) {
-      final contact = dent * (ball.radius * 0.5);
+      final contact = dent * (ball.radius * (0.42 + 0.12 * pd));
       final dimple = Paint()
-        ..color = Colors.white.withValues(alpha: 0.22 * pd)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, 10 + 8 * pd);
-      canvas.drawCircle(contact, ball.radius * 0.34, dimple);
+        ..color = Colors.white.withValues(alpha: (0.20 + 0.16 * pd).clamp(0.0, 0.36))
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, 10 + 14 * pd);
+      canvas.drawCircle(contact, ball.radius * (0.34 + 0.10 * pd), dimple);
     }
 
     canvas.restore();
