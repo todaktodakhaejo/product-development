@@ -7,15 +7,17 @@ import 'rituals/burn_ritual_screen.dart';
 import 'rituals/jewelry_box_ritual_screen.dart';
 import 'rituals/paper_plane_ritual_screen.dart';
 import 'rituals/shredder_ritual_screen.dart';
+import 'widgets/paper_plane_glyph.dart';
 
 /// 5단계 의식 선택. 우선순위 '필수' 4종.
 class RitualSelectScreen extends StatelessWidget {
   const RitualSelectScreen({super.key});
 
+  // paperPlane은 이모지 대신 CustomPaint 글리프로 렌더한다(아래 _RitualCard 분기).
+  // 따라서 _icons에는 paperPlane 항목을 두지 않는다(이모지 0).
   static const _icons = {
     Ritual.burn: '🔥',
     Ritual.shredder: '🗑️',
-    Ritual.paperPlane: '🛩️',
     Ritual.jewelryBox: '💎',
   };
 
@@ -74,7 +76,7 @@ class RitualSelectScreen extends StatelessWidget {
                     children: [
                       for (final r in Ritual.values)
                         _RitualCard(
-                          emoji: _icons[r]!,
+                          emoji: _icons[r], // paperPlane은 null(글리프 분기)
                           ritual: r,
                           onTap: () => _select(context, r),
                         ),
@@ -135,7 +137,7 @@ String _wrapByWord(String text) =>
 class _RitualCard extends StatefulWidget {
   const _RitualCard(
       {required this.emoji, required this.ritual, required this.onTap});
-  final String emoji;
+  final String? emoji; // paperPlane은 글리프라 null
   final Ritual ritual;
   final VoidCallback onTap;
 
@@ -185,7 +187,11 @@ class _RitualCardState extends State<_RitualCard> {
             mainAxisAlignment: MainAxisAlignment.center,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(widget.emoji, style: const TextStyle(fontSize: 40)),
+              // 종이비행기만 직접 그린 다트 글리프(이모지 아님), 나머지는 이모지.
+              if (widget.ritual == Ritual.paperPlane)
+                const PaperPlaneGlyph(size: 40)
+              else
+                Text(widget.emoji!, style: const TextStyle(fontSize: 40)),
               const SizedBox(height: 12),
               Text(widget.ritual.label,
                   maxLines: 1,
