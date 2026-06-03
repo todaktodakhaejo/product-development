@@ -68,6 +68,10 @@ class EmotionBall {
   double _releaseT = -1; // 복원 진행 시간(s). <0이면 복원 비활성
   double _curDepth = 0; // 현재 깊이(0~1) — pressDepth가 그대로 반환
   Offset _pressDir = Offset.zero; // 탭 지점 → 중심 방향(덴트 축)
+  // v9 §2-B: 손가락이 닿은 접촉점(중심 기준 로컬좌표, radius*0.7로 clamp).
+  // painter가 그 자리에 "뽁" 국소 오목 덴트를 그린다. pressDepth=0이면 painter가
+  // 무시하므로 복원/취소 종료 시 별도 리셋 불필요(접촉점은 깊이가 게이트).
+  Offset _pressContact = Offset.zero;
 
   // 미세 틱(pressHoldTick) — 침몰 중 0.5·0.85 통과 정점에서 1회씩.
   bool _tick50Armed = false;
@@ -110,6 +114,12 @@ class EmotionBall {
     final d = toCenter.distance;
     // 정중앙이면 영벡터 회피 — 위에서 누른 느낌으로 위쪽(-y)을 기본 축.
     _pressDir = d > 0.001 ? toCenter / d : const Offset(0, -1);
+    // v9 §2-B: 접촉점(중심 기준 로컬좌표)을 radius*0.7 안으로 clamp해 저장 —
+    // 본체 가장자리를 눌러도 덴트가 표면 안에 머물게.
+    final contact = localPos - pos;
+    final cd = contact.distance;
+    final maxContact = radius * 0.7;
+    _pressContact = cd > maxContact ? contact / cd * maxContact : contact;
     _holding = true;
     // 진행 중이던 복원이 있더라도 현재 깊이에서 이어 눌리도록 _curDepth 유지.
     // 홀드 시간은 현재 깊이에 해당하는 시점부터 다시 적분(이어 누르기 자연스럽게).
@@ -154,6 +164,10 @@ class EmotionBall {
 
   /// 덴트 축(누른 지점 → 중심 정규화). painter 본체 변형 방향.
   Offset get pressDir => _pressDir;
+
+  /// 누르기 접촉점(중심 기준 로컬좌표, radius*0.7로 clamp). painter가 이 자리에
+  /// "뽁" 국소 오목 덴트를 그린다. pressDepth=0이면 그리지 않으므로 게이트는 깊이가 한다.
+  Offset get pressContact => _pressContact;
 
   /// 침몰 중 깊이가 0.5·0.85 정점을 통과한 프레임에 true를 1회 반환하고 소비.
   ///

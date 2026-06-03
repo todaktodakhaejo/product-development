@@ -137,9 +137,11 @@ class _HomeScreenState extends State<HomeScreen>
         if (now.difference(_lastShake) < _shakeCooldown) return;
         _lastShake = now;
 
-        // 임펄스 강도(v8 §3): 세기 범위를 넓혀 "흔드는 맛". 하한을 0.25로 더 낮춰
-        // 살살 흔들면 아주 작게(0.25), 세게는 1.0까지 대비가 4배로 커진다.
-        final strength =
+        // 임펄스/진동 공통 세기 raw(v9 §1): 흔든 가속도를 0~1로 정규화한 단일 값.
+        // kShakeOn=9, kShakeMax=26이므로 raw = ((mag-9)/(26-9)).clamp(0,1). 임펄스 하한
+        // 적용 전 값이며, 아래 임펄스(하한 0.25)와 진동 3단(0.40/0.72)이 모두 이 raw를
+        // 공유해 모션 세기와 진동 세기가 함께 변한다.
+        final raw =
             ((mag - kShakeOn) / (kShakeMax - kShakeOn)).clamp(0.0, 1.0);
         // 방향(§2): 랜덤 단위벡터 폐기 → 흔든 가속도 벡터를 화면 방향으로 추종.
         // 포트레이트 기준 x=화면 가로, y는 부호 반전해 화면 세로로 매핑한다.
@@ -151,13 +153,15 @@ class _HomeScreenState extends State<HomeScreen>
         final dir = base * 0.78 + _randomUnitVector() * 0.22;
         final d = dir.distance;
         final unit = d > 0.001 ? dir / d : base; // 재정규화(0이면 base 폴백)
-        _ball?.addImpulse(unit, max(0.25, strength));
-        // 진동 3단 복원(v8 §3): 세기 단차를 또렷하게 — mag<12 light, 12~19 medium,
-        // 19+ heavy. 약하게 흔들면 light, 세게는 heavy로 손맛 단차. throttle:false로 매번.
+        _ball?.addImpulse(unit, max(0.25, raw)); // 모션 대비 위해 하한 0.25 유지
+        // 진동 세기 연동(v9 §1): mag 기반 3단(12/19) 폐기 → 임펄스와 동일한 raw 기반
+        // 3단으로 교체. raw<0.40 light, 0.40~0.72 medium, 0.72+ heavy. 경계를 약한 쪽으로
+        // 올려 살살 흔들면 raw가 작아 light로 확정 → 세기별 진동 단차가 또렷해진다.
+        // throttle:false로 흔들 때마다 발사해 모션 임펄스와 진동이 함께 변한다.
         final HapticLevel level;
-        if (mag < 12) {
+        if (raw < 0.40) {
           level = HapticLevel.light;
-        } else if (mag < 19) {
+        } else if (raw < 0.72) {
           level = HapticLevel.medium;
         } else {
           level = HapticLevel.heavy;

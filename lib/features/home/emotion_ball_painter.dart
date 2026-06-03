@@ -94,13 +94,49 @@ class EmotionBallPainter extends CustomPainter {
       ).createShader(Rect.fromCircle(center: Offset.zero, radius: ball.radius));
     canvas.drawCircle(Offset.zero, ball.radius, body);
 
+    // v9 §3: 구체 3D 음영(터미네이터). 본체 하단~우하단에 팔레트 내 살짝 짙은
+    // 쿨톤(ballGlow를 더 짙은 라벤더로 살짝 lerp)을 두 번째 RadialGradient로 덧칠 —
+    // 빛(top-left) 반대쪽이 어둑해 "빛 받는 구슬"로 읽히게. 검은색 금지·저대비:
+    // 가장 짙은 곳도 알파 0.5 미만, 중심은 투명이라 본체 밝기를 해치지 않는다.
+    // _coolShade = ballGlow를 ballCore의 보색쪽이 아니라 더 깊은 쿨 라벤더로 0.55 lerp.
+    final coolShade = Color.lerp(
+        AppColors.ballGlow, AppColors.ballShade, 0.55)!; // 짙은 쿨 라벤더
+    final shade = Paint()
+      ..shader = RadialGradient(
+        // 빛 반대쪽(우하단)을 음영 중심으로 — 본체 하단~우하단이 어둑.
+        center: const Alignment(0.42, 0.55),
+        radius: 1.05,
+        colors: [
+          coolShade.withValues(alpha: 0.42), // 우하단: 부드러운 음영
+          coolShade.withValues(alpha: 0.16),
+          coolShade.withValues(alpha: 0.0), // 빛 쪽: 투명
+        ],
+        stops: const [0.0, 0.5, 1.0],
+      ).createShader(Rect.fromCircle(center: Offset.zero, radius: ball.radius))
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6);
+    canvas.drawCircle(Offset.zero, ball.radius, shade);
+
     // 하이라이트 — 누르기 중엔 덴트 쪽으로 끌려가 본체가 휘어 보이게(깊을수록 더).
     final hiBase = Offset(-ball.radius * 0.32, -ball.radius * 0.36);
     final hiPos = pd > 0.001
         ? hiBase + dent * (ball.radius * 0.20 * pd)
         : hiBase;
-    final hi = Paint()..color = Colors.white.withValues(alpha: 0.5);
+    final hi = Paint()
+      ..color = Colors.white.withValues(alpha: 0.5)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4);
     canvas.drawCircle(hiPos, ball.radius * 0.16, hi);
+
+    // v9 §3: 작고 또렷한 스펙큘러 화이트 광택(top-left) — 구슬의 광원 반사점.
+    // 위 넓은 하이라이트보다 안쪽·집중. blur 최소로 또렷하되 하드엣지는 아님.
+    // 누르기 중엔 넓은 하이라이트와 같은 비율로 덴트 쪽을 따라가 표면 휘어짐과 일관.
+    final specBase = Offset(-ball.radius * 0.38, -ball.radius * 0.42);
+    final specPos = pd > 0.001
+        ? specBase + dent * (ball.radius * 0.20 * pd)
+        : specBase;
+    final spec = Paint()
+      ..color = Colors.white.withValues(alpha: 0.7)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 1.5);
+    canvas.drawCircle(specPos, ball.radius * 0.07, spec);
 
     // 누르기 접촉부 부드러운 광택(어두운 음영 대신 밝게 번지는 점토 눌림감).
     // dent 방향(손가락 쪽) 표면에 은은한 화이트 bloom — 또렷한 링 금지.
@@ -111,6 +147,33 @@ class EmotionBallPainter extends CustomPainter {
         ..color = Colors.white.withValues(alpha: (0.20 + 0.16 * pd).clamp(0.0, 0.36))
         ..maskFilter = MaskFilter.blur(BlurStyle.normal, 10 + 14 * pd);
       canvas.drawCircle(contact, ball.radius * (0.34 + 0.10 * pd), dimple);
+    }
+
+    // v9 §4: 손가락 닿은 자리에 "뽁" 국소 오목 덴트 — pressContact 위치에 그린다.
+    // 위 dent(축 방향 본체 휘어짐)와 공존하되, 이건 접촉점 그 자리가 안으로 쑥
+    // 들어간 듯한 국소 오목감을 만든다. 깊이·크기 모두 pressDepth 비례.
+    // 광원은 top-left(스펙큘러와 동일)로 가정.
+    if (pd > 0.001) {
+      final c = ball.pressContact;
+      final dentR = ball.radius * (0.26 + 0.14 * pd); // 오목 반경(깊을수록 넓게)
+      // (1) 안쪽 부드러운 오목 음영 — 팔레트 내 짙은 쿨톤, 저알파, blur.
+      //     표면이 안으로 들어가 광원을 덜 받는 느낌. 검은색·하드엣지 금지.
+      //     음영 중심을 살짝 광원 쪽(top-left)으로 치우쳐 오목 바닥의 그늘을 암시.
+      final shadeOffset = const Offset(-0.12, -0.14) * (ball.radius * pd);
+      final concave = Paint()
+        ..color = coolShade.withValues(alpha: (0.16 + 0.22 * pd).clamp(0.0, 0.40))
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, 6 + 10 * pd);
+      canvas.drawCircle(c + shadeOffset, dentR, concave);
+      // (2) 둘레(빛 반대쪽=우하단)에 얇은 림 하이라이트 — 오목 입체의 경계.
+      //     오목한 벽이 광원을 향해 살짝 솟아 빛을 받는 가장자리. white 저알파, 가는 stroke.
+      final rim = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = (1.2 + 1.6 * pd).clamp(1.0, 3.0)
+        ..color = Colors.white.withValues(alpha: (0.10 + 0.20 * pd).clamp(0.0, 0.32))
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.5);
+      // 빛 반대쪽(우하단) 호만 강조되도록 림 중심을 우하단으로 살짝 밀어 그린다.
+      final rimOffset = const Offset(0.10, 0.12) * (ball.radius * pd);
+      canvas.drawCircle(c + rimOffset, dentR * 0.96, rim);
     }
 
     // 쓰다듬기 위치 반응(GST-04, v8 §1-B) — 손가락 닿는 자리를 따라다니는 광택.
