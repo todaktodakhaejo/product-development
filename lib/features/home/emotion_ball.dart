@@ -256,15 +256,9 @@ class EmotionBall {
   void stroke(Offset step, Offset localPos) {
     grabbed = true; // update의 물리 적분을 멈춰 제자리 유지
     final len = step.distance;
-    if (len > 0.001) {
-      // v4 §3: 공은 전혀 움직이지 않는다(완전 제자리). 표면 출렁임/squash만 키워
-      // "공은 가만, 표면만 반응"하게 — 굴리기와 명확히 구분. (이전 `pos += step*0.06` 제거)
-      // 쓸리는 방향으로 약한 squash (dreamy: 천천히 차오르도록 계수 낮춤).
-      // 누르기 덴트와 달리 얕게 유지 — v3 §2 차별화. v5 §2: 표면이 더 살아 출렁이도록
-      // 상한 0.18→0.24로 소폭 상향(쓰다듬기 인지 강화, 제자리는 그대로 유지).
-      squash = min(0.24, squash + len / radius * 0.35);
-      squashDir = step / len;
-    }
+    // v10 §1: 방향성 squash 제거(좌우 왕복 시 squashDir 180° 뒤집힘으로 인한
+    // "버벅"덜컹 제거). 공은 계속 완전 제자리(pos·vel 불변)이며, 쓰다듬는 동안의
+    // 부풂은 painter가 strokeAmp 비례 "균일 swell"로 표현한다(축 뒤집힘 없음).
     // v8 §1-B: 손가락 닿는 자리를 중심 기준 로컬좌표로(공은 제자리이므로 pos가 중심).
     // 공 밖으로 벗어나도 표면에 머물도록 radius*0.85 원 안으로 clamp.
     final contact = localPos - pos;
@@ -272,13 +266,14 @@ class EmotionBall {
     final maxContact = radius * 0.85;
     _strokeContact =
         cd > maxContact ? contact / cd * maxContact : contact;
-    // 접촉 세기 상승(이동 길이 비례). update에서 ~1.2s에 0으로 감쇠.
-    _strokeAmp = (_strokeAmp + len / radius * 0.5).clamp(0.0, 1.0);
+    // 접촉 세기 상승(이동 길이 비례). update에서 천천히(0.45/s) 감쇠.
+    // v10 §3: 상승 계수 0.5→0.4로 약간 부드럽게(급상승 완화).
+    _strokeAmp = (_strokeAmp + len / radius * 0.4).clamp(0.0, 1.0);
     vel = Offset.zero; // fling 금지
     // 매 move마다 살짝씩만 더해 부드럽게 출렁이게(스파이크 방지) — update의
     // wobbleAmp 감쇠(-dt*1.4)와 맞물려 멈추면 자연 감쇠한다.
-    // v5 §2: 출렁임을 더 또렷이 — 상한 0.30→0.45, 계수 0.75→0.95.
-    _bumpWobble(min(0.45, len / radius * 0.95));
+    // v10 §2: 과한 quiver 제거 — 상한 0.45→0.22, 계수 0.95→0.45(잔잔한 떨림).
+    _bumpWobble(min(0.22, len / radius * 0.45));
   }
 
   /// 한 프레임 물리 적분.
@@ -288,8 +283,9 @@ class EmotionBall {
     _wobblePhase += dt * 18;
     wobbleAmp = (wobbleAmp - dt * 1.4).clamp(0.0, 1.0);
     squash = (squash - dt * 3.0).clamp(0.0, 1.0);
-    // v8 §1-B: 쓰다듬기 접촉 광택 세기 시간 감쇠 — 손가락이 멈추면 ~1.2s에 0으로.
-    _strokeAmp = (_strokeAmp - dt * 0.85).clamp(0.0, 1.0);
+    // 쓰다듬기 접촉 광택 세기 시간 감쇠. v10 §4: 0.85→0.45/s로 늦춤 —
+    // 멈췄을 때 ~2.2s에 걸쳐 부드럽게 사그라들어 "급격히 줄어듦"을 제거(자연 ease-out).
+    _strokeAmp = (_strokeAmp - dt * 0.45).clamp(0.0, 1.0);
 
     // ── 누르기 홀드 침몰 / elastic 복원(v3 §2) ──
     // grabbed 여부와 무관하게 항상 갱신(누르기는 제자리 홀드라 grab과 배타적이지만

@@ -40,7 +40,11 @@ class EmotionBallPainter extends CustomPainter {
 
     canvas.save();
     canvas.translate(ball.pos.dx, ball.pos.dy);
-    canvas.scale(scale.dx, scale.dy);
+    // v10 §6: 방향 squash를 없앤 대신, 쓰다듬는 동안 공이 잔잔히 "숨쉬듯" 살짝
+    // 부풀게 — strokeAmp 비례 균일 확대(축 뒤집힘 없는 swell). strokeAmp가 0.45/s로
+    // 천천히 감쇠하므로 멈추면 자연스럽게 ease-out으로 가라앉는다(계수 0.05, 과하지 않게).
+    final swell = 1 + 0.05 * ball.strokeAmp.clamp(0.0, 1.0);
+    canvas.scale(scale.dx * swell, scale.dy * swell);
     if (pd > 0.001) {
       // 덴트 축으로 눌리고 직교축으로 부푸는 추가 squash(깊은 홀드까지 수용해
       // along 0.26까지·cross 0.16까지 — 깊어도 말랑하게 부풀어 넘침).
@@ -112,8 +116,9 @@ class EmotionBallPainter extends CustomPainter {
           coolShade.withValues(alpha: 0.0), // 빛 쪽: 투명
         ],
         stops: const [0.0, 0.5, 1.0],
-      ).createShader(Rect.fromCircle(center: Offset.zero, radius: ball.radius))
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6);
+      ).createShader(Rect.fromCircle(center: Offset.zero, radius: ball.radius));
+    // v10 §5: 매 프레임 maskFilter.blur(6) 제거 — RadialGradient는 이미 충분히
+    // 부드러워 블러가 불필요하고, 매 프레임 블러 비용이 끊김(프레임 드랍)을 유발.
     canvas.drawCircle(Offset.zero, ball.radius, shade);
 
     // 하이라이트 — 누르기 중엔 덴트 쪽으로 끌려가 본체가 휘어 보이게(깊을수록 더).
