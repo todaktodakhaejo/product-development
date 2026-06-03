@@ -63,13 +63,16 @@ class EmotionBallPainter extends CustomPainter {
     // 공 본체 뒤/주위에 깔리도록 외곽 발광보다 먼저, 더 넓게 그린다.
     // v2: 상한만 소폭 상향(alpha 0.45까지, blur 24+18e). "또렷해지지 않게" 우선,
     // 은은하게 더 번지는 정도(§9). 새 색 토큰 없이 ballGlow 재사용.
+    // v5 §2: 쓰다듬기를 확실히 인지시키기 위해 글로우를 더 또렷이 번지게 —
+    // alpha 상한 0.45→0.55, 계수 소폭↑(0.26+0.26e), 반경 계수 1.18+0.24e→1.20+0.28e.
+    // blur는 24+18e 유지 → 링/하드엣지 없이 폭신하게 차오르는 발광만 강화.
     final e = strokeEnergy.clamp(0.0, 1.0);
     if (e > 0.01) {
       final stroke = Paint()
         ..color = AppColors.ballGlow
-            .withValues(alpha: ((0.22 + 0.23 * e) * e).clamp(0.0, 0.45))
+            .withValues(alpha: ((0.26 + 0.26 * e) * e).clamp(0.0, 0.55))
         ..maskFilter = MaskFilter.blur(BlurStyle.normal, 24 + 18 * e);
-      canvas.drawCircle(Offset.zero, ball.radius * (1.18 + 0.24 * e), stroke);
+      canvas.drawCircle(Offset.zero, ball.radius * (1.20 + 0.28 * e), stroke);
     }
 
     // 외곽 발광

@@ -209,14 +209,16 @@ class EmotionBall {
       // v4 §3: 공은 전혀 움직이지 않는다(완전 제자리). 표면 출렁임/squash만 키워
       // "공은 가만, 표면만 반응"하게 — 굴리기와 명확히 구분. (이전 `pos += step*0.06` 제거)
       // 쓸리는 방향으로 약한 squash (dreamy: 천천히 차오르도록 계수 낮춤).
-      // 누르기 덴트와 달리 얕게 유지(상한 0.18) — v3 §2 차별화.
-      squash = min(0.18, squash + len / radius * 0.35);
+      // 누르기 덴트와 달리 얕게 유지 — v3 §2 차별화. v5 §2: 표면이 더 살아 출렁이도록
+      // 상한 0.18→0.24로 소폭 상향(쓰다듬기 인지 강화, 제자리는 그대로 유지).
+      squash = min(0.24, squash + len / radius * 0.35);
       squashDir = step / len;
     }
     vel = Offset.zero; // fling 금지
     // 매 move마다 살짝씩만 더해 부드럽게 출렁이게(스파이크 방지) — update의
     // wobbleAmp 감쇠(-dt*1.4)와 맞물려 멈추면 자연 감쇠한다.
-    _bumpWobble(min(0.30, len / radius * 0.75));
+    // v5 §2: 출렁임을 더 또렷이 — 상한 0.30→0.45, 계수 0.75→0.95.
+    _bumpWobble(min(0.45, len / radius * 0.95));
   }
 
   /// 한 프레임 물리 적분.

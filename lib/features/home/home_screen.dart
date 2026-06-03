@@ -55,6 +55,9 @@ class _HomeScreenState extends State<HomeScreen>
   Offset _lastPos = Offset.zero;
   Duration _lastMoveTime = Duration.zero;
   Offset _flingVel = Offset.zero;
+  // EMA 첫 유효샘플 판별(v5 §1): 포인터 다운마다 false로 리셋. 첫 샘플은 그대로
+  // 채택하고 이후부터 지수이동평균으로 다듬어 release 직전 단일 이벤트의 폭주/미약을 방지.
+  bool _flingSeeded = false;
   bool _moved = false;
 
   // 드래그 판별 상태머신(§4.2 / §6.2)
@@ -83,9 +86,16 @@ class _HomeScreenState extends State<HomeScreen>
   static const double kTurnDot = -0.1; // 방향전환 인정 내적(약 95°)
   static const double kMinStep = 2.0; // px, 노이즈 컷
   static const double kRollNet = 0.9; // net > radius * 0.9 → roll 커밋
-  static const double kStrokeNet = 0.6; // net < radius * 0.6 (제자리 근처)
-  static const double kStrokePath = 2.5; // pathLen > radius * 2.5 (왕복 충분)
-  static const int kStrokeTurns = 2; // 방향전환 2회 이상 → stroke 커밋
+  // 쓰다듬기 커밋 완화·조기화(v5 §2): 한 번만 왕복해도, 제자리 근처에서 짧게라도
+  // 비비면 곧장 stroke로 넘어가 "쓰다듬는다"는 인지를 빨리 준다(v4 0.6/2.5/2에서 완화).
+  static const double kStrokeNet = 0.7; // net < radius * 0.7 (제자리 근처, 완화)
+  static const double kStrokePath = 1.2; // pathLen > radius * 1.2 (왕복 문턱 낮춤)
+  static const int kStrokeTurns = 1; // 방향전환 1회 이상 → stroke 커밋
+
+  // 굴리기 fling 평활/clamp 상수(v5 §1).
+  static const double kFlingMinDt = 0.004; // 이보다 짧은 dt 샘플은 속도 계산서 제외
+  static const double kFlingSpikeClamp = 3000; // 순간속도 magnitude 스파이크 컷(px/s)
+  static const double kFlingReleaseClamp = 2400; // release 시 최종 속도 크기 상한(px/s)
 
   @override
   void initState() {
@@ -138,8 +148,9 @@ class _HomeScreenState extends State<HomeScreen>
     if (ball == null) return;
     final clampedDt = dt.clamp(0.0, 0.05);
 
-    // 쓰다듬기 에너지 시간 감쇠(멈추면 ~1.5s 내 잦아듦). stroke 중엔 move에서 증가.
-    _strokeEnergy = (_strokeEnergy - clampedDt * 0.7).clamp(0.0, 1.0);
+    // 쓰다듬기 에너지 시간 감쇠(v5 §2): *0.7→*0.5로 더 천천히 사그라들게 해
+    // 쓰다듬는 동안 빛이 누적·유지되도록 한다(증가율·상한 1.0은 그대로). stroke 중엔 move에서 증가.
+    _strokeEnergy = (_strokeEnergy - clampedDt * 0.5).clamp(0.0, 1.0);
 
     ball.update(clampedDt, Offset.zero); // 중력 굴리기 폐기 → gravity 0
 
@@ -173,6 +184,9 @@ class _HomeScreenState extends State<HomeScreen>
     _downPos = _lastPos = pos;
     _lastMoveTime = e.timeStamp;
     _moved = false;
+    // fling 속도 평활 리셋(v5 §1): 새 드래그마다 속도/첫샘플 플래그 초기화.
+    _flingVel = Offset.zero;
+    _flingSeeded = false;
     // 드래그 메트릭 초기화
     _dragMode = _DragMode.none;
     _pathLen = 0;
@@ -263,14 +277,25 @@ class _HomeScreenState extends State<HomeScreen>
           Haptics.instance.rollFriction(speed01);
         }
       } else {
-        // pending(§3): 살짝만 추종(ease 0.3). 쓰다듬기로 커밋돼도 공 거의 제자리.
-        ball.grab(pos, ease: 0.3);
+        // pending(v5 §2): 추종 더 약화(ease 0.2). 커밋 전 공이 거의 제자리에 머물러
+        // 쓰다듬기로 넘어가도 "한 번 꿀렁" 대신 제자리 출렁임으로 자연히 이어진다.
+        ball.grab(pos, ease: 0.2);
       }
     }
 
-    // 플링 속도 추정
-    final dtMs = (e.timeStamp - _lastMoveTime).inMicroseconds / 1e6;
-    if (dtMs > 0) _flingVel = (pos - _lastPos) / dtMs;
+    // 플링 속도 추정(v5 §1): 매 이벤트 순간속도를 그대로 덮어쓰던 v4를 EMA 평활로 교체.
+    // 너무 짧은 dt(<4ms) 샘플은 순간속도가 과대평가되므로 속도 계산에서 제외하되,
+    // _lastPos·_lastMoveTime은 항상 갱신해 다음 샘플의 dt/변위가 정확하도록 한다.
+    final dtMove = (e.timeStamp - _lastMoveTime).inMicroseconds / 1e6;
+    if (dtMove >= kFlingMinDt) {
+      var instant = (pos - _lastPos) / dtMove; // 순간속도(px/s)
+      // 스파이크 컷: 비정상적으로 큰 순간속도는 크기를 3000px/s로 제한.
+      final m = instant.distance;
+      if (m > kFlingSpikeClamp) instant = instant / m * kFlingSpikeClamp;
+      // 첫 유효샘플은 그대로 채택, 이후는 EMA(0.5:0.5)로 다듬어 폭주/미약 둘 다 억제.
+      _flingVel = _flingSeeded ? _flingVel * 0.5 + instant * 0.5 : instant;
+      _flingSeeded = true;
+    }
     _lastPos = pos;
     _lastMoveTime = e.timeStamp;
   }
@@ -294,9 +319,14 @@ class _HomeScreenState extends State<HomeScreen>
         Haptics.instance.pressRelease();
       }
     } else if (_dragMode == _DragMode.roll) {
-      // fling 부스트(§4): 벽까지 더 잘 굴러가도록 추정 속도를 1.5배 증폭.
+      // fling 일관화(v5 §1): v4의 *1.5 부스트 제거. EMA로 다듬은 속도를 [0,2400]px/s로
+      // clamp만 해 어느 방향이든 비슷한 사거리로 미끄러지게 한다(폭주·답답함 동시 해소).
       ball.release();
-      ball.vel = _flingVel * 1.5; // 던진 손맛(관성 fling) + 사거리 부스트
+      var v = _flingVel;
+      if (v.distance > kFlingReleaseClamp) {
+        v = v / v.distance * kFlingReleaseClamp;
+      }
+      ball.vel = v; // 던진 손맛(관성 fling), 크기만 상한 적용
     } else {
       // stroke / pending(미커밋): grabbed 해제만, vel 부여 안 함(날아가지 않음).
       ball.release();
