@@ -113,6 +113,20 @@ class EmotionBallPainter extends CustomPainter {
       canvas.drawCircle(contact, ball.radius * (0.34 + 0.10 * pd), dimple);
     }
 
+    // 쓰다듬기 위치 반응(GST-04, v8 §1-B) — 손가락 닿는 자리를 따라다니는 광택.
+    // 전역 strokeEnergy 글로우(본체 뒤 은은한 발광)와 달리, 이건 본체 표면 위
+    // strokeContact 위치에 그려지는 국소 화이트 bloom. canvas는 이미 본체 중심으로
+    // translate/scale된 상태이므로 strokeContact(중심 기준 로컬좌표)를 그대로 사용
+    // (scale 보정은 근사 허용). 어두운 음영·또렷한 링 금지 — 부드러운 blur만.
+    final sa = ball.strokeAmp.clamp(0.0, 1.0);
+    if (sa > 0.01) {
+      final bloom = Paint()
+        ..color = Colors.white
+            .withValues(alpha: (0.10 + 0.18 * sa).clamp(0.0, 0.30))
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, 12 + 10 * sa);
+      canvas.drawCircle(ball.strokeContact, ball.radius * (0.26 + 0.06 * sa), bloom);
+    }
+
     canvas.restore();
   }
 

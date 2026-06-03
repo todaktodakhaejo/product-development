@@ -41,6 +41,19 @@ class EmotionBall {
 
   bool grabbed = false;
 
+  // ── 쓰다듬기 위치 반응(GST-04, v8 §1-B) 상태 ──────────────────
+  // 손가락이 닿는 자리를 중심 기준 로컬좌표로 들고 있다가(painter가 그 위치에
+  // 화이트 bloom 광택을 그림), stroke가 멈추면 시간 감쇠(~1.2s)로 잦아든다.
+  // 공 자체는 전혀 움직이지 않으므로(완전 제자리) pos/vel과는 독립적인 표면 반응.
+  Offset _strokeContact = Offset.zero; // 중심 기준 로컬좌표(radius*0.85로 clamp)
+  double _strokeAmp = 0; // 0~1, stroke 중 상승·시간 감쇠
+
+  /// painter가 읽는 쓰다듬기 접촉 위치(중심 기준 로컬좌표). 표면 광택 중심.
+  Offset get strokeContact => _strokeContact;
+
+  /// painter가 읽는 쓰다듬기 접촉 세기(0~1). 광택 알파/반경에 사용.
+  double get strokeAmp => _strokeAmp;
+
   /// 직전 프레임의 벽 충돌 세기(0~1). 0이면 충돌 없음. 읽고 나면 소비.
   double lastImpact = 0;
   Offset lastImpactDir = Offset.zero;
@@ -78,12 +91,12 @@ class EmotionBall {
 
   /// 흔들기/던지기 임펄스 추가. [strength]는 0~1.
   ///
-  /// 기준 속도 4200(v7 §2: 3400→4200으로 상한 확대 — "흔드는 맛"). builder가
-  /// 흔든 방향·세기를 0.4~1.0로 넓게 매핑하므로, 살살 흔들면 0.4*4200≈1680px/s로
-  /// 벽까지 통통 튀고, 세게 흔들면 4200으로 화면을 가로질러 여러 번 튕긴다.
+  /// 기준 속도 5000(v8 §3: 4200→5000으로 상한 확대 — 세기 대비 4배). builder가
+  /// 흔든 방향·세기를 0.25~1.0로 넓게 매핑하므로, 살살 흔들면 0.25*5000=1250px/s로
+  /// 살짝만 흔들리고, 세게 흔들면 5000으로 화면을 가로질러 격렬히 여러 번 튕긴다.
   /// 안정화(§5)의 2단 마찰·정지 임계가 빠르게 잡아주므로 흔들기를 멈추면 ~1.2s에 정착한다.
   void addImpulse(Offset dir, double strength) {
-    vel += dir * (strength * 4200);
+    vel += dir * (strength * 5000);
     _bumpWobble(strength);
   }
 
@@ -220,11 +233,13 @@ class EmotionBall {
     grabbed = false;
   }
 
-  /// 제자리 쓰다듬기(GST-04). [step]은 직전 프레임 대비 손가락 이동량.
+  /// 제자리 쓰다듬기(GST-04). [step]은 직전 프레임 대비 손가락 이동량,
+  /// [localPos]는 손가락의 현재 화면 좌표(위치 반응용, v8 §1-B).
   ///
-  /// 공은 크게 옮기지 않고 현 위치 근처에서 약하게만 따라가며(잔잔한 추종),
-  /// 표면 출렁임([wobbleAmp])과 약한 squash만 키운다. fling용 [vel]은 부여하지 않는다.
-  void stroke(Offset step) {
+  /// 공은 전혀 옮기지 않고(완전 제자리, pos·vel 불변) 현 위치에서 표면만 반응한다.
+  /// 표면 출렁임([wobbleAmp])·약한 squash에 더해, 손가락이 닿는 자리를 중심 기준
+  /// 로컬좌표([_strokeContact])로 잡아 painter가 그 위치에 화이트 광택을 그리게 한다.
+  void stroke(Offset step, Offset localPos) {
     grabbed = true; // update의 물리 적분을 멈춰 제자리 유지
     final len = step.distance;
     if (len > 0.001) {
@@ -236,6 +251,15 @@ class EmotionBall {
       squash = min(0.24, squash + len / radius * 0.35);
       squashDir = step / len;
     }
+    // v8 §1-B: 손가락 닿는 자리를 중심 기준 로컬좌표로(공은 제자리이므로 pos가 중심).
+    // 공 밖으로 벗어나도 표면에 머물도록 radius*0.85 원 안으로 clamp.
+    final contact = localPos - pos;
+    final cd = contact.distance;
+    final maxContact = radius * 0.85;
+    _strokeContact =
+        cd > maxContact ? contact / cd * maxContact : contact;
+    // 접촉 세기 상승(이동 길이 비례). update에서 ~1.2s에 0으로 감쇠.
+    _strokeAmp = (_strokeAmp + len / radius * 0.5).clamp(0.0, 1.0);
     vel = Offset.zero; // fling 금지
     // 매 move마다 살짝씩만 더해 부드럽게 출렁이게(스파이크 방지) — update의
     // wobbleAmp 감쇠(-dt*1.4)와 맞물려 멈추면 자연 감쇠한다.
@@ -250,6 +274,8 @@ class EmotionBall {
     _wobblePhase += dt * 18;
     wobbleAmp = (wobbleAmp - dt * 1.4).clamp(0.0, 1.0);
     squash = (squash - dt * 3.0).clamp(0.0, 1.0);
+    // v8 §1-B: 쓰다듬기 접촉 광택 세기 시간 감쇠 — 손가락이 멈추면 ~1.2s에 0으로.
+    _strokeAmp = (_strokeAmp - dt * 0.85).clamp(0.0, 1.0);
 
     // ── 누르기 홀드 침몰 / elastic 복원(v3 §2) ──
     // grabbed 여부와 무관하게 항상 갱신(누르기는 제자리 홀드라 grab과 배타적이지만

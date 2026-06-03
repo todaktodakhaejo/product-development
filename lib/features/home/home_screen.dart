@@ -22,6 +22,7 @@ import 'emotion_ball_painter.dart';
 /// 굴리기·쓰다듬기는 둘 다 단일 포인터 드래그라, **손가락 속도**를 1차 판별자로
 /// 쓰는 상태머신(none→stroke|roll)으로 모드를 판별한다([_onPointerMove] 참고, v6).
 /// 느리면 stroke(공 제자리), 빠르거나(speed>kRollSpeed) 멀리(net>r*kRollNet) 끌면 roll.
+/// 커밋된 stroke는 net 탈출 없이 빠른 플릭(speed>kStrokeEscape)으로만 roll 전환(v8 §1-A).
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -60,6 +61,10 @@ class _HomeScreenState extends State<HomeScreen>
   // EMA 첫 유효샘플 판별(v5 §1): 포인터 다운마다 false로 리셋. 첫 샘플은 그대로
   // 채택하고 이후부터 지수이동평균으로 다듬어 release 직전 단일 이벤트의 폭주/미약을 방지.
   bool _flingSeeded = false;
+  // 최근 최고 순간속도 추적(v8 §4): 떼기 직전 감속이 EMA에 섞여 빠른 플릭의 fling이
+  // 약화되던 문제 → 매 유효 move에서 peak를 갱신(프레임당 *0.9 감쇠 + 최신 최대)해
+  // release 시 EMA와 peak 중 큰 쪽을 채택, 빠른 손맛을 살린다. 다운 시 0 리셋.
+  double _flingPeak = 0;
   bool _moved = false;
 
   // 드래그 판별 상태머신(v6 §2, 속도 기반)
@@ -86,11 +91,16 @@ class _HomeScreenState extends State<HomeScreen>
   // 발동하고, 상한을 26으로 당겨 강도가 빨리 포화된다.
   static const double kShakeOn = 9.0; // 발동 임계(12→9)
   static const double kShakeMax = 26.0; // 정규화 상한(32→26)
-  static const Duration _shakeCooldown = Duration(milliseconds: 90); // 140→90
+  static const Duration _shakeCooldown =
+      Duration(milliseconds: 70); // 90→70 (v8 §2 연속 반응 즉각)
 
   // 드래그 판별 임계(v6 §2 — 속도 기반). 거리·방향전환 기반 상수는 폐기.
   static const double kRollSpeed = 900; // px/s, 손가락 속도가 이를 넘으면 굴리기(§1 완화: 420→900)
   static const double kRollNet = 1.2; // ×radius, 느려도 이만큼 끌면 굴리기
+  // stroke 커밋 후 roll 탈출 임계(v8 §1-A). 커밋된 쓰다듬기에서는 net 기반 탈출을
+  // 제거하고, 오직 명백한 빠른 플릭(이 속도 초과)일 때만 roll로 전환한다. 가로/세로/
+  // 대각 어느 방향으로 넓게 쓰다듬어도 굴리기로 새지 않는다.
+  static const double kStrokeEscape = 1300; // px/s
   // 손가락 속도 EMA/clamp 상수(v6 §1).
   static const double kDragMinDt = 0.004; // 이보다 짧은 dt 샘플은 속도 계산서 제외
   static const double kDragSpeedClamp = 4000; // 순간속도 magnitude 상한(px/s)
@@ -100,7 +110,7 @@ class _HomeScreenState extends State<HomeScreen>
   static const double kFlingMinDt = 0.004; // 이보다 짧은 dt 샘플은 속도 계산서 제외
   static const double kFlingSpikeClamp = 3000; // 순간속도 magnitude 스파이크 컷(px/s)
   static const double kFlingReleaseClamp =
-      3200; // release 시 최종 속도 크기 상한(px/s, §3: 2400→3200 동적범위↑)
+      3600; // release 시 최종 속도 크기 상한(px/s, v8 §4: 3200→3600 빠른 굴리기 튕김↑)
 
   @override
   void initState() {
@@ -113,7 +123,11 @@ class _HomeScreenState extends State<HomeScreen>
     // 흔들기(GST-01): 선형 가속도(중력 제거, m/s²). v2의 자이로는 회전 각속도라
     // 직선 흔들기에 거의 안 잡혀 먹통이었음 → 가속도로 교체(§1). 미지원 기기/웹
     // 에서는 onError로 무시되어 흔들기만 비활성화되고 터치 제스처는 정상 동작한다.
-    _accelSub = userAccelerometerEventStream().listen(
+    // 샘플링 가속(v8 §2): 기본 샘플링이 느려 흔들기 반응이 한 템포 지연됐다 →
+    // gameInterval(약 20ms)로 빠르게 받아 즉각 반응한다. SensorInterval은 sensors_plus 제공.
+    _accelSub = userAccelerometerEventStream(
+      samplingPeriod: SensorInterval.gameInterval,
+    ).listen(
       (e) {
         final mag = sqrt(e.x * e.x + e.y * e.y + e.z * e.z); // 가속도 크기(m/s²)
         // 발동 조건(§1): 임계 이상 + 쿨다운 경과. armed 게이트를 없애 연속으로
@@ -123,8 +137,8 @@ class _HomeScreenState extends State<HomeScreen>
         if (now.difference(_lastShake) < _shakeCooldown) return;
         _lastShake = now;
 
-        // 임펄스 강도(§2): 세기 범위를 넓혀 "흔드는 맛". 하한을 0.4로 낮춰
-        // 살살 흔들면 작게(0.4), 세게는 1.0까지 대비가 커진다.
+        // 임펄스 강도(v8 §3): 세기 범위를 넓혀 "흔드는 맛". 하한을 0.25로 더 낮춰
+        // 살살 흔들면 아주 작게(0.25), 세게는 1.0까지 대비가 4배로 커진다.
         final strength =
             ((mag - kShakeOn) / (kShakeMax - kShakeOn)).clamp(0.0, 1.0);
         // 방향(§2): 랜덤 단위벡터 폐기 → 흔든 가속도 벡터를 화면 방향으로 추종.
@@ -137,10 +151,17 @@ class _HomeScreenState extends State<HomeScreen>
         final dir = base * 0.78 + _randomUnitVector() * 0.22;
         final d = dir.distance;
         final unit = d > 0.001 ? dir / d : base; // 재정규화(0이면 base 폴백)
-        _ball?.addImpulse(unit, max(0.4, strength));
-        // 진동 강화(§1): light 폐기. 게이트 통과한 흔들기는 항상 묵직하게 —
-        // mag<13 → medium, mag>=13 → heavy. 매 발동마다 느껴지게 throttle:false.
-        final level = mag < 13 ? HapticLevel.medium : HapticLevel.heavy;
+        _ball?.addImpulse(unit, max(0.25, strength));
+        // 진동 3단 복원(v8 §3): 세기 단차를 또렷하게 — mag<12 light, 12~19 medium,
+        // 19+ heavy. 약하게 흔들면 light, 세게는 heavy로 손맛 단차. throttle:false로 매번.
+        final HapticLevel level;
+        if (mag < 12) {
+          level = HapticLevel.light;
+        } else if (mag < 19) {
+          level = HapticLevel.medium;
+        } else {
+          level = HapticLevel.heavy;
+        }
         Haptics.instance.fire(level, throttle: false);
         if (_showComfort) setState(() => _showComfort = false);
       },
@@ -203,6 +224,7 @@ class _HomeScreenState extends State<HomeScreen>
     // fling 속도 평활 리셋(v5 §1): 새 드래그마다 속도/첫샘플 플래그 초기화.
     _flingVel = Offset.zero;
     _flingSeeded = false;
+    _flingPeak = 0; // 최고 순간속도 리셋(v8 §4)
     // 드래그 메트릭 초기화(v6)
     _dragMode = _DragMode.none;
     _rollAccum = 0; // 굴리기 마찰 누적 리셋
@@ -255,10 +277,15 @@ class _HomeScreenState extends State<HomeScreen>
       final net = (pos - _downPos).distance;
       final r = ball.radius;
 
-      // 판별(v6 §2): roll은 sticky, stroke는 매 프레임 재평가.
-      if (_dragMode != _DragMode.roll &&
-          (_dragSpeed > kRollSpeed || net > r * kRollNet)) {
-        // ROLL 진입(sticky): 빠르거나 멀리 끌었다 = 명백한 굴리기.
+      // 판별(v8 §1-A): roll은 sticky. stroke 진입과 탈출 조건을 분리한다.
+      //  - 초기(none): speed>kRollSpeed || net>r*kRollNet → roll, 아니면 stroke(v7 유지).
+      //  - 커밋된 stroke: net 기반 탈출 제거. 오직 명백한 빠른 플릭(speed>kStrokeEscape)
+      //    일 때만 roll로 전환 → 가로/세로/대각 넓게 쓰다듬어도 안 굴러간다.
+      final bool wantRoll = _dragMode == _DragMode.stroke
+          ? _dragSpeed > kStrokeEscape
+          : (_dragSpeed > kRollSpeed || net > r * kRollNet);
+      if (_dragMode != _DragMode.roll && wantRoll) {
+        // ROLL 진입(sticky): 명백한 굴리기.
         final wasStroke = _dragMode == _DragMode.stroke;
         _dragMode = _DragMode.roll;
         ball.pressCancel(); // 혹시 남은 침몰 무팝 제거
@@ -269,7 +296,9 @@ class _HomeScreenState extends State<HomeScreen>
       } else if (_dragMode != _DragMode.roll) {
         // STROKE: 느리고 국소. 공은 제자리, 표면만 출렁이고 빛이 차오른다.
         _dragMode = _DragMode.stroke;
-        ball.stroke(step); // 제자리 고정 출렁임(공 이동 없음)
+        // v8 §1-B: 현재 포인터 localPosition을 함께 넘겨 손가락 닿는 자리에 광택/변형이
+        // 따라다니게 한다(공 이동은 0, 위치 반응은 motion·painter가 소비).
+        ball.stroke(step, pos); // 제자리 고정 출렁임 + 위치 반응(공 이동 없음)
         _strokeEnergy =
             (_strokeEnergy + stepLen / r * 0.4).clamp(0.0, 1.0); // step 비례 증가
         // 위로받는 부드러운 저강도 텍스처를 흐르듯 발사(throttle은 strokeSoft 내장).
@@ -309,6 +338,10 @@ class _HomeScreenState extends State<HomeScreen>
       // 첫 유효샘플은 그대로 채택, 이후는 EMA(0.5:0.5)로 다듬어 폭주/미약 둘 다 억제.
       _flingVel = _flingSeeded ? _flingVel * 0.5 + instant * 0.5 : instant;
       _flingSeeded = true;
+      // peak 갱신(v8 §4): 프레임당 *0.9 감쇠 + 최신 순간속도 크기의 최대. 떼기 직전
+      // 감속에도 직전의 빠름이 남아 release에서 강한 fling으로 살아난다.
+      final instantSpeed = instant.distance;
+      _flingPeak = max(_flingPeak * 0.9, instantSpeed);
     }
     _lastPos = pos;
     _lastMoveTime = e.timeStamp;
@@ -333,14 +366,16 @@ class _HomeScreenState extends State<HomeScreen>
         Haptics.instance.pressRelease();
       }
     } else if (_dragMode == _DragMode.roll) {
-      // fling 일관화(v5 §1): v4의 *1.5 부스트 제거. EMA로 다듬은 속도를 [0,2400]px/s로
-      // clamp만 해 어느 방향이든 비슷한 사거리로 미끄러지게 한다(폭주·답답함 동시 해소).
+      // fling(v8 §4): 방향은 EMA(_flingVel) 방향을 유지하되, 크기는 EMA 크기와
+      // peak*0.8 중 큰 쪽을 채택해 떼기 직전 감속에 묻힌 빠른 손맛을 살린다.
+      // 최종 크기는 [0, kFlingReleaseClamp]로 clamp. 천천히 굴리면 peak도 작아 약하게.
       ball.release();
-      var v = _flingVel;
-      if (v.distance > kFlingReleaseClamp) {
-        v = v / v.distance * kFlingReleaseClamp;
-      }
-      ball.vel = v; // 던진 손맛(관성 fling), 크기만 상한 적용
+      final dir = _flingVel.distance > 0.001
+          ? _flingVel / _flingVel.distance
+          : Offset.zero;
+      var sp = max(_flingVel.distance, _flingPeak * 0.8);
+      if (sp > kFlingReleaseClamp) sp = kFlingReleaseClamp;
+      ball.vel = dir * sp; // 던진 손맛(관성 fling)
     } else {
       // stroke / none(미커밋): grabbed 해제만, vel 부여 안 함(날아가지 않음, v6 §2).
       ball.release();
