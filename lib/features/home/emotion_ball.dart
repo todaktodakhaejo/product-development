@@ -114,6 +114,27 @@ class EmotionBall {
     _releaseT = 0;
   }
 
+  /// 누르기 침몰을 **즉시 0으로 리셋**(복원 elastic 팝 없이, v6 §3).
+  ///
+  /// [pressEnd]는 탭/홀드를 뗄 때 현재 깊이에서 elasticOut으로 "톡" 차오르는
+  /// 복원 팝을 내지만, 이 메서드는 드래그/쓰다듬기로 전환되는 순간 builder가
+  /// 호출해 **팝 없이 조용히** 침몰 흔적("꿀렁" 잔상)을 즉시 지운다.
+  /// 호출 직후 [pressDepth]는 0을 반환하고, [consumePressHoldTick]은 더 이상
+  /// true를 내지 않으며(틱 무장 해제), 복원 정점 햅틱도 발생하지 않는다.
+  void pressCancel() {
+    _holding = false;
+    _holdT = 0;
+    // 복원(elastic) 비활성 — _releaseT<0이면 update에서 복원 분기를 타지 않는다.
+    _releaseT = -1;
+    _releaseDepth = 0;
+    // 깊이 즉시 0(팝 없이 평상 상태).
+    _curDepth = 0;
+    // 미세 틱 무장/대기 모두 해제 — 전환 순간 톡 소리가 새지 않도록.
+    _tick50Armed = false;
+    _tick85Armed = false;
+    _tickPending = false;
+  }
+
   /// painter가 읽는 현재 침몰 깊이(0~1). 0=평소, 1=최대 침몰.
   double get pressDepth => _curDepth;
 

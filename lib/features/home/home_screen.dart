@@ -19,8 +19,9 @@ import 'emotion_ball_painter.dart';
 ///  - GST-03 누르기 : 본체 홀드 → 누르는 동안 점점 침몰(pressStart/End) + 햅틱(down/tick/release)
 ///  - GST-04 쓰다듬기: 제자리 왕복 드래그 → 표면 출렁임 + 글로우 + 연속 약진동(strokeSoft)
 ///
-/// 굴리기·쓰다듬기는 둘 다 단일 포인터 드래그라, net 이동거리 기반 sticky
-/// 상태머신(none→pending→roll|stroke)으로 모드를 판별한다([_onPointerMove] 참고).
+/// 굴리기·쓰다듬기는 둘 다 단일 포인터 드래그라, **손가락 속도**를 1차 판별자로
+/// 쓰는 상태머신(none→stroke|roll)으로 모드를 판별한다([_onPointerMove] 참고, v6).
+/// 느리면 stroke(공 제자리), 빠르거나(speed>kRollSpeed) 멀리(net>r*kRollNet) 끌면 roll.
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -28,9 +29,10 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-/// 단일 포인터 드래그의 자동 판별 모드.
-/// none → pending → (roll | stroke). roll/stroke 커밋되면 포인터 업까지 고정(sticky).
-enum _DragMode { none, pending, roll, stroke }
+/// 단일 포인터 드래그의 자동 판별 모드(v6, 속도 기반).
+/// none → (stroke | roll). roll은 sticky(포인터 업까지 고정), stroke는 매 프레임
+/// 재평가되어 빨라지면 roll로 탈출한다(pending 제거).
+enum _DragMode { none, stroke, roll }
 
 class _HomeScreenState extends State<HomeScreen>
     with SingleTickerProviderStateMixin {
@@ -60,13 +62,17 @@ class _HomeScreenState extends State<HomeScreen>
   bool _flingSeeded = false;
   bool _moved = false;
 
-  // 드래그 판별 상태머신(§4.2 / §6.2)
+  // 드래그 판별 상태머신(v6 §2, 속도 기반)
   _DragMode _dragMode = _DragMode.none;
-  double _pathLen = 0; // 누적 경로 길이(px)
-  int _turnCount = 0; // 방향 전환 횟수
-  Offset _lastMoveDir = Offset.zero;
   double _strokeEnergy = 0; // 쓰다듬기 누적(0~1) → wobble/글로우 구동
   double _rollAccum = 0; // 굴리기 누적 이동거리(px) → 마찰 틱 발사 타이밍
+  // stroke→roll 늦은 전환 시 공이 손가락과 벌어져 있어 ease 추종으로 따라잡는
+  // 프레임 카운터(v6 §2). 0이면 full grab.
+  int _rollCatchup = 0;
+
+  // 손가락 속도 추적(v6 §1) — 판별 1차 기준. fling용 _flingVel과는 별개.
+  double _dragSpeed = 0; // 평활된 손가락 속도(px/s)
+  bool _dragSpeedSeeded = false; // 첫 유효샘플 채택 플래그
 
   bool _showComfort = true;
   late final String _comfort = randomComfortMessage();
@@ -82,15 +88,13 @@ class _HomeScreenState extends State<HomeScreen>
   static const double kShakeMax = 26.0; // 정규화 상한(32→26)
   static const Duration _shakeCooldown = Duration(milliseconds: 90); // 140→90
 
-  // 드래그 판별 임계(§3 — net 이동거리 기반 + sticky)
-  static const double kTurnDot = -0.1; // 방향전환 인정 내적(약 95°)
-  static const double kMinStep = 2.0; // px, 노이즈 컷
-  static const double kRollNet = 0.9; // net > radius * 0.9 → roll 커밋
-  // 쓰다듬기 커밋 완화·조기화(v5 §2): 한 번만 왕복해도, 제자리 근처에서 짧게라도
-  // 비비면 곧장 stroke로 넘어가 "쓰다듬는다"는 인지를 빨리 준다(v4 0.6/2.5/2에서 완화).
-  static const double kStrokeNet = 0.7; // net < radius * 0.7 (제자리 근처, 완화)
-  static const double kStrokePath = 1.2; // pathLen > radius * 1.2 (왕복 문턱 낮춤)
-  static const int kStrokeTurns = 1; // 방향전환 1회 이상 → stroke 커밋
+  // 드래그 판별 임계(v6 §2 — 속도 기반). 거리·방향전환 기반 상수는 폐기.
+  static const double kRollSpeed = 420; // px/s, 손가락 속도가 이를 넘으면 굴리기
+  static const double kRollNet = 1.2; // ×radius, 느려도 이만큼 끌면 굴리기
+  // 손가락 속도 EMA/clamp 상수(v6 §1).
+  static const double kDragMinDt = 0.004; // 이보다 짧은 dt 샘플은 속도 계산서 제외
+  static const double kDragSpeedClamp = 4000; // 순간속도 magnitude 상한(px/s)
+  static const int kRollCatchupFrames = 6; // stroke→roll 늦은 전환 시 따라잡기 프레임
 
   // 굴리기 fling 평활/clamp 상수(v5 §1).
   static const double kFlingMinDt = 0.004; // 이보다 짧은 dt 샘플은 속도 계산서 제외
@@ -187,12 +191,13 @@ class _HomeScreenState extends State<HomeScreen>
     // fling 속도 평활 리셋(v5 §1): 새 드래그마다 속도/첫샘플 플래그 초기화.
     _flingVel = Offset.zero;
     _flingSeeded = false;
-    // 드래그 메트릭 초기화
+    // 드래그 메트릭 초기화(v6)
     _dragMode = _DragMode.none;
-    _pathLen = 0;
-    _turnCount = 0;
-    _lastMoveDir = Offset.zero;
     _rollAccum = 0; // 굴리기 마찰 누적 리셋
+    _rollCatchup = 0;
+    // 손가락 속도 추적 리셋(v6 §1): 다운마다 0/false. fling용과 별개.
+    _dragSpeed = 0;
+    _dragSpeedSeeded = false;
 
     // 누르기 홀드(GST-03, §2): 본체 위에서 누르기 시작 → 누르는 동안 침몰.
     // 이동(slop 초과)이 시작되면 _onPointerMove에서 pressEnd로 전환된다.
@@ -212,83 +217,80 @@ class _HomeScreenState extends State<HomeScreen>
     final step = pos - _lastPos;
     final stepLen = step.distance;
 
+    // 손가락 속도 추적(v6 §1): 판별의 1차 기준. dt가 너무 짧으면(<4ms) 순간속도가
+    // 과대평가되므로 속도 갱신은 건너뛴다(_lastPos·시간은 아래에서 항상 갱신).
+    final moveDt = (e.timeStamp - _lastMoveTime).inMicroseconds / 1e6;
+    if (moveDt >= kDragMinDt) {
+      var instant = stepLen / moveDt; // 순간 손가락 속도(px/s)
+      if (instant > kDragSpeedClamp) instant = kDragSpeedClamp;
+      _dragSpeed = _dragSpeedSeeded
+          ? _dragSpeed * 0.6 + instant * 0.4 // 이후 EMA(0.6:0.4)
+          : instant; // 첫 유효샘플은 그대로 채택
+      _dragSpeedSeeded = true;
+    }
+
     if (!_moved && (pos - _downPos).distance > _slop) {
       _moved = true;
-      // 누르기 → 드래그 전환(§3): 홀드 침몰을 즉시 복원 시작. 손을 뗀 게 아니라
-      // 끌기로 바뀐 것이므로 pressRelease 햅틱은 생략(pressDown만 이미 울렸음).
-      ball.pressEnd();
-      // pending으로 시작(§3): 아직 roll/stroke 미확정. 공은 살짝만 추종해
-      // 쓰다듬기로 커밋돼도 거의 제자리에 남는다.(기존 '잠정 roll' 제거)
-      _dragMode = _DragMode.pending;
+      // 누르기 → 드래그 전환(v6 §3): 침몰을 팝 없이 즉시 취소(pressEnd의 elastic
+      // 복원 팝이 쓰다듬기 시작에서 "꿀렁"으로 오인되던 문제 제거).
+      ball.pressCancel();
+      // 모드 미확정(none)으로 두고 곧바로 아래 속도 평가에서 stroke/roll 결정한다
+      // ('잠정 roll/pending로 시작' 제거).
+      _dragMode = _DragMode.none;
     }
 
     if (_moved) {
-      // 드래그 메트릭 누적(§3): net=시작점 기준 직선거리, pathLen=누적 경로,
-      // turnCount=방향전환 횟수(기존 방식 유지).
-      _pathLen += stepLen;
-      if (stepLen > kMinStep) {
-        final stepDir = step / stepLen;
-        if (_lastMoveDir != Offset.zero &&
-            _lastMoveDir.dx * stepDir.dx + _lastMoveDir.dy * stepDir.dy <
-                kTurnDot) {
-          _turnCount++; // ~95° 이상 꺾임 = 방향 전환
-        }
-        _lastMoveDir = stepDir;
-      }
       final net = (pos - _downPos).distance;
       final r = ball.radius;
 
-      // sticky 커밋 판정(§3): pending일 때만 평가하고, roll/stroke로 한 번
-      // 커밋되면 포인터 업까지 모드 변경 금지(굴리기↔쓰다듬기 오판/혼선 방지).
-      if (_dragMode == _DragMode.pending) {
-        if (net > r * kRollNet) {
-          // ROLL 커밋: 공을 시작점에서 거의 반경만큼 끌고 감 = 명백히 끌기.
-          // 곡선으로 이리저리 끌어도 이후 계속 roll 유지.
-          _dragMode = _DragMode.roll;
-          Haptics.instance.fire(HapticLevel.light); // roll 진입 알림 1회
-        } else if (_turnCount >= kStrokeTurns &&
-            net < r * kStrokeNet &&
-            _pathLen > r * kStrokePath) {
-          // STROKE 커밋: 제자리 근처(net 작음)에서 충분히 왕복(path 길고 전환 잦음).
-          _dragMode = _DragMode.stroke;
-        }
+      // 판별(v6 §2): roll은 sticky, stroke는 매 프레임 재평가.
+      if (_dragMode != _DragMode.roll &&
+          (_dragSpeed > kRollSpeed || net > r * kRollNet)) {
+        // ROLL 진입(sticky): 빠르거나 멀리 끌었다 = 명백한 굴리기.
+        final wasStroke = _dragMode == _DragMode.stroke;
+        _dragMode = _DragMode.roll;
+        ball.pressCancel(); // 혹시 남은 침몰 무팝 제거
+        Haptics.instance.fire(HapticLevel.light); // roll 첫 진입 알림 1회
+        // stroke에서 늦게 전환됐으면 공이 손가락과 벌어져 있으므로 ease 추종으로
+        // 몇 프레임 따라잡는다(처음부터 빠른 굴리기는 gap이 거의 없어 불필요).
+        if (wasStroke) _rollCatchup = kRollCatchupFrames;
+      } else if (_dragMode != _DragMode.roll) {
+        // STROKE: 느리고 국소. 공은 제자리, 표면만 출렁이고 빛이 차오른다.
+        _dragMode = _DragMode.stroke;
+        ball.stroke(step); // 제자리 고정 출렁임(공 이동 없음)
+        _strokeEnergy =
+            (_strokeEnergy + stepLen / r * 0.4).clamp(0.0, 1.0); // step 비례 증가
+        // 위로받는 부드러운 저강도 텍스처를 흐르듯 발사(throttle은 strokeSoft 내장).
+        Haptics.instance.strokeSoft();
       }
 
-      // 모드별 동작
-      if (_dragMode == _DragMode.stroke) {
-        ball.stroke(step); // 제자리 고정 출렁임(공 이동 없음)
-        _strokeEnergy = (_strokeEnergy + stepLen / r * 0.4)
-            .clamp(0.0, 1.0); // step 비례 증가
-        // 쓰다듬기 힐링(요구2): 위로받는 부드러운 저강도 텍스처를 흐르듯 발사
-        // (throttle은 strokeSoft 내장).
-        Haptics.instance.strokeSoft();
-      } else if (_dragMode == _DragMode.roll) {
-        ball.grab(pos); // 손가락 1:1 추종(full)
-        // 굴리기 마찰감(§3): 이동 누적이 반경의 절반을 넘을 때마다 마찰 틱 발사
-        // → 구슬 굴리는 자글거림. 손가락이 빠를수록 잦고 강하다. speed01은 추종
-        // 속도(px/s)를 2600으로 정규화. throttle은 rollFriction 내장.
+      // ROLL 거동: catchup 중엔 ease 추종으로 gap을 좁히고, 이후 full 추종.
+      if (_dragMode == _DragMode.roll) {
+        if (_rollCatchup > 0) {
+          ball.grab(pos, ease: 0.4);
+          _rollCatchup--;
+        } else {
+          ball.grab(pos); // 손가락 1:1 추종(full)
+        }
+        // 굴리기 마찰감: 이동 누적이 반경의 절반을 넘을 때마다 마찰 틱 발사 →
+        // 구슬 굴리는 자글거림. speed01은 추종 속도(px/s)를 2600으로 정규화.
         _rollAccum += stepLen;
         final tickDist = r * 0.5;
         if (_rollAccum >= tickDist) {
           _rollAccum -= tickDist;
-          final moveDt = (e.timeStamp - _lastMoveTime).inMicroseconds / 1e6;
           final speed01 =
               (moveDt > 0 ? (stepLen / moveDt) / 2600 : 0.0).clamp(0.0, 1.0);
           Haptics.instance.rollFriction(speed01);
         }
-      } else {
-        // pending(v5 §2): 추종 더 약화(ease 0.2). 커밋 전 공이 거의 제자리에 머물러
-        // 쓰다듬기로 넘어가도 "한 번 꿀렁" 대신 제자리 출렁임으로 자연히 이어진다.
-        ball.grab(pos, ease: 0.2);
       }
     }
 
     // 플링 속도 추정(v5 §1): 매 이벤트 순간속도를 그대로 덮어쓰던 v4를 EMA 평활로 교체.
     // 너무 짧은 dt(<4ms) 샘플은 순간속도가 과대평가되므로 속도 계산에서 제외하되,
     // _lastPos·_lastMoveTime은 항상 갱신해 다음 샘플의 dt/변위가 정확하도록 한다.
-    final dtMove = (e.timeStamp - _lastMoveTime).inMicroseconds / 1e6;
-    if (dtMove >= kFlingMinDt) {
-      var instant = (pos - _lastPos) / dtMove; // 순간속도(px/s)
+    // dt는 위 손가락 속도 추적과 동일하므로 moveDt를 재사용(_flingVel은 별개 평활).
+    if (moveDt >= kFlingMinDt) {
+      var instant = (pos - _lastPos) / moveDt; // 순간속도(px/s)
       // 스파이크 컷: 비정상적으로 큰 순간속도는 크기를 3000px/s로 제한.
       final m = instant.distance;
       if (m > kFlingSpikeClamp) instant = instant / m * kFlingSpikeClamp;
@@ -328,7 +330,7 @@ class _HomeScreenState extends State<HomeScreen>
       }
       ball.vel = v; // 던진 손맛(관성 fling), 크기만 상한 적용
     } else {
-      // stroke / pending(미커밋): grabbed 해제만, vel 부여 안 함(날아가지 않음).
+      // stroke / none(미커밋): grabbed 해제만, vel 부여 안 함(날아가지 않음, v6 §2).
       ball.release();
     }
     _moved = false;
