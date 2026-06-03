@@ -26,7 +26,8 @@ class EmotionBallPainter extends CustomPainter {
       final paint = Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = 2.5 * r.life
-        ..color = AppColors.ballGlow.withValues(alpha: 0.4 * r.life);
+        // 핑크 젤리: 물결 링도 깊은 핑크로(파스텔 배경 위에서 은은히 번지게).
+        ..color = AppColors.jellyDeep.withValues(alpha: 0.4 * r.life);
       canvas.drawCircle(r.center, r.radius, paint);
     }
 
@@ -66,45 +67,51 @@ class EmotionBallPainter extends CustomPainter {
     // alpha 0.2~0.4 * strokeEnergy 범위(§8), 부드러운 maskFilter blur.
     // 공 본체 뒤/주위에 깔리도록 외곽 발광보다 먼저, 더 넓게 그린다.
     // v2: 상한만 소폭 상향(alpha 0.45까지, blur 24+18e). "또렷해지지 않게" 우선,
-    // 은은하게 더 번지는 정도(§9). 새 색 토큰 없이 ballGlow 재사용.
+    // 은은하게 더 번지는 정도(§9). 핑크 젤리에선 jellyDeep로 발광.
     // v5 §2: 쓰다듬기를 확실히 인지시키기 위해 글로우를 더 또렷이 번지게 —
     // alpha 상한 0.45→0.55, 계수 소폭↑(0.26+0.26e), 반경 계수 1.18+0.24e→1.20+0.28e.
     // blur는 24+18e 유지 → 링/하드엣지 없이 폭신하게 차오르는 발광만 강화.
+    // 핑크 젤리: 발광색도 깊은 핑크(jellyDeep)로 — 파스텔 배경 위에 핑크 후광.
     final e = strokeEnergy.clamp(0.0, 1.0);
     if (e > 0.01) {
       final stroke = Paint()
-        ..color = AppColors.ballGlow
+        ..color = AppColors.jellyDeep
             .withValues(alpha: ((0.26 + 0.26 * e) * e).clamp(0.0, 0.55))
         ..maskFilter = MaskFilter.blur(BlurStyle.normal, 24 + 18 * e);
       canvas.drawCircle(Offset.zero, ball.radius * (1.20 + 0.28 * e), stroke);
     }
 
-    // 외곽 발광
+    // 외곽 발광 — 핑크 후광(jellyDeep). 밝은 파스텔 배경에서도 공 외곽이 살짝 떠 보이게.
     final outerGlow = Paint()
-      ..color = AppColors.ballGlow.withValues(alpha: 0.35)
+      ..color = AppColors.jellyDeep.withValues(alpha: 0.35)
       ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 18);
     canvas.drawCircle(Offset.zero, ball.radius * 1.05, outerGlow);
 
-    // 본체: 부드러운 방사형 그라데이션
+    // 본체: 부드러운 방사형 그라데이션(핑크 젤리).
+    // 와이어프레임: 30%28% 부근 흰 하이라이트(흰~연분홍) → 핑크 본체 → 깊은 핑크 외곽.
+    // 흰 0.95 톤은 jellyTint(연분홍)로 lerp해 "흰→연분홍" 하이라이트, 중간은 jellyCore,
+    // 가장자리는 jellyDeep로 떨어지는 말랑한 구체.
     final body = Paint()
       ..shader = RadialGradient(
-        center: const Alignment(-0.3, -0.35),
+        // 30%/28%(좌상단) 하이라이트 중심 ≈ Alignment(-0.4, -0.44).
+        center: const Alignment(-0.4, -0.44),
         colors: [
-          Color.lerp(AppColors.ballCore, Colors.white, 0.35)!,
-          AppColors.ballCore,
-          AppColors.ballGlow,
+          Color.lerp(AppColors.jellyHi, AppColors.jellyTint, 0.45)!, // 흰~연분홍 하이라이트
+          AppColors.jellyCore, // 핑크 본체
+          AppColors.jellyDeep, // 깊은 핑크 외곽
         ],
         stops: const [0.0, 0.55, 1.0],
       ).createShader(Rect.fromCircle(center: Offset.zero, radius: ball.radius));
     canvas.drawCircle(Offset.zero, ball.radius, body);
 
     // v9 §3: 구체 3D 음영(터미네이터). 본체 하단~우하단에 팔레트 내 살짝 짙은
-    // 쿨톤(ballGlow를 더 짙은 라벤더로 살짝 lerp)을 두 번째 RadialGradient로 덧칠 —
+    // 핑크 음영(jellyCore→jellyShade lerp)을 두 번째 RadialGradient로 덧칠 —
     // 빛(top-left) 반대쪽이 어둑해 "빛 받는 구슬"로 읽히게. 검은색 금지·저대비:
     // 가장 짙은 곳도 알파 0.5 미만, 중심은 투명이라 본체 밝기를 해치지 않는다.
-    // _coolShade = ballGlow를 ballCore의 보색쪽이 아니라 더 깊은 쿨 라벤더로 0.55 lerp.
+    // 핑크 젤리: 음영도 핑크 계열로 — jellyCore에서 jellyShade(검정 금지)로 0.55 lerp한
+    // "짙은 핑크 음영". 빛 반대쪽(우하단)이 어둑한 핑크로 떨어져 말랑한 구체감을 준다.
     final coolShade = Color.lerp(
-        AppColors.ballGlow, AppColors.ballShade, 0.55)!; // 짙은 쿨 라벤더
+        AppColors.jellyCore, AppColors.jellyShade, 0.55)!; // 짙은 핑크 음영
     final shade = Paint()
       ..shader = RadialGradient(
         // 빛 반대쪽(우하단)을 음영 중심으로 — 본체 하단~우하단이 어둑.
