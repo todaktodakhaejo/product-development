@@ -70,9 +70,11 @@ class RitualAudio {
   Future<void> _startGapless(String assetPath, double volume) => _safe(() async {
         await _gapless.stop();
         await _gapless.setVolume(volume);
+        // count는 '시퀀스 길이'라 너무 크면(예: 1<<20) 시퀀스 생성이 메인 스레드를
+        // 멈춰 화면이 프리징된다. 세션 한 번에 충분한 길이(4~8s × 1000 ≈ 1~2시간).
         await _gapless.setAudioSource(
           ja.LoopingAudioSource(
-            count: 1 << 20, // 사실상 무한(약 8s × 100만회).
+            count: 1000,
             child: ja.AudioSource.asset(assetPath),
           ),
         );
