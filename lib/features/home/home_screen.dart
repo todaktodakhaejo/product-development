@@ -606,51 +606,69 @@ class _HomeScreenState extends State<HomeScreen>
                     left: 0,
                     right: 0,
                     child: IgnorePointer(
-                      child: Stack(
-                        alignment: Alignment.topCenter,
+                      child: Column(
                         children: [
-                          // 초기(untouched): 멘트(2줄) + 날짜·시간 + releaseCount.
-                          // 공을 1회라도 터치하면 함께 fade-out.
-                          AnimatedOpacity(
-                            opacity: _touched ? 0 : 1,
-                            duration: const Duration(milliseconds: 600),
-                            child: Column(
-                              children: [
-                                // 멘트: releaseCount % 9 고정(타이머 순환 폐기).
-                                // 의식 완료로 releaseCount가 바뀔 때만 fade 전환.
-                                AnimatedSwitcher(
-                                  duration:
-                                      const Duration(milliseconds: 800),
-                                  child: Text(
-                                    homeMessages[
-                                        _releaseCount % homeMessages.length],
-                                    key: ValueKey(
-                                        _releaseCount % homeMessages.length),
-                                    textAlign: TextAlign.center,
-                                    style: TextStyle(
-                                      fontSize: 18,
-                                      color: msgColor,
-                                      height: 1.5,
+                          // 날짜·시간: 터치해도 사라지지 않고 항상 표시(유지).
+                          Text(
+                            _formatDateTime(_now),
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: subColor,
+                              letterSpacing: 0.3,
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          // 멘트/카운트 교차 영역: untouched=멘트+releaseCount,
+                          // touched=interaction 카운트(같은 자리 cross-fade).
+                          Stack(
+                            alignment: Alignment.topCenter,
+                            children: [
+                              AnimatedOpacity(
+                                opacity: _touched ? 0 : 1,
+                                duration: const Duration(milliseconds: 600),
+                                child: Column(
+                                  children: [
+                                    // 멘트: releaseCount % 9 고정(의식 완료 시에만 전환).
+                                    AnimatedSwitcher(
+                                      duration:
+                                          const Duration(milliseconds: 800),
+                                      child: Text(
+                                        homeMessages[
+                                            _releaseCount % homeMessages.length],
+                                        key: ValueKey(
+                                            _releaseCount % homeMessages.length),
+                                        textAlign: TextAlign.center,
+                                        style: TextStyle(
+                                          fontSize: 18,
+                                          color: msgColor,
+                                          height: 1.5,
+                                        ),
+                                      ),
                                     ),
-                                  ),
+                                    const SizedBox(height: 8),
+                                    // 흘려보냄 누적 횟수(§1-A). 터치하면 사라짐.
+                                    Text(
+                                      _releaseCount > 0
+                                          ? '$_releaseCount번째 흘려보냄'
+                                          : '오늘, 처음 흘려보낼까요',
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(
+                                        fontSize: 14,
+                                        color: countColor,
+                                        letterSpacing: 0.4,
+                                      ),
+                                    ),
+                                  ],
                                 ),
-                                const SizedBox(height: 12),
-                                Text(
-                                  _formatDateTime(_now),
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: subColor,
-                                    letterSpacing: 0.3,
-                                  ),
-                                ),
-                                const SizedBox(height: 6),
-                                // 흘려보냄 누적 횟수(§1-A). 0이면 권유 문구로
-                                // 대체해 '0번째'의 어색함을 피한다.
-                                Text(
-                                  _releaseCount > 0
-                                      ? '$_releaseCount번째 흘려보냄'
-                                      : '오늘, 처음 흘려보낼까요',
+                              ),
+                              // touched: 공 놀이 횟수(§1-B)를 같은 자리에 fade-in.
+                              // "{N} interaction" 형식, 노는 동안 실시간 증가.
+                              AnimatedOpacity(
+                                opacity: _touched ? 1 : 0,
+                                duration: const Duration(milliseconds: 700),
+                                child: Text(
+                                  '$_interactionCount interaction',
                                   textAlign: TextAlign.center,
                                   style: TextStyle(
                                     fontSize: 14,
@@ -658,23 +676,8 @@ class _HomeScreenState extends State<HomeScreen>
                                     letterSpacing: 0.4,
                                   ),
                                 ),
-                              ],
-                            ),
-                          ),
-                          // touched: 공 놀이 횟수(§1-B)를 같은 상단 자리에 fade-in.
-                          // 노는 동안 실시간 증가(스로틀된 setState). 은은한 한 줄.
-                          AnimatedOpacity(
-                            opacity: _touched ? 1 : 0,
-                            duration: const Duration(milliseconds: 700),
-                            child: Text(
-                              '$_interactionCount번 함께했어요',
-                              textAlign: TextAlign.center,
-                              style: TextStyle(
-                                fontSize: 14,
-                                color: countColor,
-                                letterSpacing: 0.4,
                               ),
-                            ),
+                            ],
                           ),
                         ],
                       ),
