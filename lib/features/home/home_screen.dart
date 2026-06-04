@@ -82,17 +82,29 @@ class _HomeScreenState extends State<HomeScreen>
   double _dragSpeed = 0; // 평활된 손가락 속도(px/s)
   bool _dragSpeedSeeded = false; // 첫 유효샘플 채택 플래그
 
-  // ── 멘트 순환(§3) / 터치→카운트(§4) ───────────────────────────
-  // 멘트 9개를 ~6.5s 간격으로 AnimatedOpacity fade 순환. 랜덤 시작 인덱스.
-  int _msgIndex = Random().nextInt(homeMessages.length);
-  Timer? _msgTimer;
+  // ── 멘트(§2/§3) / 터치→카운트(§1) ───────────────────────────
+  // 멘트는 타이머 순환 폐기(v2 §3). 홈에 있는 동안 고정이며, 표시 멘트는
+  // homeMessages[_releaseCount % 9]. 의식을 한 번 완료(releaseCount+1)할 때마다
+  // 다음 세트로 자연히 넘어간다. AnimatedSwitcher fade는 멘트가 실제 바뀔 때만.
   // 현재 시각(날짜·시간 표시용). _onTick에서 분 단위로만 갱신.
   DateTime _now = DateTime.now();
-  // 공을 한 번이라도 터치하면 true → 멘트/시간 fade-out, 카운트 fade-in.
-  // 세션 동안 유지되고, 의식 완료 복귀(§6)나 글쓰기 복귀 시에만 초기화된다.
+  // 공을 한 번이라도 터치하면 true → 멘트/날짜/releaseCount fade-out,
+  // interactionCount fade-in. 세션 동안 유지되고, 의식 완료 복귀(§1)나
+  // 글쓰기 복귀 시에만 초기화된다.
   bool _touched = false;
-  // 화면에 표시할 누적 흘려보냄 횟수(터치 시 비동기 read로 채움).
+  // 화면에 표시할 누적 흘려보냄 횟수(의식 완료 횟수). 진입 시·완료 시 갱신.
   int _releaseCount = 0;
+
+  // ── 공 놀이(인터랙션) 카운트(v2 §1-B) ─────────────────────────
+  // 공을 튕기고·흔들고·굴리고·만지고·누른 평생 누적 횟수. 진입 시 lifetime을
+  // 비동기 로드해 메모리에서 증가시키고, 디스크 쓰기는 디바운스(주기 Timer/완료/
+  // dispose)로만 한다. 매 제스처 setState는 ~100ms 스로틀로 리빌드 폭주 방지.
+  int _interactionCount = 0;
+  bool _interactionLoaded = false; // lifetime 로드 완료 여부
+  int _interactionSavedAt = 0; // 마지막으로 디스크에 반영한 값
+  Timer? _interactionSaveTimer; // 변경분 디바운스 저장(~3s 주기)
+  // 실시간 표시 스로틀: 마지막으로 setState한 시각. 100ms 이내 증가는 리빌드 생략.
+  DateTime _interactionShownAt = DateTime.fromMillisecondsSinceEpoch(0);
 
   // ── 의식 완료 감지(§6) — SessionScope listen만, P2/P3 무수정 ──────
   SessionState? _session; // didChangeDependencies에서 바인딩
@@ -135,12 +147,24 @@ class _HomeScreenState extends State<HomeScreen>
     super.initState();
     _ticker = createTicker(_onTick)..start();
     _listenSensors();
-    // 멘트 순환 타이머(§3): ~6.5s마다 다음 멘트로. 터치 후엔 멘트가 가려져도
-    // 인덱스는 계속 돌지만 보이지 않으므로 무해(복귀 시 자연스러운 다음 멘트).
-    _msgTimer = Timer.periodic(const Duration(milliseconds: 6500), (_) {
-      if (!mounted || _touched) return;
-      setState(() => _msgIndex = (_msgIndex + 1) % homeMessages.length);
+    // 멘트 타이머 폐기(v2 §3): 멘트는 releaseCount 기반 고정. 진입 시 현재
+    // releaseCount를 읽어 멘트 인덱스와 untouched 카운트 표시에 함께 쓴다.
+    ReleaseCounter.read().then((value) {
+      if (!mounted) return;
+      setState(() => _releaseCount = value);
     });
+    // 공 놀이 평생 누적(v2 §1-B): lifetime 로드 후 메모리에서 증가시킨다.
+    ReleaseCounter.readInteraction().then((value) {
+      if (!mounted) return;
+      setState(() {
+        _interactionCount = value;
+        _interactionSavedAt = value;
+        _interactionLoaded = true;
+      });
+    });
+    // 변경분 디바운스 저장(~3s 주기): 그 사이 증가가 있었을 때만 디스크에 쓴다.
+    _interactionSaveTimer =
+        Timer.periodic(const Duration(seconds: 3), (_) => _flushInteraction());
   }
 
   @override
@@ -169,19 +193,48 @@ class _HomeScreenState extends State<HomeScreen>
     // ritual==null. text까지 비고 직전에 의식을 골랐던 적이 있으면 완료.
     if (s.text.isEmpty && _ritualWasChosen) {
       _ritualWasChosen = false;
-      // 카운트 +1(영구) 후 홈 UI 초기화.
+      // 흘려보냄 +1(영구) 후 홈 UI 초기화. 멘트도 새 releaseCount % 9로 넘어감.
       ReleaseCounter.increment().then((value) {
         if (!mounted) return;
         setState(() => _releaseCount = value);
       });
+      // 의식 완료 시점에 인터랙션 누적분도 디스크에 반영(디바운스 보강).
+      _flushInteraction();
       _restoreHomeInitial();
     }
   }
 
-  /// 홈을 초기 상태(멘트+시간 표시, 카운트 숨김)로 되돌린다(§4/§6).
+  /// 홈을 초기(untouched) 상태로 되돌린다(§1).
+  /// 멘트+날짜+releaseCount 표시, interactionCount 숨김. interactionCount 값
+  /// 자체는 평생 누적이므로 초기화하지 않는다(계속 누적).
   void _restoreHomeInitial() {
     if (!mounted) return;
     setState(() => _touched = false);
+  }
+
+  /// 공 놀이 1회 카운트(v2 §1-B). 공 위 pointer down 1회 또는 흔들기 임펄스
+  /// 발사 1회마다 +1. lifetime 로드 전이면 카운트만 보류 없이 미루지 않고
+  /// 메모리 증가만(로드 콜백이 들어오기 전 제스처는 드물고, 로드 시 덮어쓰므로
+  /// 정확도를 위해 로드 완료 후부터 집계한다).
+  void _bumpInteraction() {
+    if (!_interactionLoaded) return; // lifetime 로드 전엔 집계 보류(덮어쓰기 방지)
+    _interactionCount++;
+    // 실시간 표시 스로틀(~100ms): 빠르게 증가해도 리빌드는 100ms마다 1회.
+    // 단 untouched 상태면 카운트가 숨겨져 있어 굳이 리빌드하지 않는다.
+    if (!_touched) return;
+    final now = DateTime.now();
+    if (now.difference(_interactionShownAt).inMilliseconds < 100) return;
+    _interactionShownAt = now;
+    if (mounted) setState(() {});
+  }
+
+  /// 메모리 누적분이 마지막 저장값과 다르면 디스크에 반영(디바운스/완료/dispose).
+  void _flushInteraction() {
+    if (!_interactionLoaded) return;
+    if (_interactionCount == _interactionSavedAt) return;
+    final v = _interactionCount;
+    _interactionSavedAt = v;
+    ReleaseCounter.saveInteraction(v);
   }
 
   void _listenSensors() {
@@ -232,6 +285,7 @@ class _HomeScreenState extends State<HomeScreen>
           level = HapticLevel.heavy;
         }
         Haptics.instance.fire(level, throttle: false);
+        _bumpInteraction(); // 흔들기 임펄스 발사 1회 = 공 놀이 +1(§1-B)
         _onTouched();
       },
       onError: (_) {}, // 센서 미지원 기기에서도 터치는 동작
@@ -315,20 +369,19 @@ class _HomeScreenState extends State<HomeScreen>
     if (ball.hitTest(pos)) {
       ball.pressStart(pos);
       Haptics.instance.pressDown();
+      // 공 위 pointer down 1회 = 공 놀이 +1(§1-B). 누르기/굴리기/쓰다듬기 시작은
+      // 모두 한 번의 손길이므로 down에서 한 번만 집계한다(이동 전환에서 중복 없음).
+      _bumpInteraction();
     }
-    _onTouched(); // HOME-04: 첫 터치에 멘트→카운트 전환(§4)
+    _onTouched(); // HOME-04: 첫 터치에 멘트→카운트 전환(§1)
   }
 
-  /// 공을 한 번이라도 터치하면(§4) 멘트/시간 fade-out → 같은 자리에 누적
-  /// 흘려보냄 카운트 fade-in. 이미 전환됐으면 무시(세션 동안 유지).
+  /// 공을 한 번이라도 터치하면(§1) 멘트/날짜/releaseCount fade-out → 같은
+  /// 상단 자리에 interactionCount fade-in. 이미 전환됐으면 무시(세션 동안 유지).
+  /// interactionCount 값은 _bumpInteraction에서 갱신되므로 여기선 전환만 한다.
   void _onTouched() {
     if (_touched) return;
     setState(() => _touched = true);
-    // 누적 횟수를 비동기로 읽어와 카운트 텍스트에 반영.
-    ReleaseCounter.read().then((value) {
-      if (!mounted) return;
-      setState(() => _releaseCount = value);
-    });
   }
 
   void _onPointerMove(PointerMoveEvent e) {
@@ -482,7 +535,8 @@ class _HomeScreenState extends State<HomeScreen>
 
   @override
   void dispose() {
-    _msgTimer?.cancel();
+    _interactionSaveTimer?.cancel();
+    _flushInteraction(); // 마지막 누적분을 디스크에 반영
     _session?.removeListener(_onSessionChanged);
     _ticker.dispose();
     _accelSub?.cancel();
@@ -543,28 +597,35 @@ class _HomeScreenState extends State<HomeScreen>
                     ),
                   ),
 
-                  // 상단 중앙: 멘트(순환)+날짜/시간 ↔ 카운트. 같은 자리에서
-                  // AnimatedOpacity로 교차 fade(§3/§4). 공 터치 방해 없이 IgnorePointer.
+                  // 상단 중앙(§1): untouched는 멘트+날짜+releaseCount('N번째
+                  // 흘려보냄'), touched는 같은 자리에 interactionCount fade-in.
+                  // 같은 Stack 자리에서 AnimatedOpacity로 교차 fade. IgnorePointer로
+                  // 공 터치 방해 없음.
                   Positioned(
                     top: 28,
                     left: 0,
                     right: 0,
                     child: IgnorePointer(
-                      child: Column(
+                      child: Stack(
+                        alignment: Alignment.topCenter,
                         children: [
-                          // 초기: 멘트(2줄) + 날짜·시간. 터치하면 fade-out.
+                          // 초기(untouched): 멘트(2줄) + 날짜·시간 + releaseCount.
+                          // 공을 1회라도 터치하면 함께 fade-out.
                           AnimatedOpacity(
                             opacity: _touched ? 0 : 1,
                             duration: const Duration(milliseconds: 600),
                             child: Column(
                               children: [
-                                // 멘트 9개 순환(부드러운 fade 전환).
+                                // 멘트: releaseCount % 9 고정(타이머 순환 폐기).
+                                // 의식 완료로 releaseCount가 바뀔 때만 fade 전환.
                                 AnimatedSwitcher(
                                   duration:
                                       const Duration(milliseconds: 800),
                                   child: Text(
-                                    homeMessages[_msgIndex],
-                                    key: ValueKey(_msgIndex),
+                                    homeMessages[
+                                        _releaseCount % homeMessages.length],
+                                    key: ValueKey(
+                                        _releaseCount % homeMessages.length),
                                     textAlign: TextAlign.center,
                                     style: TextStyle(
                                       fontSize: 18,
@@ -583,27 +644,35 @@ class _HomeScreenState extends State<HomeScreen>
                                     letterSpacing: 0.3,
                                   ),
                                 ),
+                                const SizedBox(height: 6),
+                                // 흘려보냄 누적 횟수(§1-A). 0이면 권유 문구로
+                                // 대체해 '0번째'의 어색함을 피한다.
+                                Text(
+                                  _releaseCount > 0
+                                      ? '$_releaseCount번째 흘려보냄'
+                                      : '오늘, 처음 흘려보낼까요',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    color: countColor,
+                                    letterSpacing: 0.4,
+                                  ),
+                                ),
                               ],
                             ),
                           ),
-                          // 카운트: 터치 후 같은 자리에 fade-in(은은하게).
+                          // touched: 공 놀이 횟수(§1-B)를 같은 상단 자리에 fade-in.
+                          // 노는 동안 실시간 증가(스로틀된 setState). 은은한 한 줄.
                           AnimatedOpacity(
                             opacity: _touched ? 1 : 0,
                             duration: const Duration(milliseconds: 700),
-                            child: Padding(
-                              padding: const EdgeInsets.only(top: 6),
-                              // 누적 흘려보냄 횟수(§4). 아직 0이면 권유 문구로
-                              // 대체해 '0번째'의 어색함을 피한다.
-                              child: Text(
-                                _releaseCount > 0
-                                    ? '$_releaseCount번째 흘려보냄'
-                                    : '오늘, 처음 흘려보낼까요',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  fontSize: 14,
-                                  color: countColor,
-                                  letterSpacing: 0.4,
-                                ),
+                            child: Text(
+                              '$_interactionCount번 함께했어요',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: countColor,
+                                letterSpacing: 0.4,
                               ),
                             ),
                           ),
