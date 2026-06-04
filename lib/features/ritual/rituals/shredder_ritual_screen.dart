@@ -76,6 +76,7 @@ class _ShredderRitualScreenState extends State<ShredderRitualScreen>
   double _feed = 0; // feeding 동안 드래그로만 증가(투입 트리거 판정용).
   double _grind = 0; // grinding 동안 3초 컨트롤러로 0→1(드래그 무관).
   double _feedAtGrindStart = 0; // grinding 진입 시 투입 강도(햅틱 연속용 기준점).
+  bool _shredSoundOn = false; // shred.mp3 루프 재생 중 여부(투입 순간 1회만 시작).
   Offset _slot = Offset.zero;
 
   // 3초 자동 분쇄 컨트롤러(반드시 bounded — unbounded()..repeat() 금지).
@@ -196,8 +197,12 @@ class _ShredderRitualScreenState extends State<ShredderRitualScreen>
     // 투입량 증가 시 슬릿에서 소량 strip 낙하(투입 피드백).
     if (_feed > _lastStripAt + 0.02) {
       _lastStripAt = _feed;
-      // 종이가 파쇄기로 들어가는(이빨에 닿는) 순간부터 갈리는 햅틱 시작.
+      // 종이가 파쇄기로 들어가는(이빨에 닿는) 순간부터 갈리는 햅틱 + 효과음 시작.
       _grindHandle ??= Haptics.instance.startShredGrind();
+      if (!_shredSoundOn) {
+        RitualAudio.instance.startShred();
+        _shredSoundOn = true;
+      }
       _field.emitStrip(
         origin: _slot,
         width: _paperSize.width,
@@ -221,9 +226,11 @@ class _ShredderRitualScreenState extends State<ShredderRitualScreen>
     if (_feed >= _kFeedCommit) {
       _enterGrinding(); // 뗀 시점 커밋 임계 이상 → 분쇄 확정.
     } else {
-      // 끝까지 안 넣고 떼면 리셋(강요 없음) — 투입 중 시작된 갈림 햅틱도 정지.
+      // 끝까지 안 넣고 떼면 리셋(강요 없음) — 투입 중 시작된 갈림 햅틱·효과음 정지.
       _grindHandle?.stop();
       _grindHandle = null;
+      RitualAudio.instance.stopShred();
+      _shredSoundOn = false;
       setState(() {
         _phase = _Phase.idle;
         _feed = 0;
@@ -244,8 +251,11 @@ class _ShredderRitualScreenState extends State<ShredderRitualScreen>
     _feedAtGrindStart = _feed;
     // 투입 중 이미 켜졌으면 유지, 아니면(임계 즉시도달 등) 지금 시작.
     _grindHandle ??= Haptics.instance.startShredGrind();
-    // 효과음: 분쇄 동안 shred.mp3 루프(프로토타입 그대로, volume 0.55).
-    RitualAudio.instance.startShred();
+    // 효과음: 투입 단계서 이미 시작됐으면 유지, 아니면(임계 즉시도달) 지금 시작.
+    if (!_shredSoundOn) {
+      RitualAudio.instance.startShred();
+      _shredSoundOn = true;
+    }
     // 3초 자동 분쇄 시작.
     _grindCtrl.forward(from: 0);
     setState(() {});
@@ -263,6 +273,7 @@ class _ShredderRitualScreenState extends State<ShredderRitualScreen>
     _grindHandle = null;
     // 효과음: 분쇄 루프 정지(폭죽음 전에 먼저). firework.mp3는 _bigBurst마다 원샷.
     RitualAudio.instance.stopShred();
+    _shredSoundOn = false;
     // 폭죽 햅틱: 병렬로 추가되는 3초 진동 시퀀스를 1회 호출(기존 burstPop 대체).
     // 시각 폭죽 연쇄(~3초)와 길이를 맞춰 팡!…팡팡!! 진동이 함께 간다.
     Haptics.instance.fireworksFinale();

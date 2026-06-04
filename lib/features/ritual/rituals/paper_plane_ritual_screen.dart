@@ -340,8 +340,8 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     _flyAngle = atan2(_flyDir.dy, _flyDir.dx) + pi / 2;
     // 발사 임팩트 햅틱: 당긴 세기에 비례(impactBySpeed는 px/s 기대 → 세기 환산).
     Haptics.instance.impactBySpeed(600 + _flySpeed * 1900);
-    // 효과음: 발사 순간 — paper.mp3 원샷(날아가는 종이 바람소리).
-    RitualAudio.instance.paper();
+    // 효과음: 발사 순간 — whoosh.wav 원샷(바람 가로지르는 소리). 접기음(paper)과 구분.
+    RitualAudio.instance.whoosh();
     // 발사 직후: 비행 동안 내내 도는 '진공' 연속 햅틱 시작(완료에 stop).
     _flightHandle = Haptics.instance.startFlightHum();
     _drawOffset = Offset.zero; // 발사했으니 장전 위치 해제(비행 Transform이 인계).

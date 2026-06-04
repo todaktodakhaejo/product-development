@@ -34,3 +34,5 @@ flutter:
     - assets/audio/paper.mp3
     - assets/audio/jewel_intake.wav
     - assets/audio/jewel_keep.wav
+    # 종이비행기 발사 — 바람 가로지르는 whoosh(합성 생성).
+    - assets/audio/whoosh.wav

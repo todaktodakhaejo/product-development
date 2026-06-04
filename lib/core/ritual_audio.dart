@@ -88,11 +88,18 @@ class RitualAudio {
       });
 
   // ── 날리기 ───────────────────────────────────────────────────────────────
-  /// 종이 효과음 — paper.mp3 원샷(volume 1.0). 접기 시작·발사 순간 호출.
+  /// 종이 접히는 소리 — paper.mp3 원샷(volume 1.0). 접기 시작 시 호출.
   Future<void> paper() => _safe(() async {
         await _shotA.stop();
         await _shotA.setReleaseMode(ReleaseMode.release);
         await _shotA.play(AssetSource('audio/paper.mp3'), volume: 1.0);
+      });
+
+  /// 발사 — whoosh.wav 원샷(바람 가로지르는 소리). 종이비행기를 놓아 날릴 때 호출.
+  Future<void> whoosh() => _safe(() async {
+        await _shotA.stop();
+        await _shotA.setReleaseMode(ReleaseMode.release);
+        await _shotA.play(AssetSource('audio/whoosh.wav'), volume: 0.9);
       });
 
   // ── 보석함 ───────────────────────────────────────────────────────────────
