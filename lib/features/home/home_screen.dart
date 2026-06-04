@@ -103,8 +103,6 @@ class _HomeScreenState extends State<HomeScreen>
   bool _interactionLoaded = false; // lifetime 로드 완료 여부
   int _interactionSavedAt = 0; // 마지막으로 디스크에 반영한 값
   Timer? _interactionSaveTimer; // 변경분 디바운스 저장(~3s 주기)
-  // 실시간 표시 스로틀: 마지막으로 setState한 시각. 100ms 이내 증가는 리빌드 생략.
-  DateTime _interactionShownAt = DateTime.fromMillisecondsSinceEpoch(0);
 
   // ── 의식 완료 감지(§6) — SessionScope listen만, P2/P3 무수정 ──────
   SessionState? _session; // didChangeDependencies에서 바인딩
@@ -147,12 +145,9 @@ class _HomeScreenState extends State<HomeScreen>
     super.initState();
     _ticker = createTicker(_onTick)..start();
     _listenSensors();
-    // 멘트 타이머 폐기(v2 §3): 멘트는 releaseCount 기반 고정. 진입 시 현재
-    // releaseCount를 읽어 멘트 인덱스와 untouched 카운트 표시에 함께 쓴다.
-    ReleaseCounter.read().then((value) {
-      if (!mounted) return;
-      setState(() => _releaseCount = value);
-    });
+    // 흘려보냄 횟수(releaseCount)는 세션 한정 — 앱을 나갔다 들어오면 0으로 리셋한다
+    // (영구 저장 안 함). 멘트는 releaseCount % 9로 세트가 넘어가므로, 재실행하면
+    // 첫 멘트부터 다시 시작한다. → ReleaseCounter.read() 호출 제거(0에서 시작).
     // 공 놀이 평생 누적(v2 §1-B): lifetime 로드 후 메모리에서 증가시킨다.
     ReleaseCounter.readInteraction().then((value) {
       if (!mounted) return;
@@ -193,11 +188,9 @@ class _HomeScreenState extends State<HomeScreen>
     // ritual==null. text까지 비고 직전에 의식을 골랐던 적이 있으면 완료.
     if (s.text.isEmpty && _ritualWasChosen) {
       _ritualWasChosen = false;
-      // 흘려보냄 +1(영구) 후 홈 UI 초기화. 멘트도 새 releaseCount % 9로 넘어감.
-      ReleaseCounter.increment().then((value) {
-        if (!mounted) return;
-        setState(() => _releaseCount = value);
-      });
+      // 흘려보냄 +1(세션 한정 in-memory, 영구 저장 안 함) 후 홈 UI 초기화.
+      // 멘트도 새 releaseCount % 9로 넘어간다. 앱 재실행 시 0으로 리셋된다.
+      setState(() => _releaseCount++);
       // 의식 완료 시점에 인터랙션 누적분도 디스크에 반영(디바운스 보강).
       _flushInteraction();
       _restoreHomeInitial();
@@ -219,12 +212,10 @@ class _HomeScreenState extends State<HomeScreen>
   void _bumpInteraction() {
     if (!_interactionLoaded) return; // lifetime 로드 전엔 집계 보류(덮어쓰기 방지)
     _interactionCount++;
-    // 실시간 표시 스로틀(~100ms): 빠르게 증가해도 리빌드는 100ms마다 1회.
-    // 단 untouched 상태면 카운트가 숨겨져 있어 굳이 리빌드하지 않는다.
+    // 즉시 반영(스로틀 없음 — 바로바로 숫자가 올라가야 한다). _bumpInteraction은
+    // 터치 다운·흔들기 임펄스 같은 '이벤트'마다만 불려 빈도가 높지 않으므로 매번
+    // setState해도 부담이 적다. untouched(숨김) 상태면 굳이 리빌드하지 않는다.
     if (!_touched) return;
-    final now = DateTime.now();
-    if (now.difference(_interactionShownAt).inMilliseconds < 100) return;
-    _interactionShownAt = now;
     if (mounted) setState(() {});
   }
 
