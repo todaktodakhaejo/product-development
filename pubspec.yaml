@@ -36,3 +36,5 @@ flutter:
     - assets/audio/jewel_keep.wav
     # 종이비행기 발사 — 바람 가로지르는 whoosh(합성 생성).
     - assets/audio/whoosh.wav
+    # 종이비행기 done — '하늘 두둥실' 포근한 앰비언트 루프(합성 생성).
+    - assets/audio/sky_float.wav

@@ -214,6 +214,8 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
 
   void _onFoldStatus(AnimationStatus s) {
     if (s == AnimationStatus.completed && _phase == _Phase.folding) {
+      // 효과음: 접기 끝나면 종이 접힘음 정지 — 발사 전(당겼다 놓기까지)은 무음.
+      RitualAudio.instance.stopShot();
       setState(() => _phase = _Phase.folded);
     }
   }
@@ -365,6 +367,8 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     _skyDrift.repeat(reverse: true); // 아주 느린 상하 부유 + 구름 흐름 위상.
     // 하늘에 떠 있는 동안 '두둥실' 연속 진동(부유감). 처음으로/dispose에서 stop.
     _skyFloat = Haptics.instance.startSkyFloat(safety: const Duration(minutes: 10));
+    // 효과음: 하늘에 떠 있는 듯 잔잔·포근한 앰비언트 루프('처음으로'까지 지속).
+    RitualAudio.instance.startSky();
 
     Future.delayed(_kMessageDelay, () {
       if (!mounted) return;
@@ -383,6 +387,8 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     // 하늘에 떠 있는 동안 돌던 '두둥실' 진동 종료(누수/잔향 방지, stop은 idempotent).
     _skyFloat?.stop();
     _skyFloat = null;
+    // 효과음: 하늘 앰비언트도 함께 종료.
+    RitualAudio.instance.stopSky();
     SessionScope.of(context).reset();
     Navigator.of(context).popUntil((r) => r.isFirst);
   }

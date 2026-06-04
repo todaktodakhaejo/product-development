@@ -20,6 +20,8 @@ class RitualAudio {
   final AudioPlayer _loop = AudioPlayer(playerId: 'ritual_loop');
   final AudioPlayer _shotA = AudioPlayer(playerId: 'ritual_shot_a');
   final AudioPlayer _shotB = AudioPlayer(playerId: 'ritual_shot_b');
+  // 앰비언트 전용 채널(하늘 두둥실 — 루프 채널과 독립).
+  final AudioPlayer _ambient = AudioPlayer(playerId: 'ritual_ambient');
 
   bool _booted = false;
 
@@ -102,6 +104,20 @@ class RitualAudio {
         await _shotA.play(AssetSource('audio/whoosh.wav'), volume: 0.9);
       });
 
+  /// 일회성 채널(접기·발사음) 즉시 정지. 접기 완료~발사 전 무음 구간 보장에 사용.
+  Future<void> stopShot() => _safe(() => _shotA.stop());
+
+  /// '하늘 두둥실' 포근한 앰비언트 루프 시작(volume 0.5). done 하늘 씬 진입 시 호출.
+  Future<void> startSky() => _safe(() async {
+        await _ambient.stop();
+        await _ambient.setReleaseMode(ReleaseMode.loop);
+        await _ambient.setVolume(0.5);
+        await _ambient.play(AssetSource('audio/sky_float.wav'), volume: 0.5);
+      });
+
+  /// 하늘 앰비언트 정지('처음으로' 탭 등).
+  Future<void> stopSky() => _safe(() => _ambient.stop());
+
   // ── 보석함 ───────────────────────────────────────────────────────────────
   /// 투입 차임 — jewel_intake.wav 원샷(사인 760+1140Hz 2음).
   Future<void> jewelIntake() => _safe(() async {
@@ -122,5 +138,6 @@ class RitualAudio {
         await _loop.stop();
         await _shotA.stop();
         await _shotB.stop();
+        await _ambient.stop();
       });
 }
