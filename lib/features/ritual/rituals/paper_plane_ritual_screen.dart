@@ -344,6 +344,11 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     Haptics.instance.impactBySpeed(600 + _flySpeed * 1900);
     // 효과음: 발사 순간 — whoosh.wav 원샷(바람 가로지르는 소리). 접기음(paper)과 구분.
     RitualAudio.instance.whoosh();
+    // whoosh가 끝나는 즈음(~1.3s) 구름 두둥실 앰비언트를 그라데이션(페이드인)으로 이어줌.
+    Future.delayed(const Duration(milliseconds: 1300), () {
+      if (!mounted) return;
+      RitualAudio.instance.startSky();
+    });
     // 발사 직후: 비행 동안 내내 도는 '진공' 연속 햅틱 시작(완료에 stop).
     _flightHandle = Haptics.instance.startFlightHum();
     _drawOffset = Offset.zero; // 발사했으니 장전 위치 해제(비행 Transform이 인계).
@@ -367,8 +372,8 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     _skyDrift.repeat(reverse: true); // 아주 느린 상하 부유 + 구름 흐름 위상.
     // 하늘에 떠 있는 동안 '두둥실' 연속 진동(부유감). 처음으로/dispose에서 stop.
     _skyFloat = Haptics.instance.startSkyFloat(safety: const Duration(minutes: 10));
-    // 효과음: 하늘에 떠 있는 듯 잔잔·포근한 앰비언트 루프('처음으로'까지 지속).
-    RitualAudio.instance.startSky();
+    // (효과음 앰비언트는 발사 직후 whoosh 끝나는 즈음 이미 페이드인으로 시작됨 —
+    //  여기선 재시작하지 않아 끊김 없이 그대로 이어진다.)
 
     Future.delayed(_kMessageDelay, () {
       if (!mounted) return;

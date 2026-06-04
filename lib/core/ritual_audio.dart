@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart' as ja;
@@ -33,6 +35,9 @@ class RitualAudio {
   final AudioPlayer _emberLoop = AudioPlayer(playerId: 'ritual_ember');
   // 폭죽 원샷 2보이스 라운드로빈(빠른 연속 팡팡이 서로 끊지 않도록).
   bool _fwToggle = false;
+  // 하늘 앰비언트 페이드인(그라데이션) 타이머 + 목표 볼륨.
+  static const double _kSkyVolume = 0.5;
+  Timer? _skyFade;
 
   bool _booted = false;
 
@@ -81,21 +86,6 @@ class RitualAudio {
         await _gapless.pause();
         await _gapless.seek(Duration.zero);
         await _gapless.stop();
-      });
-
-  /// 끊김 없는 무한 루프(just_audio LoopingAudioSource로 갱리스 보장).
-  Future<void> _startGapless(String assetPath, double volume) => _safe(() async {
-        await _gapless.stop();
-        await _gapless.setVolume(volume);
-        // count는 '시퀀스 길이'라 너무 크면(예: 1<<20) 시퀀스 생성이 메인 스레드를
-        // 멈춰 화면이 프리징된다. 세션 한 번에 충분한 길이(4~8s × 1000 ≈ 1~2시간).
-        await _gapless.setAudioSource(
-          ja.LoopingAudioSource(
-            count: 1000,
-            child: ja.AudioSource.asset(assetPath),
-          ),
-        );
-        await _gapless.play();
       });
 
   // ── 태우기 ───────────────────────────────────────────────────────────────
@@ -162,11 +152,39 @@ class RitualAudio {
   /// 일회성 채널(접기·발사음) 즉시 정지. 접기 완료~발사 전 무음 구간 보장에 사용.
   Future<void> stopShot() => _safe(() => _shotA.stop());
 
-  /// '하늘 두둥실' 포근한 앰비언트 갱리스 루프(volume 0.5). done 하늘 씬 진입 시 호출.
-  Future<void> startSky() => _startGapless('assets/audio/sky_float.wav', 0.5);
+  /// '하늘 두둥실' 포근한 앰비언트 갱리스 루프. 비행음(whoosh)이 끝나는 즈음 호출하면
+  /// 볼륨 0→0.5 그라데이션(페이드인)으로 자연스럽게 이어진다.
+  Future<void> startSky({
+    Duration fadeIn = const Duration(milliseconds: 1400),
+  }) =>
+      _safe(() async {
+        _skyFade?.cancel();
+        await _gapless.stop();
+        await _gapless.setVolume(0);
+        await _gapless.setAudioSource(
+          ja.LoopingAudioSource(
+            count: 1000, // 시퀀스 길이(세션당 충분). 과대값은 시퀀스 생성 프리징 유발.
+            child: ja.AudioSource.asset('assets/audio/sky_float.wav'),
+          ),
+        );
+        await _gapless.play();
+        // 볼륨 0 → _kSkyVolume 그라데이션(40ms 스텝).
+        const stepMs = 40;
+        final steps = (fadeIn.inMilliseconds / stepMs).ceil().clamp(1, 1000);
+        var i = 0;
+        _skyFade = Timer.periodic(const Duration(milliseconds: stepMs), (t) {
+          i++;
+          final v = _kSkyVolume * i / steps;
+          _gapless.setVolume(v < _kSkyVolume ? v : _kSkyVolume);
+          if (i >= steps) t.cancel();
+        });
+      });
 
-  /// 하늘 앰비언트 정지('처음으로' 탭 등).
-  Future<void> stopSky() => _safe(() => _gapless.stop());
+  /// 하늘 앰비언트 정지('처음으로' 탭 등) — 페이드 타이머도 취소.
+  Future<void> stopSky() => _safe(() async {
+        _skyFade?.cancel();
+        await _gapless.stop();
+      });
 
   // ── 보석함 ───────────────────────────────────────────────────────────────
   /// 투입 차임 — jewel_intake.wav 원샷(사인 760+1140Hz 2음).
@@ -185,6 +203,7 @@ class RitualAudio {
 
   /// 화면 dispose 시 호출 — 잔여 루프/원샷/앰비언트 모두 정지(다음 의식으로 안 샘).
   Future<void> stopAll() => _safe(() async {
+        _skyFade?.cancel();
         await _loop.stop();
         await _shotA.stop();
         await _shotB.stop();
