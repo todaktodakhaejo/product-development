@@ -26,8 +26,11 @@ class RitualAudio {
   final AudioPlayer _loop = AudioPlayer(playerId: 'ritual_loop');
   final AudioPlayer _shotA = AudioPlayer(playerId: 'ritual_shot_a');
   final AudioPlayer _shotB = AudioPlayer(playerId: 'ritual_shot_b');
-  // 끊김 없는 루프 전용(하늘 앰비언트·잔불 타닥 — audioplayers는 iOS 루프 갭 발생).
+  // 끊김 없는 루프 전용(하늘 앰비언트 — audioplayers는 iOS 루프 갭 발생).
   final ja.AudioPlayer _gapless = ja.AudioPlayer();
+  // 잔불 타닥타닥(audioplayers 루프 — crackle은 경계가 조용해 갭이 안 들림).
+  // 태우기 경로가 just_audio를 건드리지 않게 해, 완료 시점 첫 init 멈칫을 회피.
+  final AudioPlayer _emberLoop = AudioPlayer(playerId: 'ritual_ember');
   // 폭죽 원샷 2보이스 라운드로빈(빠른 연속 팡팡이 서로 끊지 않도록).
   bool _fwToggle = false;
 
@@ -66,6 +69,20 @@ class RitualAudio {
     }
   }
 
+  /// just_audio(하늘 앰비언트) 첫 초기화(디코드·세션 활성) 비용을 앱 시작 시 미리
+  /// 치른다 — 의식 도중 앰비언트가 처음 시작될 때 시뮬레이터에서 프레임이 멈칫
+  /// (터치해야 진행)하는 것을 방지. best-effort.
+  Future<void> warmUp() => _safe(() async {
+        await _gapless.setVolume(0);
+        await _gapless.setAudioSource(
+          ja.AudioSource.asset('assets/audio/sky_float.wav'),
+        );
+        await _gapless.play();
+        await _gapless.pause();
+        await _gapless.seek(Duration.zero);
+        await _gapless.stop();
+      });
+
   /// 끊김 없는 무한 루프(just_audio LoopingAudioSource로 갱리스 보장).
   Future<void> _startGapless(String assetPath, double volume) => _safe(() async {
         await _gapless.stop();
@@ -93,13 +110,17 @@ class RitualAudio {
   /// 연소 종료(전소) — fire 루프 정지.
   Future<void> stopFire() => _safe(() => _loop.stop());
 
-  /// 전소 후 잔불 타닥타닥 여운 — crackle.wav 갱리스 루프(volume 0.7).
+  /// 전소 후 잔불 타닥타닥 여운 — crackle.wav 루프(volume 0.7, audioplayers).
   /// '처음으로' 탭/dispose까지 은은히 남는다.
-  Future<void> startEmberCrackle() =>
-      _startGapless('assets/audio/crackle.wav', 0.7);
+  Future<void> startEmberCrackle() => _safe(() async {
+        await _emberLoop.stop();
+        await _emberLoop.setReleaseMode(ReleaseMode.loop);
+        await _emberLoop.setVolume(0.7);
+        await _emberLoop.play(AssetSource('audio/crackle.wav'), volume: 0.7);
+      });
 
   /// 잔불 여운 정지.
-  Future<void> stopEmberCrackle() => _safe(() => _gapless.stop());
+  Future<void> stopEmberCrackle() => _safe(() => _emberLoop.stop());
 
   // ── 파쇄기 ───────────────────────────────────────────────────────────────
   /// 분쇄 시작 — shred.mp3 루프(volume 1.0, 강하게). 종이 투입 순간 호출.
@@ -167,6 +188,7 @@ class RitualAudio {
         await _loop.stop();
         await _shotA.stop();
         await _shotB.stop();
+        await _emberLoop.stop();
         await _gapless.stop();
       });
 }
