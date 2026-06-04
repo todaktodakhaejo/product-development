@@ -202,7 +202,7 @@ class RitualAudio {
 
   void _crossfadeSky(AudioPlayer out, AudioPlayer inn) {
     _skyXfade?.cancel();
-    const stepMs = 50; // 드물게(클립당 1회) + 적은 스텝 → 잰크 위험 최소.
+    const stepMs = 80; // 드물게(클립당 1회) + 낮은 호출빈도 → 잰크 위험 최소.
     final steps = (_kSkyOverlap.inMilliseconds / stepMs).round();
     var i = 0;
     _skyXfade = Timer.periodic(const Duration(milliseconds: stepMs), (t) {
@@ -222,7 +222,7 @@ class RitualAudio {
   void _ramp(Timer? slot, AudioPlayer p, double from, double to,
       Duration dur, void Function(Timer?) store) {
     slot?.cancel();
-    const stepMs = 50;
+    const stepMs = 80; // 페이드 볼륨 램프는 낮은 빈도로도 매끄럽다(잰크 최소).
     final steps = (dur.inMilliseconds / stepMs).round().clamp(1, 1000);
     var i = 0;
     final t = Timer.periodic(const Duration(milliseconds: stepMs), (timer) {
