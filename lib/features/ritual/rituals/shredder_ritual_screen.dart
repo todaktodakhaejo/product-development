@@ -350,6 +350,8 @@ class _ShredderRitualScreenState extends State<ShredderRitualScreen>
   // 작은 폭죽 1발: 슬롯 주변에서 살짝 흩어진 위치에 팡! (결정적 시드).
   // 큰 폭죽보다 적은 입자·느린 속도로 '잔폭죽' 느낌. 위치 jitter로 매번 다른 곳.
   void _smallBurst() {
+    // 효과음: 작은 폭죽도 터지는 타이밍에 맞춰 firework 원샷(팡팡팡 리듬).
+    RitualAudio.instance.firework();
     final jx = (_burstRng.nextDouble() - 0.5) * 160;
     final jy = (_burstRng.nextDouble() - 0.5) * 120 - 30; // 살짝 위쪽 편향
     final origin = _slot + Offset(jx, jy);

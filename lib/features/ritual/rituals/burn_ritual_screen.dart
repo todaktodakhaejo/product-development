@@ -358,8 +358,9 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
     // 발사한다(아래 _kMessageDelay 콜백). 여기선 stop만.
     _blazeHandle?.stop();
     _blazeHandle = null;
-    // 효과음: 전소와 함께 fire 루프 정지.
+    // 효과음: 전소와 함께 fire 루프 정지 → 잔불 타닥타닥 여운 루프로 전환.
     RitualAudio.instance.stopFire();
+    RitualAudio.instance.startEmberCrackle();
 
     // 전소 지점에서 위로 솟는 큰 ember 버스트(레퍼런스 complete 30개) + 흰재 whoosh.
     if (_paperRect != Rect.zero) {
@@ -431,6 +432,8 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
 
   // ── '처음으로': 세션 리셋 + 홈 복귀(기존 _backToHome 동작과 동일) ──
   void _backToHome() {
+    // 잔불 타닥타닥 여운 정지(누수 방지).
+    RitualAudio.instance.stopEmberCrackle();
     SessionScope.of(context).reset();
     Navigator.of(context).popUntil((r) => r.isFirst);
   }
