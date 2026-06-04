@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
 
 import '../../../core/haptics.dart';
+import '../../../core/ritual_audio.dart';
 import '../../../core/strings.dart';
 import '../../../state/session.dart';
 import '../../../theme/app_theme.dart';
@@ -243,6 +244,8 @@ class _ShredderRitualScreenState extends State<ShredderRitualScreen>
     _feedAtGrindStart = _feed;
     // 투입 중 이미 켜졌으면 유지, 아니면(임계 즉시도달 등) 지금 시작.
     _grindHandle ??= Haptics.instance.startShredGrind();
+    // 효과음: 분쇄 동안 shred.mp3 루프(프로토타입 그대로, volume 0.55).
+    RitualAudio.instance.startShred();
     // 3초 자동 분쇄 시작.
     _grindCtrl.forward(from: 0);
     setState(() {});
@@ -258,6 +261,8 @@ class _ShredderRitualScreenState extends State<ShredderRitualScreen>
     // §6.2 계약: grind 정지를 폭죽 햅틱보다 '반드시 먼저'(겹쳐 뭉개짐 방지).
     _grindHandle?.stop();
     _grindHandle = null;
+    // 효과음: 분쇄 루프 정지(폭죽음 전에 먼저). firework.mp3는 _bigBurst마다 원샷.
+    RitualAudio.instance.stopShred();
     // 폭죽 햅틱: 병렬로 추가되는 3초 진동 시퀀스를 1회 호출(기존 burstPop 대체).
     // 시각 폭죽 연쇄(~3초)와 길이를 맞춰 팡!…팡팡!! 진동이 함께 간다.
     Haptics.instance.fireworksFinale();
@@ -304,6 +309,8 @@ class _ShredderRitualScreenState extends State<ShredderRitualScreen>
 
   // 큰 폭죽 1발: 다색 120 + 삼각 confetti 40 + 반짝이 잔입자(+170ms).
   void _bigBurst() {
+    // 효과음: 큰 폭죽마다 firework.mp3 원샷(팡 … 팡 … 팡, volume 0.55).
+    RitualAudio.instance.firework();
     _field.emitBurst(
       origin: _slot,
       count: 120,
@@ -368,6 +375,7 @@ class _ShredderRitualScreenState extends State<ShredderRitualScreen>
   void dispose() {
     // 누수 0: 진동·타이머·컨트롤러·ticker 모두 정리.
     _grindHandle?.stop();
+    RitualAudio.instance.stopAll();
     _grindCtrl.dispose();
     _ticker.dispose();
     _repaint.dispose();
