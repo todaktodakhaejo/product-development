@@ -17,8 +17,6 @@ dependencies:
   shared_preferences: ^2.3.2
   # 해소 의식 효과음(태우기·파쇄기·날리기·보석함) 재생
   audioplayers: ^6.1.0
-  # 하늘 앰비언트 등 '끊김 없는' 루프 전용(audioplayers는 iOS 루프 갭 발생)
-  just_audio: ^0.9.42
 
 dev_dependencies:
   flutter_lints: ^4.0.0
