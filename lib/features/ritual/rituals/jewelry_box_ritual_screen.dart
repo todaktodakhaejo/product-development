@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
 
 import '../../../core/haptics.dart';
+import '../../../core/ritual_audio.dart';
 import '../../../core/strings.dart';
 import '../../../state/session.dart';
 import '../../../theme/app_theme.dart';
@@ -191,6 +192,8 @@ class _JewelryBoxRitualScreenState extends State<JewelryBoxRitualScreen>
     });
     // 안치 순간: 부드러운 안착 + 함 입구 금빛 반짝이.
     Haptics.instance.fire(HapticLevel.light, throttle: false);
+    // 효과음: 투입 차임(사인 760+1140Hz, 프로토타입 oT 그대로).
+    RitualAudio.instance.jewelIntake();
     _field.emitSparkle(origin: _boxCenter, count: 18, radius: 60);
     // 종이가 함 속으로 가라앉는 짧은 텀 뒤에 뚜껑이 앞으로 회전해 닫힌다.
     await Future.delayed(const Duration(milliseconds: 180));
@@ -211,6 +214,8 @@ class _JewelryBoxRitualScreenState extends State<JewelryBoxRitualScreen>
     setState(() => _phase = _Phase.rising);
     // 후광이 닫힘 직후 부드럽게 등장(이후 매 프레임 sin 펄스로 번쩍번쩍).
     _halo.forward(from: 0);
+    // 효과음: 간직 반짝임(트라이앵글 8음 상승, 프로토타입 sT 그대로).
+    RitualAudio.instance.jewelKeep();
     // 후광이 번쩍이는 동안 심장박동 햅틱이 연속으로 돈다(따뜻·부드럽게 폰 전반).
     // '처음으로'를 누를 때까지(=화면 떠날 때까지) 계속 — _backToHome·dispose에서 stop.
     // 안전장치를 길게(10분) 줘서 멘트·버튼 표시 동안에도 끊기지 않게.
@@ -255,6 +260,7 @@ class _JewelryBoxRitualScreenState extends State<JewelryBoxRitualScreen>
     // 누수 0: 심장박동 햅틱·ticker·컨트롤러·notifier 모두 정리.
     _heartbeat?.stop();
     _heartbeat = null;
+    RitualAudio.instance.stopAll();
     _ticker.dispose();
     _repaint.dispose();
     _lid.dispose();

@@ -15,6 +15,8 @@ dependencies:
   cupertino_icons: ^1.0.8
   # 온보딩 완료 여부 등 작은 설정을 기기에 영구 저장 (영구화 레이어)
   shared_preferences: ^2.3.2
+  # 해소 의식 효과음(태우기·파쇄기·날리기·보석함) 재생
+  audioplayers: ^6.1.0
 
 dev_dependencies:
   flutter_lints: ^4.0.0
@@ -23,3 +25,18 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    # 해소 의식 효과음 — 프로토타입(prototype-eight-bice.vercel.app) 원본 그대로.
+    # fire/shred/firework/paper: 원본 mp3. jewel_*: 원본 Web Audio 합성음 오프라인 렌더(wav).
+    - assets/audio/fire.mp3
+    - assets/audio/shred.mp3
+    - assets/audio/firework.mp3
+    - assets/audio/paper.mp3
+    - assets/audio/jewel_intake.wav
+    - assets/audio/jewel_keep.wav
+    # 종이비행기 발사 — 바람 가로지르는 whoosh(합성 생성).
+    - assets/audio/whoosh.wav
+    # 종이비행기 done — '하늘 두둥실' 포근한 앰비언트 루프(합성 생성).
+    - assets/audio/sky_float.wav
+    # 태우기 전소 후 — 잔불 타닥타닥 여운 루프(합성 생성).
+    - assets/audio/crackle.wav

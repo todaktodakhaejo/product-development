@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 
 import '../../../core/haptics.dart';
+import '../../../core/ritual_audio.dart';
 import '../../../core/strings.dart';
 import '../../../state/session.dart';
 import '../../../theme/app_theme.dart';
@@ -213,6 +214,8 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
 
   void _onFoldStatus(AnimationStatus s) {
     if (s == AnimationStatus.completed && _phase == _Phase.folding) {
+      // 효과음: 접기 끝나면 종이 접힘음 정지 — 발사 전(당겼다 놓기까지)은 무음.
+      RitualAudio.instance.stopShot();
       setState(() => _phase = _Phase.folded);
     }
   }
@@ -227,6 +230,8 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
   void _startFold() {
     if (_phase != _Phase.idle) return;
     _firedCrease.clear();
+    // 효과음: 접기 시작 — paper.mp3 원샷(프로토타입 eT 그대로, volume 1.0).
+    RitualAudio.instance.paper();
     setState(() => _phase = _Phase.folding); // float:false 전환(접기와 충돌 방지).
     _fold.forward(from: 0);
   }
@@ -337,6 +342,13 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     _flyAngle = atan2(_flyDir.dy, _flyDir.dx) + pi / 2;
     // 발사 임팩트 햅틱: 당긴 세기에 비례(impactBySpeed는 px/s 기대 → 세기 환산).
     Haptics.instance.impactBySpeed(600 + _flySpeed * 1900);
+    // 효과음: 발사 순간 — whoosh.wav 원샷(바람 가로지르는 소리). 접기음(paper)과 구분.
+    RitualAudio.instance.whoosh();
+    // whoosh가 끝나는 즈음(~1.3s) 구름 두둥실 앰비언트를 그라데이션(페이드인)으로 이어줌.
+    Future.delayed(const Duration(milliseconds: 1300), () {
+      if (!mounted) return;
+      RitualAudio.instance.startSky();
+    });
     // 발사 직후: 비행 동안 내내 도는 '진공' 연속 햅틱 시작(완료에 stop).
     _flightHandle = Haptics.instance.startFlightHum();
     _drawOffset = Offset.zero; // 발사했으니 장전 위치 해제(비행 Transform이 인계).
@@ -360,6 +372,8 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     _skyDrift.repeat(reverse: true); // 아주 느린 상하 부유 + 구름 흐름 위상.
     // 하늘에 떠 있는 동안 '두둥실' 연속 진동(부유감). 처음으로/dispose에서 stop.
     _skyFloat = Haptics.instance.startSkyFloat(safety: const Duration(minutes: 10));
+    // (효과음 앰비언트는 발사 직후 whoosh 끝나는 즈음 이미 페이드인으로 시작됨 —
+    //  여기선 재시작하지 않아 끊김 없이 그대로 이어진다.)
 
     Future.delayed(_kMessageDelay, () {
       if (!mounted) return;
@@ -378,6 +392,8 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     // 하늘에 떠 있는 동안 돌던 '두둥실' 진동 종료(누수/잔향 방지, stop은 idempotent).
     _skyFloat?.stop();
     _skyFloat = null;
+    // 효과음: 하늘 앰비언트도 함께 종료.
+    RitualAudio.instance.stopSky();
     SessionScope.of(context).reset();
     Navigator.of(context).popUntil((r) => r.isFirst);
   }
@@ -390,6 +406,7 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     // done 하늘 씬 진입 후 이탈 시 '두둥실' 연속 햅틱 누수 방지.
     _skyFloat?.stop();
     _skyFloat = null;
+    RitualAudio.instance.stopAll();
     _fold
       ..removeListener(_onFoldTick)
       ..removeStatusListener(_onFoldStatus)
