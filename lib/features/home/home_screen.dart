@@ -4,7 +4,6 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:sensors_plus/sensors_plus.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/haptics.dart';
 import '../../state/session.dart';
@@ -94,9 +93,6 @@ class _HomeScreenState extends State<HomeScreen>
   bool _touched = false;
   // 화면에 표시할 누적 흘려보냄 횟수(의식 완료 횟수, 세션 한정). 멘트 인덱스 구동.
   int _releaseCount = 0;
-  // 매일 첫 접속(오늘 첫 실행) 여부. true면 첫 멘트의 둘째(작은) 줄을
-  // '오늘, 처음 흘려보낼까요'로 대체한다. 날짜 하나만 영구 저장해 판정한다.
-  bool _showDailyGreeting = false;
 
   // ── 공 놀이(인터랙션) 카운트 ──────────────────────────────────
   // 공을 튕기고·흔들고·굴리고·만지고·누른 횟수. **세션 한정** — 영구 저장하지
@@ -157,25 +153,6 @@ class _HomeScreenState extends State<HomeScreen>
     // 앱을 나갔다 들어오면 0으로 리셋한다(영구 저장 안 함). 둘 다 0에서 시작하고
     // 저장소 로드(비동기)가 없으므로, 첫 제스처부터 카운트가 지연 없이 즉시 반영된다.
     // 멘트는 releaseCount % 9로 세트가 넘어가므로, 재실행하면 첫 멘트부터 다시 시작한다.
-    _checkDailyFirst();
-  }
-
-  /// 매일 첫 접속(오늘 첫 실행) 판정. 저장된 마지막 날짜와 오늘이 다르면 '오늘 처음'
-  /// 으로 보고 [_showDailyGreeting]을 켠다(첫 멘트 둘째 줄 → '오늘, 처음 흘려보낼까요').
-  /// 같은 날 두 번째 실행부터는 일반 멘트 둘째 줄. 날짜 문자열 1개만 영구 저장한다
-  /// (카운트들은 세션 한정 유지). 저장소 접근 실패 시 일반 멘트로 폴백.
-  Future<void> _checkDailyFirst() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final now = DateTime.now();
-      final today = '${now.year}-${now.month}-${now.day}';
-      if (prefs.getString('last_greet_date') != today) {
-        await prefs.setString('last_greet_date', today);
-        if (mounted) setState(() => _showDailyGreeting = true);
-      }
-    } catch (_) {
-      // 저장소 접근 실패 시 그냥 일반 멘트로(폴백).
-    }
   }
 
   @override
@@ -575,22 +552,16 @@ class _HomeScreenState extends State<HomeScreen>
               // 멘트는 화면 상단부(공보다 한참 위)에 둔다(프로토타입 레이아웃).
               double msgBoxTop = rect.height * 0.12;
               if (msgBoxTop < _kMsgBoxMinTop) msgBoxTop = _kMsgBoxMinTop;
-              // 현재 멘트를 두 줄로 분리 — 첫 줄은 크게, 둘째 줄은 작게(차별화).
+              // 멘트를 두 줄로 분리 — 첫 줄 크게, 둘째 줄 작게(둘째 줄은 항상 멘트).
               final int msgIdx = _releaseCount % homeMessages.length;
               final List<String> msgParts = homeMessages[msgIdx].split('\n');
               final String msgLine1 = msgParts.isNotEmpty ? msgParts[0] : '';
               final String msgLine2 = msgParts.length > 1 ? msgParts[1] : '';
-              // 둘째(작은) 줄: 한 번이라도 흘려보냈으면 'N번째 흘려보냄', 오늘 첫
-              // 접속이면 '오늘, 처음 흘려보낼까요', 그 외(같은 날 재실행·아직 안
-              // 흘려보냄)엔 멘트 원래 둘째 줄.
-              final String secondLine;
-              if (_releaseCount > 0) {
-                secondLine = '$_releaseCount번째 흘려보냄';
-              } else if (_showDailyGreeting) {
-                secondLine = '오늘, 처음 흘려보낼까요';
-              } else {
-                secondLine = msgLine2;
-              }
+              // 3번째 줄(작게·은은히)에 표시할 흘려보냄 카운트. 아직 안 했으면
+              // '오늘, 처음 흘려보낼까요'(=오늘 처음 켠 상태).
+              final String countLine = _releaseCount > 0
+                  ? '$_releaseCount번째 흘려보냄'
+                  : '오늘, 처음 흘려보낼까요';
               return Stack(
                 children: [
                   // 공 + 물결 캔버스 + 포인터
@@ -679,7 +650,7 @@ class _HomeScreenState extends State<HomeScreen>
                                   constraints:
                                       const BoxConstraints(maxWidth: 300),
                                   child: Text(
-                                    secondLine,
+                                    msgLine2,
                                     textAlign: TextAlign.center,
                                     style: TextStyle(
                                       fontSize: 14,
@@ -705,6 +676,22 @@ class _HomeScreenState extends State<HomeScreen>
                                 ),
                               ),
                             ],
+                          ),
+                          const SizedBox(height: 8),
+                          // 3번째 줄(작게·은은히): 흘려보냄 카운트. 첫 터치 시 fade-out.
+                          AnimatedOpacity(
+                            opacity: _touched ? 0 : 1,
+                            duration: const Duration(milliseconds: 600),
+                            curve: Curves.easeOut,
+                            child: Text(
+                              countLine,
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: countColor,
+                                letterSpacing: 0.4,
+                              ),
+                            ),
                           ),
                         ],
                       ),

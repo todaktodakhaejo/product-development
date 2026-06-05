@@ -121,11 +121,14 @@ class EmotionBallPainter extends CustomPainter {
     // ── 쓰다듬기 글로우(본체 뒤 폭신한 발광) ──
     final e = strokeEnergy.clamp(0.0, 1.0);
     if (e > 0.01) {
+      // 사용자 피드백: '빛나는 게 잘 티가 안 남' → 밝은 핑크로 lerp해 파스텔 배경
+      // 위에서도 luminous하게, 알파·반경·blur를 키워 또렷한 발광으로(여전히 폭신).
+      final glowColor = Color.lerp(AppColors.jellyDeep, Colors.white, 0.35)!;
       final stroke = Paint()
-        ..color = AppColors.jellyDeep
-            .withValues(alpha: ((0.26 + 0.26 * e) * e).clamp(0.0, 0.55))
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, 24 + 18 * e);
-      canvas.drawCircle(Offset.zero, radius * (1.20 + 0.28 * e), stroke);
+        ..color =
+            glowColor.withValues(alpha: ((0.34 + 0.34 * e) * e).clamp(0.0, 0.72))
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, 26 + 22 * e);
+      canvas.drawCircle(Offset.zero, radius * (1.24 + 0.36 * e), stroke);
     }
 
     // ── 외곽 drop 글로우 rgba(231,155,176,0.45) ──
@@ -226,9 +229,9 @@ class EmotionBallPainter extends CustomPainter {
     if (sa > 0.01) {
       final bloom = Paint()
         ..color =
-            Colors.white.withValues(alpha: (0.10 + 0.18 * sa).clamp(0.0, 0.30))
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, 12 + 10 * sa);
-      canvas.drawCircle(ball.strokeContact, radius * (0.26 + 0.06 * sa), bloom);
+            Colors.white.withValues(alpha: (0.16 + 0.30 * sa).clamp(0.0, 0.50))
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, 14 + 14 * sa);
+      canvas.drawCircle(ball.strokeContact, radius * (0.30 + 0.10 * sa), bloom);
     }
 
     canvas.restore();
