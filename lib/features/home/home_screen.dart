@@ -114,6 +114,18 @@ class _HomeScreenState extends State<HomeScreen>
 
   static const double _slop = 14;
 
+  // ── 홈 레이아웃 상수(§C, 프로토타입 Home.tsx 기준) ──────────────
+  // 날짜는 상단 중앙(SafeArea 기준 top).
+  static const double _kDateTop = 32;
+  // 멘트 예약 박스 높이(멘트가 사라져도 공이 안 튀게 고정 예약).
+  static const double _kMsgBoxH = 92;
+  // 멘트 박스 하단과 공 상단 사이 여백(공 '바로 위' 느낌).
+  static const double _kMsgGap = 24;
+  // 작은 기기에서 박스 top이 음수가 될 때의 최소 상단 여백(날짜와 겹침 방지).
+  static const double _kMsgBoxMinTop = 68;
+  // 하단 힌트 위치(바로 글쓰기 버튼 위에 띄움).
+  static const double _kHintBottom = 88;
+
   // 흔들기(GST-01) 선형 가속도 임계(m/s², §1 강화). userAccelerometer는 중력이
   // 제거돼 정지 시 ≈0, 직선으로 흔들면 즉시 큰 값이 잡힌다. 임계를 낮춰(9) 쉽게
   // 발동하고, 상한을 26으로 당겨 강도가 빨리 포화된다.
@@ -537,21 +549,21 @@ class _HomeScreenState extends State<HomeScreen>
 
   @override
   Widget build(BuildContext context) {
-    // §2 소비: 홈만 motion의 SkyBackground로 감싼다(시간대 morph 배경).
-    // 현재 tone에 맞춰 텍스트/카운트 가독성 색을 결정한다(아직 ValueListenable
-    // 노출이 없으므로 계약대로 skyToneAt(now) 사용).
+    // §2/§B 소비: 홈만 motion의 SkyBackground로 감싼다(시간대 morph 배경).
+    // 글자색은 motion이 제공하는 계약 `skyTextColorAt(DateTime.now())`(현재 시각
+    // 보간된 --on-bg)로 결정한다. 기존 dark/light 분기는 이걸로 대체(가독성).
+    final Color onBg = skyTextColorAt(DateTime.now());
+    // 멘트: 가장 또렷하게(opacity 0.9 느낌).
+    final Color msgColor = onBg.withValues(alpha: 0.90);
+    // 날짜/힌트 등 보조: 살짝 투명.
+    final Color subColor = onBg.withValues(alpha: 0.72);
+    // 카운트는 더 저대비(공 경험 방해 금지, §4).
+    final Color countColor = onBg.withValues(alpha: 0.55);
+    // 도움말 시트는 기존 tone enum 계약을 그대로 쓴다(호환 유지).
     final SkyTone tone = skyToneAt(DateTime.now());
     final bool dark = tone == SkyTone.dark;
-    // 밝은 배경=어두운 글씨, 어두운 배경=밝은 글씨. 저대비로 은은하게.
-    final Color msgColor =
-        dark ? Colors.white.withValues(alpha: 0.82) : const Color(0xFF4A3B47);
-    final Color subColor =
-        dark ? Colors.white.withValues(alpha: 0.55) : const Color(0xFF6B5560);
-    // 카운트는 더 저대비(공 경험 방해 금지, §4).
-    final Color countColor =
-        dark ? Colors.white.withValues(alpha: 0.62) : const Color(0x995A4651);
-    final Color helpFg =
-        dark ? Colors.white.withValues(alpha: 0.85) : const Color(0xFF5A4651);
+    // 도움말 `?` 버튼 전경/배경.
+    final Color helpFg = onBg.withValues(alpha: 0.85);
     final Color helpBg = dark
         ? Colors.white.withValues(alpha: 0.14)
         : Colors.white.withValues(alpha: 0.55);
@@ -568,6 +580,15 @@ class _HomeScreenState extends State<HomeScreen>
               } else {
                 _ball!.resize(rect);
               }
+              // 멘트를 '공 바로 위 중앙'에 두기 위한 좌표 계산(§C-1).
+              // 공은 화면 중앙(rect.center)에 있고 반경은 _ball.radius. 멘트 박스는
+              // 사라져도 공이 안 튀게 고정 높이(_kMsgBoxH)로 예약하고, 그 박스의
+              // '하단'이 공 상단보다 _kMsgGap 위에 오도록 top을 역산한다.
+              final double ballCenterY = rect.center.dy;
+              final double ballRadius = _ball!.radius;
+              double msgBoxTop = ballCenterY - ballRadius - _kMsgGap - _kMsgBoxH;
+              // 화면이 짧아 음수가 되면(작은 기기) 상단 여백 최소 보장.
+              if (msgBoxTop < _kMsgBoxMinTop) msgBoxTop = _kMsgBoxMinTop;
               return Stack(
                 children: [
                   // 공 + 물결 캔버스 + 포인터
@@ -588,57 +609,83 @@ class _HomeScreenState extends State<HomeScreen>
                     ),
                   ),
 
-                  // 상단 중앙(§1): untouched는 멘트+날짜+releaseCount('N번째
-                  // 흘려보냄'), touched는 같은 자리에 interactionCount fade-in.
-                  // 같은 Stack 자리에서 AnimatedOpacity로 교차 fade. IgnorePointer로
-                  // 공 터치 방해 없음.
+                  // 날짜(§C-2): 상단 중앙, 작게·살짝 투명. 프로토타입처럼
+                  // 첫 터치 시 멘트와 함께 fade-out 한다(직전 '항상 표시'를 되돌림).
                   Positioned(
-                    top: 28,
+                    top: _kDateTop,
                     left: 0,
                     right: 0,
                     child: IgnorePointer(
-                      child: Column(
-                        children: [
-                          // 날짜·시간: 터치해도 사라지지 않고 항상 표시(유지).
-                          Text(
-                            _formatDateTime(_now),
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: subColor,
-                              letterSpacing: 0.3,
-                            ),
+                      child: AnimatedOpacity(
+                        opacity: _touched ? 0 : 1,
+                        duration: const Duration(milliseconds: 600),
+                        curve: Curves.easeOut,
+                        child: Text(
+                          _formatDateTime(_now),
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: subColor,
+                            letterSpacing: 0.3,
                           ),
-                          const SizedBox(height: 10),
-                          // 멘트/카운트 교차 영역: untouched=멘트+releaseCount,
-                          // touched=interaction 카운트(같은 자리 cross-fade).
-                          Stack(
-                            alignment: Alignment.topCenter,
-                            children: [
-                              AnimatedOpacity(
-                                opacity: _touched ? 0 : 1,
+                        ),
+                      ),
+                    ),
+                  ),
+
+                  // 멘트/카운트 영역(§C-1,3,4): 공 바로 위 중앙. 고정 높이(_kMsgBoxH)
+                  // 박스에 예약해 멘트가 사라져도 공이 안 튄다. untouched는 멘트+
+                  // releaseCount, touched는 같은 자리에 interactionCount fade-in.
+                  Positioned(
+                    top: msgBoxTop,
+                    left: 0,
+                    right: 0,
+                    child: IgnorePointer(
+                      child: SizedBox(
+                        height: _kMsgBoxH,
+                        child: Stack(
+                          alignment: Alignment.bottomCenter,
+                          children: [
+                            // untouched: 멘트 + releaseCount. 첫 터치 시 위로 살짝
+                            // 떠오르며(translate -6) opacity 0 fade-out.
+                            AnimatedOpacity(
+                              opacity: _touched ? 0 : 1,
+                              duration: const Duration(milliseconds: 600),
+                              curve: Curves.easeOut,
+                              child: AnimatedSlide(
+                                offset: _touched
+                                    ? const Offset(0, -0.06)
+                                    : Offset.zero,
                                 duration: const Duration(milliseconds: 600),
+                                curve: Curves.easeOut,
                                 child: Column(
+                                  mainAxisSize: MainAxisSize.min,
                                   children: [
                                     // 멘트: releaseCount % 9 고정(의식 완료 시에만 전환).
-                                    AnimatedSwitcher(
-                                      duration:
-                                          const Duration(milliseconds: 800),
-                                      child: Text(
-                                        homeMessages[
-                                            _releaseCount % homeMessages.length],
-                                        key: ValueKey(
-                                            _releaseCount % homeMessages.length),
-                                        textAlign: TextAlign.center,
-                                        style: TextStyle(
-                                          fontSize: 18,
-                                          color: msgColor,
-                                          height: 1.5,
+                                    // 2줄·중앙정렬·maxWidth 300.
+                                    ConstrainedBox(
+                                      constraints:
+                                          const BoxConstraints(maxWidth: 300),
+                                      child: AnimatedSwitcher(
+                                        duration:
+                                            const Duration(milliseconds: 800),
+                                        child: Text(
+                                          homeMessages[_releaseCount %
+                                              homeMessages.length],
+                                          key: ValueKey(_releaseCount %
+                                              homeMessages.length),
+                                          textAlign: TextAlign.center,
+                                          maxLines: 2,
+                                          style: TextStyle(
+                                            fontSize: 18,
+                                            color: msgColor,
+                                            height: 1.6,
+                                          ),
                                         ),
                                       ),
                                     ),
                                     const SizedBox(height: 8),
-                                    // 흘려보냄 누적 횟수(§1-A). 터치하면 사라짐.
+                                    // 흘려보냄 누적 횟수(§C-3). 멘트 근처 은은히.
                                     Text(
                                       _releaseCount > 0
                                           ? '$_releaseCount번째 흘려보냄'
@@ -653,11 +700,15 @@ class _HomeScreenState extends State<HomeScreen>
                                   ],
                                 ),
                               ),
-                              // touched: 공 놀이 횟수(§1-B)를 같은 자리에 fade-in.
-                              // "{N} interaction" 형식, 노는 동안 실시간 증가.
-                              AnimatedOpacity(
-                                opacity: _touched ? 1 : 0,
-                                duration: const Duration(milliseconds: 700),
+                            ),
+                            // touched: 공 놀이 횟수(§C-4)를 같은 자리(공 위 중앙)에
+                            // fade-in. "{N} interaction" 형식, 노는 동안 실시간 증가.
+                            AnimatedOpacity(
+                              opacity: _touched ? 1 : 0,
+                              duration: const Duration(milliseconds: 700),
+                              curve: Curves.easeOut,
+                              child: Padding(
+                                padding: const EdgeInsets.only(bottom: 2),
                                 child: Text(
                                   '$_interactionCount interaction',
                                   textAlign: TextAlign.center,
@@ -668,9 +719,34 @@ class _HomeScreenState extends State<HomeScreen>
                                   ),
                                 ),
                               ),
-                            ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+
+                  // 하단 힌트(§C-5): 터치 전 "감정말랑이를 마음껏 만져보세요"를
+                  // 은은하게(opacity≈0.6). 첫 터치 시 fade-out. '바로 글쓰기' 버튼·
+                  // 도움말 ? 버튼과 공존(아래 버튼 위에 띄운다).
+                  Positioned(
+                    bottom: _kHintBottom,
+                    left: 0,
+                    right: 0,
+                    child: IgnorePointer(
+                      child: AnimatedOpacity(
+                        opacity: _touched ? 0 : 0.6,
+                        duration: const Duration(milliseconds: 500),
+                        curve: Curves.easeOut,
+                        child: Text(
+                          '감정말랑이를 마음껏 만져보세요',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: onBg,
+                            letterSpacing: 0.2,
                           ),
-                        ],
+                        ),
                       ),
                     ),
                   ),

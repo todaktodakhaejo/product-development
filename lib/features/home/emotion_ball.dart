@@ -39,6 +39,19 @@ class EmotionBall {
   double _wobblePhase = 0;
   double wobbleAmp = 0;
 
+  // ── 슬라임 호흡·blob 모핑 위상(v11 §A-2,3) ──────────────────────
+  // update가 매 프레임 dt만큼 전진시키는 free-running 위상. painter가 읽어
+  // idle 호흡 출렁임(~2.5s, scaleX/scaleY 어긋남)과 유기적 blob 모핑(~6.5s)을
+  // 그린다. 물리(pos/vel)와 독립이라 공이 멈춰도 "미세하게 살아있게" 유지된다.
+  double _breathePhase = 0; // 호흡(2.5s 주기)
+  double _morphPhase = 0; // blob 모핑(6.5s 주기)
+
+  /// painter가 읽는 호흡 위상(라디안). 2.5s 주기 idle 출렁임용.
+  double get breathePhase => _breathePhase;
+
+  /// painter가 읽는 blob 모핑 위상(라디안). 6.5s 주기 외곽 일그러짐용.
+  double get morphPhase => _morphPhase;
+
   bool grabbed = false;
 
   // ── 쓰다듬기 위치 반응(GST-04, v8 §1-B) 상태 ──────────────────
@@ -47,12 +60,21 @@ class EmotionBall {
   // 공 자체는 전혀 움직이지 않으므로(완전 제자리) pos/vel과는 독립적인 표면 반응.
   Offset _strokeContact = Offset.zero; // 중심 기준 로컬좌표(radius*0.85로 clamp)
   double _strokeAmp = 0; // 0~1, stroke 중 상승·시간 감쇠
+  // v11 §A-5: 쓰다듬는 손가락의 "흐름 방향·세기"(액체가 쓸리는 stretch+skew용).
+  // stroke step(직전 프레임 이동)에서 부드럽게 따라가는 속도 벡터(px/frame 근사),
+  // stroke가 멈추면 시간 감쇠로 잦아든다. painter가 이 벡터로 표면을 흐르듯 변형.
+  Offset _strokeFlow = Offset.zero;
 
   /// painter가 읽는 쓰다듬기 접촉 위치(중심 기준 로컬좌표). 표면 광택 중심.
   Offset get strokeContact => _strokeContact;
 
   /// painter가 읽는 쓰다듬기 접촉 세기(0~1). 광택 알파/반경에 사용.
   double get strokeAmp => _strokeAmp;
+
+  /// painter가 읽는 쓰다듬기 흐름 벡터(손가락 속도 방향·세기, px 근사).
+  /// 표면 stretch+skew("액체가 쓸리는" 결)의 축·세기로 쓴다. stroke 중 상승,
+  /// 멈추면 감쇠해 0으로. 누르기 변형과 확실히 다른 결을 만든다(§A-5).
+  Offset get strokeFlow => _strokeFlow;
 
   /// 직전 프레임의 벽 충돌 세기(0~1). 0이면 충돌 없음. 읽고 나면 소비.
   double lastImpact = 0;
@@ -78,9 +100,11 @@ class EmotionBall {
   bool _tick85Armed = false;
   bool _tickPending = false;
 
-  // 침몰 0.45s(ease-out), 복원 0.5s elasticOut. (v3 §2)
+  // 침몰 0.45s(ease-out), 복원 0.62s 슬라임 오버슈트. (v3 §2 / v11 §A-4)
+  // v11: 떼는 순간 "쫀득 통통"을 위해 복원을 더 드라마틱하게(낮은 damping, 1~2회
+  // wobble) — _releaseDur를 0.5→0.62로 늘리고 _springBack 곡선을 별도로 사용.
   static const double _holdInDur = 0.45;
-  static const double _releaseDur = 0.5;
+  static const double _releaseDur = 0.62;
 
   static double _radiusFor(Rect b) => (b.shortestSide * 0.22).clamp(64.0, 150.0);
 
@@ -197,13 +221,18 @@ class EmotionBall {
     return x * _holdInDur;
   }
 
-  /// elasticOut 근사(Flutter Curves.elasticOut와 동형, period 0.4).
-  static double _elasticOut(double t) {
+  /// v11 §A-4: 누르기 해제 시 "쫀득 통통" 스프링 복원(낮은 damping 감쇠 진동).
+  /// 감쇠 정현파 0→1. 표준 elasticOut보다 **decay를 낮추고(2^-6.5t) 주기를 넓혀
+  /// (period 0.62)** 1~2회 또렷한 오버슈트 wobble을 남긴다 — 떼는 순간 본체가
+  /// 통통 튀며 평상으로 돌아오는 슬라임 느낌. _releaseDepth*(1-_springBack)로 써서
+  /// 현재 깊이에서부터 0으로 차오르며 통통댄다.
+  static double _springBack(double t) {
     if (t <= 0) return 0;
     if (t >= 1) return 1;
-    const period = 0.4;
+    const period = 0.62; // 넓은 주기 → wobble 적게(1~2회) 또렷하게
     const s = period / 4;
-    return pow(2, -10 * t).toDouble() *
+    // 2^-6.5t: elasticOut(2^-10t)보다 천천히 감쇠 → 낮은 damping(쫀득) 체감.
+    return pow(2, -6.5 * t).toDouble() *
             sin((t - s) * (2 * pi) / period) +
         1;
   }
@@ -269,6 +298,10 @@ class EmotionBall {
     // 접촉 세기 상승(이동 길이 비례). update에서 천천히(0.45/s) 감쇠.
     // v10 §3: 상승 계수 0.5→0.4로 약간 부드럽게(급상승 완화).
     _strokeAmp = (_strokeAmp + len / radius * 0.4).clamp(0.0, 1.0);
+    // v11 §A-5: 손가락 흐름 방향·세기를 부드럽게 따라가게(저역통과). 액체가 쓸리는
+    // stretch+skew 축으로 painter가 사용. step(직전 프레임 이동) 쪽으로 0.5 비율
+    // 수렴 — 방향 전환 시 매끄럽게 휘고, stroke가 멈추면 update에서 감쇠한다.
+    _strokeFlow += (step - _strokeFlow) * 0.5;
     vel = Offset.zero; // fling 금지
     // 매 move마다 살짝씩만 더해 부드럽게 출렁이게(스파이크 방지) — update의
     // wobbleAmp 감쇠(-dt*1.4)와 맞물려 멈추면 자연 감쇠한다.
@@ -281,8 +314,15 @@ class EmotionBall {
   void update(double dt, Offset gravity) {
     lastImpact = 0;
     _wobblePhase += dt * 18;
+    // 슬라임 호흡·blob 모핑 위상 전진(free-running, 항상 미세하게 살아있게).
+    // 2π/2.5≈2.513 rad/s(호흡), 2π/6.5≈0.967 rad/s(모핑). 2π에서 wrap해 누적 오차 방지.
+    _breathePhase = (_breathePhase + dt * 2.5133) % (2 * pi);
+    _morphPhase = (_morphPhase + dt * 0.9666) % (2 * pi);
     wobbleAmp = (wobbleAmp - dt * 1.4).clamp(0.0, 1.0);
     squash = (squash - dt * 3.0).clamp(0.0, 1.0);
+    // 쓰다듬기 흐름 벡터 시간 감쇠(멈추면 ~0.4s에 잦아듦). stretch+skew가
+    // 손을 떼면 부드럽게 평상 표면으로 ease-out.
+    _strokeFlow *= (1 - (6.0 * dt).clamp(0.0, 1.0));
     // 쓰다듬기 접촉 광택 세기 시간 감쇠. v10 §4: 0.85→0.45/s로 늦춤 —
     // 멈췄을 때 ~2.2s에 걸쳐 부드럽게 사그라들어 "급격히 줄어듦"을 제거(자연 ease-out).
     _strokeAmp = (_strokeAmp - dt * 0.45).clamp(0.0, 1.0);
@@ -300,8 +340,11 @@ class EmotionBall {
       // 복원: _releaseDepth에서 elasticOut으로 0까지(살짝 오버슈트), 0.5s.
       _releaseT += dt;
       final t = (_releaseT / _releaseDur).clamp(0.0, 1.0);
-      // (1 - elasticOut)에 시작 깊이를 곱해 현재 깊이에서부터 차오르게.
-      _curDepth = (_releaseDepth * (1 - _elasticOut(t))).clamp(0.0, 1.0);
+      // (1 - springBack)에 시작 깊이를 곱해 현재 깊이에서부터 통통 차오르게.
+      // springBack은 elasticOut보다 낮은 damping이라 0 부근에서 음수까지 살짝
+      // 오버슈트(_curDepth가 0 아래로) → 본체가 평상보다 더 부풀었다 돌아오는
+      // "쫀득 통통". painter가 음수 pressDepth를 부풂(역방향 squash)으로 해석한다.
+      _curDepth = _releaseDepth * (1 - _springBack(t));
       if (t >= 1.0) {
         _curDepth = 0;
         _releaseT = -1;
@@ -400,12 +443,21 @@ class EmotionBall {
   bool hitTest(Offset p) => (p - pos).distance <= radius * 1.25;
 
   /// 현재 변형을 반영한 (scaleX, scaleY).
+  ///
+  /// v11 §A-3: 여기에 idle 호흡 출렁임을 합성한다 — scaleX/scaleY가 **어긋난
+  /// 위상**으로 출렁여(가로 부풀면 세로 눌림) 쫀득한 슬라임 호흡을 만든다.
+  /// 프로토타입 키프레임(scaleX 1↔1.04 / scaleY 1↔0.965) 느낌을 정현파로 근사.
   Offset get scale {
     final w = sin(_wobblePhase) * wobbleAmp * 0.12;
+    // 호흡: 가로는 +위상, 세로는 약간 어긋난(반대에 가까운) 위상으로 출렁.
+    // 진폭은 미세하게(가로 0.04 / 세로 0.035) — "항상 살아있되 과하지 않게".
+    final bx = 1 + sin(_breathePhase) * 0.04;
+    final by = 1 + sin(_breathePhase + 2.4) * 0.035; // 위상차로 어긋남(쫀득)
     // squashDir 축으로 눌리고 직교축으로 늘어남
     final along = 1 - squash * 0.5 + w;
     final cross = 1 + squash * 0.4 - w;
     final horizontal = squashDir.dx.abs() > squashDir.dy.abs();
-    return horizontal ? Offset(along, cross) : Offset(cross, along);
+    final base = horizontal ? Offset(along, cross) : Offset(cross, along);
+    return Offset(base.dx * bx, base.dy * by);
   }
 }

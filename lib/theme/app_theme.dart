@@ -17,6 +17,7 @@ class AppColors {
   static const Color jellyTint = Color(0xFFFFEBF0); // 연분홍
   static const Color jellyCore = Color(0xFFF4B8C7); // 핑크 본체
   static const Color jellyDeep = Color(0xFFDC8CAA); // 깊은 핑크
+  static const Color jellyEdge = Color(0xFFE08AA6); // 슬라임 외곽 끝색(프로토타입 #e08aa6)
   static const Color jellyShade = Color(0xFFB46482); // 음영(검정 금지)
 
   // 배경 그라데이션 (밤하늘 톤, HOME-01 시간대 변화는 2차 스펙이라 단색 베이스)

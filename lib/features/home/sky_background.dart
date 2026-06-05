@@ -10,6 +10,18 @@ import 'package:flutter/scheduler.dart';
 /// - [dark]: 깊은 밤·여명 → 밝은 글씨 권장.
 enum SkyTone { light, warm, dark }
 
+/// 현재 시각에 맞춰 보간된 본문 글자색(프로토타입 `--on-bg`).
+///
+/// 5앵커(dawn/day/dusk/night/pre-dawn)의 on-bg 색을 연속 시각으로 [Color.lerp]
+/// 하여 돌려준다. builder가 날짜/멘트/카운트 등 글자색에 사용해, 배경 톤이
+/// 흐르는 동안 글자색도 끊김 없이 따라 바뀌어 가독성을 유지한다.
+/// 기존 [SkyTone]/[skyToneAt]과 독립적인 신규 API(둘 다 유지).
+Color skyTextColorAt(DateTime now) {
+  final t = _hourOf(now);
+  final (lo, hi, f) = _segmentAt(t);
+  return Color.lerp(lo.onBg, hi.onBg, f)!;
+}
+
 /// 하루 시간대를 그라데이션으로 그리는 배경 위젯.
 ///
 /// 5개 앵커(predawn·dawn·day·dusk·night)를 연속 시각 `t = hour + min/60`으로
@@ -72,7 +84,7 @@ class _SkyBackgroundState extends State<SkyBackground>
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
                 colors: stops,
-                stops: const [0.0, 0.5, 1.0],
+                stops: const [0.0, 0.25, 0.5, 0.75, 1.0],
               ),
             ),
           ),
@@ -96,31 +108,103 @@ class _SkyBackgroundState extends State<SkyBackground>
   }
 }
 
-// ── 시간대 앵커 정의 ─────────────────────────────────────────────
-// 각 앵커: (앵커 hour, [top, mid, bottom] 3색, tone).
+// ── 시간대 앵커 정의(프로토타입 tokens.css 정확한 색) ──────────────
+// 각 앵커: (앵커 hour, top→bottom 다스톱 그라데이션, on-bg 글자색, tone).
+// 원본 그라데이션은 스톱 수가 제각각(4~6개)이므로 생성 시 5스톱(0,.25,.5,.75,1)
+// 으로 리샘플해 앵커 간 per-stop 보간이 항상 정합하도록 정규화한다.
 class _SkyAnchor {
-  const _SkyAnchor(this.hour, this.colors, this.tone);
+  _SkyAnchor(this.hour, List<Color> raw, this.onBg, this.tone)
+      : colors = _resample5(raw);
   final double hour;
-  final List<Color> colors; // top→bottom 3스톱
+  final List<Color> colors; // top→bottom 5스톱(정규화됨)
+  final Color onBg; // 본문 글자색(--on-bg)
   final SkyTone tone;
 }
 
-const List<_SkyAnchor> _anchors = [
-  // predawn 4.5 (dark)
-  _SkyAnchor(4.5, [Color(0xFF0F2848), Color(0xFF2E6FA0), Color(0xFFF0D0B8)],
-      SkyTone.dark),
-  // dawn 6.5 (warm)
-  _SkyAnchor(6.5, [Color(0xFFA8C8E8), Color(0xFFF5C8A8), Color(0xFFD8C8C0)],
-      SkyTone.warm),
-  // day 13 (light)
-  _SkyAnchor(13.0, [Color(0xFFFFE8E4), Color(0xFFD8C5DD), Color(0xFFB8C5D9)],
-      SkyTone.light),
-  // dusk 18 (dark)
-  _SkyAnchor(18.0, [Color(0xFF2A3A6B), Color(0xFF8B6890), Color(0xFFF8C898)],
-      SkyTone.dark),
-  // night 23 (dark)
-  _SkyAnchor(23.0, [Color(0xFF050811), Color(0xFF102448), Color(0xFF1A3868)],
-      SkyTone.dark),
+/// 균등 간격 색 리스트를 5스톱(0,.25,.5,.75,1)으로 리샘플.
+List<Color> _resample5(List<Color> raw) {
+  if (raw.length == 1) return List<Color>.filled(5, raw.first);
+  const targets = [0.0, 0.25, 0.5, 0.75, 1.0];
+  final last = raw.length - 1;
+  return [
+    for (final p in targets) _sampleEven(raw, p, last),
+  ];
+}
+
+/// 균등 간격(0..1) 색 리스트에서 위치 [p]의 색을 선형 보간으로 샘플.
+Color _sampleEven(List<Color> raw, double p, int last) {
+  final x = (p * last).clamp(0.0, last.toDouble());
+  final i = x.floor().clamp(0, last - 1);
+  final f = x - i;
+  return Color.lerp(raw[i], raw[i + 1], f)!;
+}
+
+final List<_SkyAnchor> _anchors = [
+  // pre-dawn 04–05 (center 4.5, dark)
+  _SkyAnchor(
+    4.5,
+    const [
+      Color(0xFF243A6A),
+      Color(0xFF41487C),
+      Color(0xFF6B6390),
+      Color(0xFFA87F8C),
+      Color(0xFFDCA07E),
+    ],
+    const Color(0xFFEEF1FF),
+    SkyTone.dark,
+  ),
+  // dawn 05–07 (center 6, warm)
+  _SkyAnchor(
+    6.0,
+    const [
+      Color(0xFFAEBED8),
+      Color(0xFFBFBCCF),
+      Color(0xFFD3C4C4),
+      Color(0xFFECCEB6),
+      Color(0xFFF6DDBF),
+    ],
+    const Color(0xFF4B4658),
+    SkyTone.warm,
+  ),
+  // day 07–16 (center 11.5, light)
+  _SkyAnchor(
+    11.5,
+    const [
+      Color(0xFFF3CCD7),
+      Color(0xFFE6CCE0),
+      Color(0xFFD3C8DE),
+      Color(0xFFC8C5DC),
+    ],
+    const Color(0xFF5B4F66),
+    SkyTone.light,
+  ),
+  // dusk 16–19 (center 17.5, warm 노을 — 글자 밝게라 dark tone)
+  _SkyAnchor(
+    17.5,
+    const [
+      Color(0xFF33375B),
+      Color(0xFF574F80),
+      Color(0xFF8A6A8D),
+      Color(0xFFC08484),
+      Color(0xFFE2986F),
+      Color(0xFFEFAB73),
+    ],
+    const Color(0xFFF6EAEF),
+    SkyTone.dark,
+  ),
+  // night 19–04 (center 23, dark)
+  _SkyAnchor(
+    23.0,
+    const [
+      Color(0xFF141C3A),
+      Color(0xFF20294C),
+      Color(0xFF34375F),
+      Color(0xFF7A5F6A),
+      Color(0xFF9C7458),
+    ],
+    const Color(0xFFEDF0FB),
+    SkyTone.dark,
+  ),
 ];
 
 double _hourOf(DateTime now) => now.hour + now.minute / 60 + now.second / 3600;
@@ -137,9 +221,7 @@ double _forwardSpan(double from, double to) {
 List<Color> _skyStopsAt(double t) {
   final (lo, hi, f) = _segmentAt(t);
   return [
-    Color.lerp(lo.colors[0], hi.colors[0], f)!,
-    Color.lerp(lo.colors[1], hi.colors[1], f)!,
-    Color.lerp(lo.colors[2], hi.colors[2], f)!,
+    for (var i = 0; i < 5; i++) Color.lerp(lo.colors[i], hi.colors[i], f)!,
   ];
 }
 
@@ -182,12 +264,12 @@ double _bell(double t, double center, double half) {
   return 1 - x * x * (3 - 2 * x); // smoothstep 역(중심 1 → 가장자리 0)
 }
 
-/// 밤·여명 가중치(별 표시용). night 23 + predawn 4.5 부근.
+/// 밤·여명 가중치(별 표시용). night 23 + 자정 전후 폭넓게.
 double _nightWeight(double t) =>
     max(_bell(t, 23.0, 5.0), _bell(t, 1.0, 4.0)); // 자정 전후 폭넓게
 
-/// 새벽·노을 가중치(따뜻한 글로우용). dawn 6.5 + dusk 18 부근.
-double _warmWeight(double t) => max(_bell(t, 6.5, 2.5), _bell(t, 18.0, 2.5));
+/// 새벽·노을 가중치(따뜻한 글로우용). dawn 6.0 + dusk 17.5 부근.
+double _warmWeight(double t) => max(_bell(t, 6.0, 2.5), _bell(t, 17.5, 2.5));
 
 /// 별(밤) + 따뜻한 글로우(새벽/노을) 오버레이. 둘 다 가중치 fade로 dreamy하게.
 /// 별은 seed 고정으로 결정적 재현(깜빡임/이동 없는 잔잔한 점광).
