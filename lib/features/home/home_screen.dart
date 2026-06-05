@@ -756,8 +756,17 @@ class _HomeScreenState extends State<HomeScreen>
                         onPressed: _goToWriting,
                         icon: const Icon(Icons.edit_note, size: 18),
                         label: const Text('바로 글쓰기'),
+                        // 시간대 배경은 위는 어둡고 아래는 밝은 그라데이션이라, 하단의
+                        // 밝은 노을·크림색에 글씨가 묻혔다. 반투명 프로스트 알약 배경 +
+                        // 어두운 글씨로 어느 시간대에서도 항상 읽히게 한다.
                         style: TextButton.styleFrom(
-                          foregroundColor: subColor,
+                          foregroundColor: const Color(0xFF5A4651),
+                          backgroundColor: Colors.white.withValues(alpha: 0.5),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 18, vertical: 10),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(24),
+                          ),
                         ),
                       ),
                     ),
