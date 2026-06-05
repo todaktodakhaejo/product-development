@@ -25,7 +25,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     _OnbPage(
       emoji: '👆',
       title: '먼저 손으로 만져 보세요',
-      body: '화면 속 공을 흔들고, 굴리고, 문질러 보세요.\n말로 옮기기 전에 감각으로 먼저 풀어요.',
+      body: '화면 속 공을 흔들고, 굴리고, 쓰다듬어 보세요.\n말로 옮기기 전에 감각으로 먼저 풀어요.',
     ),
     _OnbPage(
       emoji: '🔥',

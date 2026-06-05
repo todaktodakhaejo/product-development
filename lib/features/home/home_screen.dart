@@ -6,25 +6,36 @@ import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:sensors_plus/sensors_plus.dart';
 
 import '../../core/haptics.dart';
-import '../../core/strings.dart';
-import '../../theme/app_theme.dart';
+import '../../state/session.dart';
 import '../writing/writing_screen.dart';
 import 'emotion_ball.dart';
 import 'emotion_ball_painter.dart';
+import 'home_help_sheet.dart';
+import 'home_messages.dart';
+import 'sky_background.dart';
 
-/// 2단계 첫 화면(홈). 감정 오브제(공)와 5개 제스처 인터랙션의 무대.
+/// 2단계 첫 화면(홈). 감정 오브제(공)와 4종 제스처 인터랙션의 무대.
 ///
-///  - GST-01 흔들기 : userAccelerometer 임펄스 + 세기별 햅틱, 벽 충돌 진동
-///  - GST-02 굴리기 : accelerometer 기울기 중력, 시작/충돌 진동
-///  - GST-03 누르기 : 탭 → 물결 + 뗄 때 'selection' 진동
-///  - GST-04 문지르기: 드래그 → 젤리 출렁임 + 지속 약진동
-///  - GST-05 꽉쥐기 : 공 위 정지 유지 → 충전 진동 점증 → 임계 돌파 시 팡(종이 등장)
+///  - GST-01 흔들기 : 선형 가속도 임펄스(쿨다운만으로 연속 발동) + medium/heavy 햅틱
+///  - GST-02 굴리기 : 손가락 드래그 추종 + 이동거리 기반 마찰 틱 → 놓으면 관성 fling(부스트)
+///  - GST-03 누르기 : 본체 홀드 → 누르는 동안 점점 침몰(pressStart/End) + 햅틱(down/tick/release)
+///  - GST-04 쓰다듬기: 제자리 왕복 드래그 → 표면 출렁임 + 글로우 + 연속 약진동(strokeSoft)
+///
+/// 굴리기·쓰다듬기는 둘 다 단일 포인터 드래그라, **손가락 속도**를 1차 판별자로
+/// 쓰는 상태머신(none→stroke|roll)으로 모드를 판별한다([_onPointerMove] 참고, v6).
+/// 느리면 stroke(공 제자리), 빠르거나(speed>kRollSpeed) 멀리(net>r*kRollNet) 끌면 roll.
+/// 커밋된 stroke는 net 탈출 없이 빠른 플릭(speed>kStrokeEscape)으로만 roll 전환(v8 §1-A).
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
+
+/// 단일 포인터 드래그의 자동 판별 모드(v6, 속도 기반).
+/// none → (stroke | roll). roll은 sticky(포인터 업까지 고정), stroke는 매 프레임
+/// 재평가되어 빨라지면 roll로 탈출한다(pending 제거).
+enum _DragMode { none, stroke, roll }
 
 class _HomeScreenState extends State<HomeScreen>
     with SingleTickerProviderStateMixin {
@@ -34,73 +45,229 @@ class _HomeScreenState extends State<HomeScreen>
   EmotionBall? _ball;
   final List<Ripple> _ripples = [];
 
-  // 센서
+  // 센서: 흔들기(GST-01)용 선형 가속도(중력 제거) 1개만 구독.
   StreamSubscription? _accelSub;
-  StreamSubscription? _userAccelSub;
-  Offset _gravity = Offset.zero; // 기울기에서 온 가속도
-  bool _rolling = false;
+  // armed 게이트 제거(§1): 연속 흔들기에서 가속도가 임계 아래로 안 떨어져
+  // 재발동이 막히던 문제 → 쿨다운(90ms)만으로 게이팅한다.
+  DateTime _lastShake = DateTime.fromMillisecondsSinceEpoch(0);
 
-  // 포인터 상태 (누르기/문지르기/꽉쥐기 통합)
+  // 흔들기 임펄스 방향용 난수(State 당 1개만 보유).
+  final Random _rng = Random();
+
+  // 포인터 상태 (누르기 / 굴리기 / 쓰다듬기 통합)
   int? _pointerId;
   Offset _downPos = Offset.zero;
   Offset _lastPos = Offset.zero;
   Duration _lastMoveTime = Duration.zero;
   Offset _flingVel = Offset.zero;
+  // EMA 첫 유효샘플 판별(v5 §1): 포인터 다운마다 false로 리셋. 첫 샘플은 그대로
+  // 채택하고 이후부터 지수이동평균으로 다듬어 release 직전 단일 이벤트의 폭주/미약을 방지.
+  bool _flingSeeded = false;
+  // 최근 최고 순간속도 추적(v8 §4): 떼기 직전 감속이 EMA에 섞여 빠른 플릭의 fling이
+  // 약화되던 문제 → 매 유효 move에서 peak를 갱신(프레임당 *0.9 감쇠 + 최신 최대)해
+  // release 시 EMA와 peak 중 큰 쪽을 채택, 빠른 손맛을 살린다. 다운 시 0 리셋.
+  double _flingPeak = 0;
   bool _moved = false;
-  bool _onBall = false;
-  double _squeeze = 0; // GST-05 충전 0~1
-  static const double _squeezeTime = 1.4; // 초
 
-  bool _showComfort = true;
-  late final String _comfort = randomComfortMessage();
+  // 드래그 판별 상태머신(v6 §2, 속도 기반)
+  _DragMode _dragMode = _DragMode.none;
+  double _strokeEnergy = 0; // 쓰다듬기 누적(0~1) → wobble/글로우 구동
+  double _rollAccum = 0; // 굴리기 누적 이동거리(px) → 마찰 틱 발사 타이밍
+  // stroke→roll 늦은 전환 시 공이 손가락과 벌어져 있어 ease 추종으로 따라잡는
+  // 프레임 카운터(v6 §2). 0이면 full grab.
+  int _rollCatchup = 0;
+
+  // 손가락 속도 추적(v6 §1) — 판별 1차 기준. fling용 _flingVel과는 별개.
+  double _dragSpeed = 0; // 평활된 손가락 속도(px/s)
+  bool _dragSpeedSeeded = false; // 첫 유효샘플 채택 플래그
+
+  // ── 멘트(§2/§3) / 터치→카운트(§1) ───────────────────────────
+  // 멘트는 타이머 순환 폐기(v2 §3). 홈에 있는 동안 고정이며, 표시 멘트는
+  // homeMessages[_releaseCount % 9]. 의식을 한 번 완료(releaseCount+1)할 때마다
+  // 다음 세트로 자연히 넘어간다. AnimatedSwitcher fade는 멘트가 실제 바뀔 때만.
+  // 현재 시각(날짜·시간 표시용). _onTick에서 분 단위로만 갱신.
+  DateTime _now = DateTime.now();
+  // 공을 한 번이라도 터치하면 true → 멘트/날짜/releaseCount fade-out,
+  // interactionCount fade-in. 세션 동안 유지되고, 의식 완료 복귀(§1)나
+  // 글쓰기 복귀 시에만 초기화된다.
+  bool _touched = false;
+  // 화면에 표시할 누적 흘려보냄 횟수(의식 완료 횟수, 세션 한정). 멘트 인덱스 구동.
+  int _releaseCount = 0;
+
+  // ── 공 놀이(인터랙션) 카운트 ──────────────────────────────────
+  // 공을 튕기고·흔들고·굴리고·만지고·누른 횟수. **세션 한정** — 영구 저장하지
+  // 않으므로 앱을 나갔다 들어오면 0으로 리셋된다(의식 횟수와 동일 정책). 0에서
+  // 시작해 저장소 로드가 없으므로, 첫 제스처부터 지연 없이 즉시 카운트된다.
+  int _interactionCount = 0;
+
+  // ── 의식 완료 감지(§6) — SessionScope listen만, P2/P3 무수정 ──────
+  SessionState? _session; // didChangeDependencies에서 바인딩
+  // ritual이 한 번이라도 non-null이 된 적 있으면 true. reset로 null이 될 때
+  // 이 플래그가 켜져 있으면 '의식 완료'로 판정해 카운트를 올린다.
+  bool _ritualWasChosen = false;
 
   Duration _lastTick = Duration.zero;
 
-  static const double _gravityScale = 55;
   static const double _slop = 14;
+
+  // ── 홈 레이아웃 상수(§C, 프로토타입 Home.tsx 기준) ──────────────
+  // 날짜는 상단 중앙(SafeArea 기준 top).
+  static const double _kDateTop = 32;
+  // 멘트 블록 최소 상단 여백(작은 기기에서 날짜와 겹침 방지).
+  static const double _kMsgBoxMinTop = 68;
+  // 하단 힌트 위치(바로 글쓰기 버튼 위에 띄움).
+  static const double _kHintBottom = 88;
+
+  // 흔들기(GST-01) 선형 가속도 임계(m/s², §1 강화). userAccelerometer는 중력이
+  // 제거돼 정지 시 ≈0, 직선으로 흔들면 즉시 큰 값이 잡힌다. 임계를 낮춰(9) 쉽게
+  // 발동하고, 상한을 26으로 당겨 강도가 빨리 포화된다.
+  static const double kShakeOn = 9.0; // 발동 임계(12→9)
+  static const double kShakeMax = 26.0; // 정규화 상한(32→26)
+  static const Duration _shakeCooldown =
+      Duration(milliseconds: 70); // 90→70 (v8 §2 연속 반응 즉각)
+
+  // 드래그 판별 임계(v6 §2 — 속도 기반). 거리·방향전환 기반 상수는 폐기.
+  static const double kRollSpeed = 650; // px/s, 손가락 속도가 이를 넘으면 굴리기(900→650: 굴리기 시작 더 쉽게)
+  static const double kRollNet = 0.5; // ×radius, 느려도 이만큼 끌면 굴리기(0.7→0.5: 천천히 끌어도 금방 따라와 데굴데굴)
+  // stroke 커밋 후 roll 탈출 임계(v8 §1-A). 커밋된 쓰다듬기에서는 net 기반 탈출을
+  // 제거하고, 오직 명백한 빠른 플릭(이 속도 초과)일 때만 roll로 전환한다. 가로/세로/
+  // 대각 어느 방향으로 넓게 쓰다듬어도 굴리기로 새지 않는다.
+  static const double kStrokeEscape = 1300; // px/s
+  // 손가락 속도 EMA/clamp 상수(v6 §1).
+  static const double kDragMinDt = 0.004; // 이보다 짧은 dt 샘플은 속도 계산서 제외
+  static const double kDragSpeedClamp = 4000; // 순간속도 magnitude 상한(px/s)
+  static const int kRollCatchupFrames = 6; // stroke→roll 늦은 전환 시 따라잡기 프레임
+
+  // 굴리기 fling 평활/clamp 상수(v5 §1).
+  static const double kFlingMinDt = 0.004; // 이보다 짧은 dt 샘플은 속도 계산서 제외
+  static const double kFlingSpikeClamp = 3000; // 순간속도 magnitude 스파이크 컷(px/s)
+  static const double kFlingReleaseClamp =
+      3600; // release 시 최종 속도 크기 상한(px/s, v8 §4: 3200→3600 빠른 굴리기 튕김↑)
 
   @override
   void initState() {
     super.initState();
     _ticker = createTicker(_onTick)..start();
     _listenSensors();
+    // 흘려보냄 횟수(releaseCount)·공 놀이 횟수(interactionCount) **둘 다 세션 한정** —
+    // 앱을 나갔다 들어오면 0으로 리셋한다(영구 저장 안 함). 둘 다 0에서 시작하고
+    // 저장소 로드(비동기)가 없으므로, 첫 제스처부터 카운트가 지연 없이 즉시 반영된다.
+    // 멘트는 releaseCount % 9로 세트가 넘어가므로, 재실행하면 첫 멘트부터 다시 시작한다.
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // 세션 완료 감지(§6): SessionScope를 listen만(읽기 전용). 안전 패턴으로
+    // 인스턴스가 바뀌면 이전 리스너를 떼고 새로 건다(여기서 reset/write 호출 금지).
+    final session = SessionScope.of(context);
+    if (!identical(session, _session)) {
+      _session?.removeListener(_onSessionChanged);
+      _session = session;
+      _session!.addListener(_onSessionChanged);
+    }
+  }
+
+  /// 세션 변화 콜백(§6, 읽기 전용 판정).
+  /// ritual이 한 번이라도 선택되면 _ritualWasChosen=true. 이후 글·의식이 모두
+  /// 비워진 채(=reset 호출됨) 알림이 오면 '의식 완료'로 보고 카운트 +1 + 홈 초기화.
+  void _onSessionChanged() {
+    final s = _session;
+    if (s == null || !mounted) return;
+    if (s.ritual != null) {
+      _ritualWasChosen = true;
+      return;
+    }
+    // ritual==null. text까지 비고 직전에 의식을 골랐던 적이 있으면 완료.
+    if (s.text.isEmpty && _ritualWasChosen) {
+      _ritualWasChosen = false;
+      // 흘려보냄 +1(세션 한정 in-memory, 영구 저장 안 함) 후 홈 UI 초기화.
+      // 멘트도 새 releaseCount % 9로 넘어간다. 앱 재실행 시 0으로 리셋된다.
+      setState(() => _releaseCount++);
+      _restoreHomeInitial();
+    }
+  }
+
+  /// 홈을 초기(untouched) 상태로 되돌린다(§1).
+  /// 멘트+날짜+releaseCount 표시, interactionCount 숨김. interactionCount 값
+  /// 자체는 평생 누적이므로 초기화하지 않는다(계속 누적).
+  void _restoreHomeInitial() {
+    if (!mounted) return;
+    _ball?.recenter(); // 의식/글쓰기에서 돌아오면 말랑이를 가운데 원래 자리로
+    setState(() => _touched = false);
+  }
+
+  /// 공 놀이 1회 카운트. 공 위 pointer down 1회 또는 흔들기 임펄스 발사 1회마다 +1.
+  /// 세션 한정 메모리 값이라 로드 대기가 없어 즉시 증가한다.
+  void _bumpInteraction() {
+    _interactionCount++;
+    // 즉시 반영(스로틀·로드 게이트 없음 — 바로바로 숫자가 올라가야 한다).
+    // _bumpInteraction은 터치 다운·흔들기 임펄스 같은 '이벤트'마다만 불려 빈도가
+    // 높지 않으므로 매번 setState해도 부담이 적다. untouched(숨김)면 리빌드 생략.
+    if (!_touched) return;
+    if (mounted) setState(() {});
   }
 
   void _listenSensors() {
-    // 굴리기(GST-02): 기기 기울기 → 중력 벡터
-    _accelSub = accelerometerEventStream().listen(
+    // 흔들기(GST-01): 선형 가속도(중력 제거, m/s²). v2의 자이로는 회전 각속도라
+    // 직선 흔들기에 거의 안 잡혀 먹통이었음 → 가속도로 교체(§1). 미지원 기기/웹
+    // 에서는 onError로 무시되어 흔들기만 비활성화되고 터치 제스처는 정상 동작한다.
+    // 샘플링 가속(v8 §2): 기본 샘플링이 느려 흔들기 반응이 한 템포 지연됐다 →
+    // gameInterval(약 20ms)로 빠르게 받아 즉각 반응한다. SensorInterval은 sensors_plus 제공.
+    _accelSub = userAccelerometerEventStream(
+      samplingPeriod: SensorInterval.gameInterval,
+    ).listen(
       (e) {
-        // 화면 좌표: x 오른쪽+, y 아래+. 기기 기울기를 굴림 방향으로 매핑.
-        // (부호는 기기/OS에 따라 튜닝 필요)
-        _gravity = Offset(e.x, -e.y) * _gravityScale;
-        final mag = _gravity.distance;
-        if (!_rolling && mag > 90) {
-          _rolling = true;
-          Haptics.instance.fire(HapticLevel.light); // 굴리기 시작 알림
-        } else if (_rolling && mag < 45) {
-          _rolling = false;
+        final mag = sqrt(e.x * e.x + e.y * e.y + e.z * e.z); // 가속도 크기(m/s²)
+        // 발동 조건(§1): 임계 이상 + 쿨다운 경과. armed 게이트를 없애 연속으로
+        // 흔들면 90ms마다 계속 임펄스가 쌓여 공이 통통 튀고 벽에 부딪힌다.
+        if (mag < kShakeOn) return;
+        final now = DateTime.now();
+        if (now.difference(_lastShake) < _shakeCooldown) return;
+        _lastShake = now;
+
+        // 임펄스/진동 공통 세기 raw(v9 §1): 흔든 가속도를 0~1로 정규화한 단일 값.
+        // kShakeOn=9, kShakeMax=26이므로 raw = ((mag-9)/(26-9)).clamp(0,1). 임펄스 하한
+        // 적용 전 값이며, 아래 임펄스(하한 0.25)와 진동 3단(0.40/0.72)이 모두 이 raw를
+        // 공유해 모션 세기와 진동 세기가 함께 변한다.
+        final raw =
+            ((mag - kShakeOn) / (kShakeMax - kShakeOn)).clamp(0.0, 1.0);
+        // 방향(§2): 랜덤 단위벡터 폐기 → 흔든 가속도 벡터를 화면 방향으로 추종.
+        // 포트레이트 기준 x=화면 가로, y는 부호 반전해 화면 세로로 매핑한다.
+        final accel = Offset(e.x, -e.y);
+        final aLen = accel.distance;
+        // 가속도가 사실상 0이면(정지/노이즈) 난수로 폴백, 아니면 정규화한 방향.
+        final base = aLen > 0.001 ? accel / aLen : _randomUnitVector();
+        // 생동감 위해 22%만 난수를 섞어 매 흔들기를 미세하게 다르게 한다.
+        final dir = base * 0.78 + _randomUnitVector() * 0.22;
+        final d = dir.distance;
+        final unit = d > 0.001 ? dir / d : base; // 재정규화(0이면 base 폴백)
+        _ball?.addImpulse(unit, max(0.25, raw)); // 모션 대비 위해 하한 0.25 유지
+        // 진동 세기 연동(v9 §1): mag 기반 3단(12/19) 폐기 → 임펄스와 동일한 raw 기반
+        // 3단으로 교체. raw<0.40 light, 0.40~0.72 medium, 0.72+ heavy. 경계를 약한 쪽으로
+        // 올려 살살 흔들면 raw가 작아 light로 확정 → 세기별 진동 단차가 또렷해진다.
+        // throttle:false로 흔들 때마다 발사해 모션 임펄스와 진동이 함께 변한다.
+        final HapticLevel level;
+        if (raw < 0.40) {
+          level = HapticLevel.light;
+        } else if (raw < 0.72) {
+          level = HapticLevel.medium;
+        } else {
+          level = HapticLevel.heavy;
         }
+        Haptics.instance.fire(level, throttle: false);
+        _bumpInteraction(); // 흔들기 임펄스 발사 1회 = 공 놀이 +1(§1-B)
+        _onTouched();
       },
       onError: (_) {}, // 센서 미지원 기기에서도 터치는 동작
       cancelOnError: false,
     );
+  }
 
-    // 흔들기(GST-01): 중력 제외 사용자 가속도
-    _userAccelSub = userAccelerometerEventStream().listen(
-      (e) {
-        final mag = sqrt(e.x * e.x + e.y * e.y + e.z * e.z);
-        if (mag > 12) {
-          final strength = ((mag - 12) / 22).clamp(0.0, 1.0);
-          final dir = Offset(e.x, -e.y);
-          final n = dir.distance;
-          if (n > 0.001) _ball?.addImpulse(dir / n, strength);
-          Haptics.instance.impactByStrength(strength.toDouble());
-          if (_showComfort) setState(() => _showComfort = false);
-        }
-      },
-      onError: (_) {},
-      cancelOnError: false,
-    );
+  /// 흔들기 임펄스용 랜덤 단위벡터(사방으로 튀는 손맛).
+  Offset _randomUnitVector() {
+    final a = _rng.nextDouble() * 2 * pi;
+    return Offset(cos(a), sin(a));
   }
 
   void _onTick(Duration elapsed) {
@@ -112,24 +279,22 @@ class _HomeScreenState extends State<HomeScreen>
     if (ball == null) return;
     final clampedDt = dt.clamp(0.0, 0.05);
 
-    // 꽉쥐기(GST-05): 공 위에서 정지 유지 시 충전
-    if (_pointerId != null && _onBall && !_moved) {
-      _squeeze = (_squeeze + clampedDt / _squeezeTime).clamp(0.0, 1.0);
-      // 충전될수록 더 잦고 센 진동
-      Haptics.instance.fire(
-        _squeeze < 0.5 ? HapticLevel.light : HapticLevel.medium,
-      );
-      if (_squeeze >= 1.0) {
-        _pop();
-        return;
-      }
-    }
+    // 쓰다듬기 에너지 시간 감쇠(v5 §2): *0.7→*0.5로 더 천천히 사그라들게 해
+    // 쓰다듬는 동안 빛이 누적·유지되도록 한다(증가율·상한 1.0은 그대로). stroke 중엔 move에서 증가.
+    _strokeEnergy = (_strokeEnergy - clampedDt * 0.5).clamp(0.0, 1.0);
 
-    ball.update(clampedDt, _gravity);
+    ball.update(clampedDt, Offset.zero); // 중력 굴리기 폐기 → gravity 0
 
     // 벽 충돌 햅틱
     if (ball.lastImpact > 0) {
       Haptics.instance.impactByStrength(ball.lastImpact);
+    }
+
+    // 누르기 홀드 중 미세 틱(§2): 침몰 깊이가 깊어지는 정점(0.5·0.85 통과)을 ball이
+    // 물리에서 단일 소스로 내보낸다. 프레임당 1회만 소비해 미세 틱 햅틱을 발사 →
+    // 시각 침몰과 햅틱이 desync 없이 동기. (시작 pressDown·뗄 때 pressRelease는 포인터에서.)
+    if (ball.consumePressHoldTick()) {
+      Haptics.instance.pressHoldTick();
     }
 
     for (final r in _ripples) {
@@ -138,6 +303,13 @@ class _HomeScreenState extends State<HomeScreen>
     _ripples.removeWhere((r) => r.dead);
 
     _frame.value++;
+
+    // 날짜·시간 표시 갱신(§3): 분이 바뀐 경우에만 setState로 텍스트 갱신.
+    final now = DateTime.now();
+    if (now.minute != _now.minute || now.hour != _now.hour) {
+      _now = now;
+      if (mounted) setState(() {});
+    }
   }
 
   // ── 포인터(터치) 처리 ───────────────────────────────────────────
@@ -145,13 +317,42 @@ class _HomeScreenState extends State<HomeScreen>
     if (_pointerId != null) return;
     final ball = _ball;
     if (ball == null) return;
+    final pos = e.localPosition;
     _pointerId = e.pointer;
-    _downPos = _lastPos = e.localPosition;
+    _downPos = _lastPos = pos;
     _lastMoveTime = e.timeStamp;
     _moved = false;
-    _onBall = ball.hitTest(e.localPosition);
-    _squeeze = 0;
-    if (_showComfort) setState(() => _showComfort = false); // HOME-04
+    // fling 속도 평활 리셋(v5 §1): 새 드래그마다 속도/첫샘플 플래그 초기화.
+    _flingVel = Offset.zero;
+    _flingSeeded = false;
+    _flingPeak = 0; // 최고 순간속도 리셋(v8 §4)
+    // 드래그 메트릭 초기화(v6)
+    _dragMode = _DragMode.none;
+    _rollAccum = 0; // 굴리기 마찰 누적 리셋
+    _rollCatchup = 0;
+    // 손가락 속도 추적 리셋(v6 §1): 다운마다 0/false. fling용과 별개.
+    _dragSpeed = 0;
+    _dragSpeedSeeded = false;
+
+    // 누르기 홀드(GST-03, §2): 본체 위에서 누르기 시작 → 누르는 동안 침몰.
+    // 이동(slop 초과)이 시작되면 _onPointerMove에서 pressEnd로 전환된다.
+    // 본체 밖이면 누르기 침몰 없이(Ripple은 떼는 순간 onPointerUp에서) 진행.
+    if (ball.hitTest(pos)) {
+      ball.pressStart(pos);
+      Haptics.instance.pressDown();
+      // 공 위 pointer down 1회 = 공 놀이 +1(§1-B). 누르기/굴리기/쓰다듬기 시작은
+      // 모두 한 번의 손길이므로 down에서 한 번만 집계한다(이동 전환에서 중복 없음).
+      _bumpInteraction();
+    }
+    _onTouched(); // HOME-04: 첫 터치에 멘트→카운트 전환(§1)
+  }
+
+  /// 공을 한 번이라도 터치하면(§1) 멘트/날짜/releaseCount fade-out → 같은
+  /// 상단 자리에 interactionCount fade-in. 이미 전환됐으면 무시(세션 동안 유지).
+  /// interactionCount 값은 _bumpInteraction에서 갱신되므로 여기선 전환만 한다.
+  void _onTouched() {
+    if (_touched) return;
+    setState(() => _touched = true);
   }
 
   void _onPointerMove(PointerMoveEvent e) {
@@ -159,17 +360,101 @@ class _HomeScreenState extends State<HomeScreen>
     final ball = _ball;
     if (ball == null) return;
     final pos = e.localPosition;
+    final step = pos - _lastPos;
+    final stepLen = step.distance;
+
+    // 손가락 속도 추적(v6 §1): 판별의 1차 기준. dt가 너무 짧으면(<4ms) 순간속도가
+    // 과대평가되므로 속도 갱신은 건너뛴다(_lastPos·시간은 아래에서 항상 갱신).
+    final moveDt = (e.timeStamp - _lastMoveTime).inMicroseconds / 1e6;
+    if (moveDt >= kDragMinDt) {
+      var instant = stepLen / moveDt; // 순간 손가락 속도(px/s)
+      if (instant > kDragSpeedClamp) instant = kDragSpeedClamp;
+      _dragSpeed = _dragSpeedSeeded
+          ? _dragSpeed * 0.6 + instant * 0.4 // 이후 EMA(0.6:0.4)
+          : instant; // 첫 유효샘플은 그대로 채택
+      _dragSpeedSeeded = true;
+    }
+
     if (!_moved && (pos - _downPos).distance > _slop) {
       _moved = true;
-      _squeeze = 0; // 움직였으면 꽉쥐기 아님 → 문지르기
+      // 누르기 → 드래그 전환(v6 §3): 침몰을 팝 없이 즉시 취소(pressEnd의 elastic
+      // 복원 팝이 쓰다듬기 시작에서 "꿀렁"으로 오인되던 문제 제거).
+      ball.pressCancel();
+      // 모드 미확정(none)으로 두고 곧바로 아래 속도 평가에서 stroke/roll 결정한다
+      // ('잠정 roll/pending로 시작' 제거).
+      _dragMode = _DragMode.none;
     }
-    if (_moved && _onBall) {
-      ball.grab(pos); // 문지르기(GST-04)
-      Haptics.instance.rubTick(); // throttle 내장
+
+    if (_moved) {
+      final net = (pos - _downPos).distance;
+      final r = ball.radius;
+
+      // 판별(v8 §1-A): roll은 sticky. stroke 진입과 탈출 조건을 분리한다.
+      //  - 초기(none): speed>kRollSpeed || net>r*kRollNet → roll, 아니면 stroke(v7 유지).
+      //  - 커밋된 stroke: net 기반 탈출 제거. 오직 명백한 빠른 플릭(speed>kStrokeEscape)
+      //    일 때만 roll로 전환 → 가로/세로/대각 넓게 쓰다듬어도 안 굴러간다.
+      final bool wantRoll = _dragMode == _DragMode.stroke
+          ? _dragSpeed > kStrokeEscape
+          : (_dragSpeed > kRollSpeed || net > r * kRollNet);
+      if (_dragMode != _DragMode.roll && wantRoll) {
+        // ROLL 진입(sticky): 명백한 굴리기.
+        final wasStroke = _dragMode == _DragMode.stroke;
+        _dragMode = _DragMode.roll;
+        ball.pressCancel(); // 혹시 남은 침몰 무팝 제거
+        Haptics.instance.fire(HapticLevel.light); // roll 첫 진입 알림 1회
+        // stroke에서 늦게 전환됐으면 공이 손가락과 벌어져 있으므로 ease 추종으로
+        // 몇 프레임 따라잡는다(처음부터 빠른 굴리기는 gap이 거의 없어 불필요).
+        if (wasStroke) _rollCatchup = kRollCatchupFrames;
+      } else if (_dragMode != _DragMode.roll) {
+        // STROKE: 느리고 국소. 공은 제자리, 표면만 출렁이고 빛이 차오른다.
+        _dragMode = _DragMode.stroke;
+        // v8 §1-B: 현재 포인터 localPosition을 함께 넘겨 손가락 닿는 자리에 광택/변형이
+        // 따라다니게 한다(공 이동은 0, 위치 반응은 motion·painter가 소비).
+        ball.stroke(step, pos); // 제자리 고정 출렁임 + 위치 반응(공 이동 없음)
+        _strokeEnergy =
+            (_strokeEnergy + stepLen / r * 0.4).clamp(0.0, 1.0); // step 비례 증가
+        // 위로받는 부드러운 저강도 텍스처를 흐르듯 발사(throttle은 strokeSoft 내장).
+        Haptics.instance.strokeSoft();
+      }
+
+      // ROLL 거동: catchup 중엔 ease 추종으로 gap을 좁히고, 이후 full 추종.
+      if (_dragMode == _DragMode.roll) {
+        if (_rollCatchup > 0) {
+          ball.grab(pos, ease: 0.4);
+          _rollCatchup--;
+        } else {
+          ball.grab(pos); // 손가락 1:1 추종(full)
+        }
+        // 굴리기 마찰감: 이동 누적이 반경의 절반을 넘을 때마다 마찰 틱 발사 →
+        // 구슬 굴리는 자글거림. speed01은 추종 속도(px/s)를 2600으로 정규화.
+        _rollAccum += stepLen;
+        final tickDist = r * 0.5;
+        if (_rollAccum >= tickDist) {
+          _rollAccum -= tickDist;
+          final speed01 =
+              (moveDt > 0 ? (stepLen / moveDt) / 2600 : 0.0).clamp(0.0, 1.0);
+          Haptics.instance.rollFriction(speed01);
+        }
+      }
     }
-    // 플링 속도 추정
-    final dtMs = (e.timeStamp - _lastMoveTime).inMicroseconds / 1e6;
-    if (dtMs > 0) _flingVel = (pos - _lastPos) / dtMs;
+
+    // 플링 속도 추정(v5 §1): 매 이벤트 순간속도를 그대로 덮어쓰던 v4를 EMA 평활로 교체.
+    // 너무 짧은 dt(<4ms) 샘플은 순간속도가 과대평가되므로 속도 계산에서 제외하되,
+    // _lastPos·_lastMoveTime은 항상 갱신해 다음 샘플의 dt/변위가 정확하도록 한다.
+    // dt는 위 손가락 속도 추적과 동일하므로 moveDt를 재사용(_flingVel은 별개 평활).
+    if (moveDt >= kFlingMinDt) {
+      var instant = (pos - _lastPos) / moveDt; // 순간속도(px/s)
+      // 스파이크 컷: 비정상적으로 큰 순간속도는 크기를 3000px/s로 제한.
+      final m = instant.distance;
+      if (m > kFlingSpikeClamp) instant = instant / m * kFlingSpikeClamp;
+      // 첫 유효샘플은 그대로 채택, 이후는 EMA(0.5:0.5)로 다듬어 폭주/미약 둘 다 억제.
+      _flingVel = _flingSeeded ? _flingVel * 0.5 + instant * 0.5 : instant;
+      _flingSeeded = true;
+      // peak 갱신(v8 §4): 프레임당 *0.9 감쇠 + 최신 순간속도 크기의 최대. 떼기 직전
+      // 감속에도 직전의 빠름이 남아 release에서 강한 fling으로 살아난다.
+      final instantSpeed = instant.distance;
+      _flingPeak = max(_flingPeak * 0.9, instantSpeed);
+    }
     _lastPos = pos;
     _lastMoveTime = e.timeStamp;
   }
@@ -178,48 +463,79 @@ class _HomeScreenState extends State<HomeScreen>
     if (e.pointer != _pointerId) return;
     final ball = _ball;
     _pointerId = null;
-    _squeeze = 0;
 
     if (ball == null) return;
     if (!_moved) {
-      // 누르기(GST-03): 물결 + 뗄 때 진동
-      _ripples.add(Ripple(e.localPosition));
-      Haptics.instance.fire(HapticLevel.selection, throttle: false);
-    } else if (_onBall) {
+      // 누르기 홀드 종료(GST-03, §2): 드래그로 전환되지 않고 제자리에서 손을 뗌.
+      // pressStart는 _onPointerDown(본체 위)에서 이미 걸렸으므로 여기서 복원 시작 +
+      // 떼는 톡(pressRelease) 발사. 짧게 톡 친 탭도 같은 경로(얕게 들어갔다 톡).
+      // 물결은 항상(본체 안팎 무관). 본체 밖 탭은 pressStart가 없었으니 pressEnd는
+      // 무해(holding=false) — 물결만 남는다.
+      final pos = e.localPosition;
+      _ripples.add(Ripple(pos));
+      if (ball.hitTest(_downPos)) {
+        ball.pressEnd();
+        Haptics.instance.pressRelease();
+      }
+    } else if (_dragMode == _DragMode.roll) {
+      // fling(v8 §4): 방향은 EMA(_flingVel) 방향을 유지하되, 크기는 EMA 크기와
+      // peak*0.8 중 큰 쪽을 채택해 떼기 직전 감속에 묻힌 빠른 손맛을 살린다.
+      // 최종 크기는 [0, kFlingReleaseClamp]로 clamp. 천천히 굴리면 peak도 작아 약하게.
       ball.release();
-      ball.vel = _flingVel; // 던진 손맛
+      final dir = _flingVel.distance > 0.001
+          ? _flingVel / _flingVel.distance
+          : Offset.zero;
+      var sp = max(_flingVel.distance, _flingPeak * 0.8);
+      if (sp > kFlingReleaseClamp) sp = kFlingReleaseClamp;
+      ball.vel = dir * sp; // 던진 손맛(관성 fling)
+    } else {
+      // stroke / none(미커밋): grabbed 해제만, vel 부여 안 함(날아가지 않음, v6 §2).
+      ball.release();
     }
     _moved = false;
-    _onBall = false;
-  }
-
-  /// GST-05 임계 돌파: 팡 → 종이가 튀어나오듯 글쓰기로 전환(HOME-05).
-  void _pop() {
-    _squeeze = 0;
-    _pointerId = null;
-    Haptics.instance.fire(HapticLevel.heavy, throttle: false);
-    _goToWriting();
+    _dragMode = _DragMode.none;
   }
 
   void _goToWriting() {
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const WritingScreen()),
-    );
+    // 복귀 시(글쓰기 취소/뒤로) 홈을 멘트 화면으로 복원(§6 보강). 카운트 증가는
+    // 의식 완료 감지(_onSessionChanged)에서만 일어나므로 여기선 UI만 초기화.
+    Navigator.of(context)
+        .push(MaterialPageRoute(builder: (_) => const WritingScreen()))
+        .then((_) => _restoreHomeInitial());
   }
 
   @override
   void dispose() {
+    _session?.removeListener(_onSessionChanged);
     _ticker.dispose();
     _accelSub?.cancel();
-    _userAccelSub?.cancel();
     _frame.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    // §2/§B 소비: 홈만 motion의 SkyBackground로 감싼다(시간대 morph 배경).
+    // 글자색은 motion이 제공하는 계약 `skyTextColorAt(DateTime.now())`(현재 시각
+    // 보간된 --on-bg)로 결정한다. 기존 dark/light 분기는 이걸로 대체(가독성).
+    final Color onBg = skyTextColorAt(DateTime.now());
+    // 멘트: 가장 또렷하게(opacity 0.9 느낌).
+    final Color msgColor = onBg.withValues(alpha: 0.90);
+    // 날짜/힌트 등 보조: 살짝 투명.
+    final Color subColor = onBg.withValues(alpha: 0.72);
+    // 카운트는 더 저대비(공 경험 방해 금지, §4).
+    final Color countColor = onBg.withValues(alpha: 0.55);
+    // 도움말 시트는 기존 tone enum 계약을 그대로 쓴다(호환 유지).
+    final SkyTone tone = skyToneAt(DateTime.now());
+    final bool dark = tone == SkyTone.dark;
+    // 도움말 `?` 버튼 전경/배경.
+    final Color helpFg = onBg.withValues(alpha: 0.85);
+    final Color helpBg = dark
+        ? Colors.white.withValues(alpha: 0.14)
+        : Colors.white.withValues(alpha: 0.55);
+
     return Scaffold(
-      body: AppBackground(
+      body: SkyBackground(
         child: SafeArea(
           child: LayoutBuilder(
             builder: (context, constraints) {
@@ -230,6 +546,21 @@ class _HomeScreenState extends State<HomeScreen>
               } else {
                 _ball!.resize(rect);
               }
+              // 멘트를 '공 바로 위 중앙'에 두기 위한 좌표 계산(§C-1).
+              // 공은 화면 중앙(rect.center)에 있고 반경은 _ball.radius. 멘트 박스는
+              // 사라져도 공이 안 튀게 고정 높이(_kMsgBoxH)로 예약하고, 그 박스의
+              // 멘트는 화면 상단부(공보다 한참 위)에 둔다(프로토타입 레이아웃).
+              double msgBoxTop = rect.height * 0.12;
+              if (msgBoxTop < _kMsgBoxMinTop) msgBoxTop = _kMsgBoxMinTop;
+              // 멘트를 두 줄로 분리 — 첫 줄 크게, 둘째 줄 작게.
+              final int msgIdx = _releaseCount % homeMessages.length;
+              final List<String> msgParts = homeMessages[msgIdx].split('\n');
+              final String msgLine1 = msgParts.isNotEmpty ? msgParts[0] : '';
+              final String msgLine2 = msgParts.length > 1 ? msgParts[1] : '';
+              // 둘째(작은) 줄: 아직 안 흘려보냈으면 '오늘, 처음 흘려보낼까요'(오늘 처음
+              // 켠 인사), 한 번이라도 했으면 멘트 원래 둘째 줄. ('N번째 흘려보냄'은 3줄째.)
+              final String secondLine =
+                  _releaseCount > 0 ? msgLine2 : '오늘, 처음 흘려보낼까요';
               return Stack(
                 children: [
                   // 공 + 물결 캔버스 + 포인터
@@ -243,56 +574,192 @@ class _HomeScreenState extends State<HomeScreen>
                         painter: EmotionBallPainter(
                           ball: _ball!,
                           ripples: _ripples,
-                          squeeze: _squeeze,
+                          strokeEnergy: _strokeEnergy,
                           repaint: _frame,
                         ),
                       ),
                     ),
                   ),
 
-                  // HOME-03 위로 멘트 (만지면 사라짐)
+                  // 날짜(§C-2): 상단 중앙, 작게·살짝 투명. 프로토타입처럼
+                  // 첫 터치 시 멘트와 함께 fade-out 한다(직전 '항상 표시'를 되돌림).
                   Positioned(
-                    top: 28,
+                    top: _kDateTop,
                     left: 0,
                     right: 0,
                     child: IgnorePointer(
                       child: AnimatedOpacity(
-                        opacity: _showComfort ? 1 : 0,
+                        opacity: _touched ? 0 : 1,
                         duration: const Duration(milliseconds: 600),
+                        curve: Curves.easeOut,
                         child: Text(
-                          _comfort,
+                          _formatDateTime(_now),
                           textAlign: TextAlign.center,
-                          style: const TextStyle(
-                            fontSize: 18,
-                            color: Colors.white70,
-                            height: 1.5,
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: subColor,
+                            letterSpacing: 0.3,
                           ),
                         ),
                       ),
                     ),
                   ),
 
-                  // 글쓰기 전환 힌트 + 접근성 대체 버튼 (HOME-05)
+                  // 멘트/카운트 영역(§C-1,3,4): 공 바로 위 중앙. 고정 높이(_kMsgBoxH)
+                  // 박스에 예약해 멘트가 사라져도 공이 안 튄다. untouched는 멘트+
+                  // releaseCount, touched는 같은 자리에 interactionCount fade-in.
+                  Positioned(
+                    top: msgBoxTop,
+                    left: 0,
+                    right: 0,
+                    child: IgnorePointer(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          // 멘트 첫 줄 — 크게. 첫 터치 시 fade-out.
+                          AnimatedOpacity(
+                            opacity: _touched ? 0 : 1,
+                            duration: const Duration(milliseconds: 600),
+                            curve: Curves.easeOut,
+                            child: ConstrainedBox(
+                              constraints: const BoxConstraints(maxWidth: 320),
+                              child: Text(
+                                msgLine1,
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  fontSize: 24,
+                                  color: msgColor,
+                                  height: 1.4,
+                                  letterSpacing: 0.2,
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          // 둘째 줄 자리 ↔ interaction 카운트(같은 위치 cross-fade).
+                          // 멘트가 사라지면 그 '둘째 줄 자리'에 interaction이 뜬다(§사용자 지시).
+                          Stack(
+                            alignment: Alignment.topCenter,
+                            children: [
+                              AnimatedOpacity(
+                                opacity: _touched ? 0 : 1,
+                                duration: const Duration(milliseconds: 600),
+                                curve: Curves.easeOut,
+                                child: ConstrainedBox(
+                                  constraints:
+                                      const BoxConstraints(maxWidth: 300),
+                                  child: Text(
+                                    secondLine,
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      color: subColor,
+                                      height: 1.5,
+                                      letterSpacing: 0.2,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              AnimatedOpacity(
+                                opacity: _touched ? 1 : 0,
+                                duration: const Duration(milliseconds: 700),
+                                curve: Curves.easeOut,
+                                child: Text(
+                                  '$_interactionCount interactions',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    color: countColor,
+                                    letterSpacing: 0.4,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          // 3번째 줄(작게·은은히): 한 번이라도 흘려보냈으면 'N번째
+                          // 흘려보냄'. 아직이면 둘째 줄이 '오늘, 처음 흘려보낼까요'이므로
+                          // 3줄째는 생략한다. 첫 터치 시 fade-out.
+                          if (_releaseCount > 0) ...[
+                            const SizedBox(height: 8),
+                            AnimatedOpacity(
+                              opacity: _touched ? 0 : 1,
+                              duration: const Duration(milliseconds: 600),
+                              curve: Curves.easeOut,
+                              child: Text(
+                                '$_releaseCount번째 흘려보냄',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: countColor,
+                                  letterSpacing: 0.4,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+
+                  // 하단 힌트(§C-5): 터치 전 "감정말랑이를 마음껏 만져보세요"를
+                  // 은은하게(opacity≈0.6). 첫 터치 시 fade-out. '바로 글쓰기' 버튼·
+                  // 도움말 ? 버튼과 공존(아래 버튼 위에 띄운다).
+                  Positioned(
+                    bottom: _kHintBottom,
+                    left: 0,
+                    right: 0,
+                    child: IgnorePointer(
+                      child: AnimatedOpacity(
+                        opacity: _touched ? 0 : 0.6,
+                        duration: const Duration(milliseconds: 500),
+                        curve: Curves.easeOut,
+                        child: Text(
+                          '감정말랑이를 마음껏 만져보세요',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: onBg,
+                            letterSpacing: 0.2,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+
+                  // 상단 우측: 도움말 `?` 버튼(반투명 원, §5).
+                  Positioned(
+                    top: 20,
+                    right: 16,
+                    child: Material(
+                      color: helpBg,
+                      shape: const CircleBorder(),
+                      child: InkWell(
+                        customBorder: const CircleBorder(),
+                        onTap: () => HomeHelpSheet.show(context, tone),
+                        child: SizedBox(
+                          width: 40,
+                          height: 40,
+                          child: Icon(Icons.question_mark,
+                              size: 18, color: helpFg),
+                        ),
+                      ),
+                    ),
+                  ),
+
+                  // 글쓰기 진입 단일 경로 (HOME-05). 자동 강제 전환 없음.
                   Positioned(
                     bottom: 24,
                     left: 0,
                     right: 0,
-                    child: Column(
-                      children: [
-                        const Text(
-                          '공을 꾹 쥐면 종이가 나와요',
-                          style: TextStyle(color: Colors.white38, fontSize: 13),
+                    child: Center(
+                      child: TextButton.icon(
+                        onPressed: _goToWriting,
+                        icon: const Icon(Icons.edit_note, size: 18),
+                        label: const Text('바로 글쓰기'),
+                        style: TextButton.styleFrom(
+                          foregroundColor: subColor,
                         ),
-                        const SizedBox(height: 8),
-                        TextButton.icon(
-                          onPressed: _goToWriting,
-                          icon: const Icon(Icons.edit_note, size: 18),
-                          label: const Text('바로 글쓰기'),
-                          style: TextButton.styleFrom(
-                            foregroundColor: Colors.white60,
-                          ),
-                        ),
-                      ],
+                      ),
                     ),
                   ),
                 ],
@@ -302,5 +769,16 @@ class _HomeScreenState extends State<HomeScreen>
         ),
       ),
     );
+  }
+
+  /// 상단에 작게 표시할 날짜·시간 포맷(예: '6월 4일 화요일 · 오후 9:05').
+  String _formatDateTime(DateTime t) {
+    const weekdays = ['월', '화', '수', '목', '금', '토', '일'];
+    final wd = weekdays[t.weekday - 1];
+    final isPm = t.hour >= 12;
+    final h12 = t.hour % 12 == 0 ? 12 : t.hour % 12;
+    final ap = isPm ? '오후' : '오전';
+    final mm = t.minute.toString().padLeft(2, '0');
+    return '${t.month}월 ${t.day}일 $wd요일 · $ap $h12:$mm';
   }
 }

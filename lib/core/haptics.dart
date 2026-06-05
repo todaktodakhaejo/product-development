@@ -63,7 +63,81 @@ class Haptics {
   }
 
   /// 잡고 문지르기(GST-04)용 지속적 약한 진동 틱.
+  /// (구버전 — v2부터 [strokeSoft]로 대체. 타 곳 미사용 시 정리 대상.)
   void rubTick() => fire(HapticLevel.light);
+
+  // ── 제스처 v2 신규 햅틱 (§12.1 인터페이스 계약) ──────────────────────
+  // 연속 패턴(strokeSoft/rollFriction)은 home_screen이 매 프레임/이동마다
+  // 불러도 폭주하지 않도록 각자 독립 타임스탬프로 throttle한다.
+  // (전역 _allow()는 fire()와 공유되므로 여기서 재사용하지 않는다 — 서로
+  //  엉켜서 한쪽이 다른 쪽을 잡아먹는 걸 막기 위해 메서드별 게이트를 둔다.)
+  // 단발 패턴(pressDown/pressRelease)은 침몰·복원의 결정적 순간이라 throttle 무시.
+  //
+  // 모두 내부적으로 HapticFeedback만 호출 → 햅틱 미지원 기기에선 자동 noop(예외 없음).
+  // iOS Core Haptics의 연속·가변 강도(부드럽게 흐르는 텍스처, speed 비례 amplitude)는
+  // 네이티브 채널이 있어야 진짜로 살아난다 → 실기기/네이티브 작업 필요(이번 범위 밖).
+
+  DateTime _strokeLast = DateTime.fromMillisecondsSinceEpoch(0);
+  // v3: 40ms → 50ms로 완화. 너무 자주 울리면 "자글대는 결"이 되어 잔잔함이
+  // 깨진다 → 간격을 늘려 더 부드럽고 흐르는 텍스처로(쓰다듬기=위로 느낌 강화).
+  final Duration _strokeGap = const Duration(milliseconds: 50);
+
+  /// 쓰다듬기(GST-04) 연속 약진동. 위로받는 잔잔한 텍스처.
+  /// [rubTick]의 딱딱한 light 반복보다 부드럽게, ~50ms 간격으로 흐르듯 발사.
+  /// home_screen이 stroke 모드 매 move마다 호출 → 내부 throttle로 폭주 차단.
+  void strokeSoft() {
+    final now = DateTime.now();
+    if (now.difference(_strokeLast) < _strokeGap) return;
+    _strokeLast = now;
+    // selectionClick: lightImpact보다 가볍고 결이 고와 "쓸리는" 느낌에 가깝다.
+    // (Core Haptics 연속 진동이 이상적 — 실기기/네이티브 작업 필요.)
+    HapticFeedback.selectionClick();
+  }
+
+  DateTime _rollLast = DateTime.fromMillisecondsSinceEpoch(0);
+  final Duration _rollGap = const Duration(milliseconds: 28);
+
+  /// 굴리기(GST-02) 마찰 틱. 구슬이 바닥을 구르는 자글한 텍스처감.
+  /// [speed01](0~1, 추종속도/2600)에 따라 light~medium 가변.
+  /// home_screen이 이동 누적 거리마다 호출 → 내부 ~28ms throttle.
+  void rollFriction(double speed01) {
+    final now = DateTime.now();
+    if (now.difference(_rollLast) < _rollGap) return;
+    _rollLast = now;
+    final s = speed01.clamp(0.0, 1.0);
+    // 빠를수록 굵은 자글거림. 느릴 땐 가볍게 톡톡.
+    HapticFeedback.lightImpact();
+    if (s >= 0.6) HapticFeedback.mediumImpact();
+  }
+
+  /// 누르기(GST-03) 침몰 순간. 쑥 들어가는 묵직함 — medium 1회.
+  /// 탭의 결정적 순간이므로 throttle 무시(§12.1).
+  void pressDown() => HapticFeedback.mediumImpact();
+
+  /// 누르기(GST-03) 복원 정점. 차오르며 톡 올라오는 느낌 — light 1회.
+  /// 복원 정점 프레임의 단발이므로 throttle 무시(§12.1).
+  void pressRelease() => HapticFeedback.lightImpact();
+
+  DateTime _holdTickLast = DateTime.fromMillisecondsSinceEpoch(0);
+  // pressDown/pressRelease와 달리 침몰 도중 여러 번 불릴 수 있으므로(깊이 정점
+  // 통과 시) 독립 60ms 게이트로 연속 호출을 안전하게 흡수한다. 전역 _allow()나
+  // stroke/roll 게이트와 공유하지 않는다 — 서로 잡아먹지 않도록 메서드 전용.
+  final Duration _holdTickGap = const Duration(milliseconds: 60);
+
+  /// 누르기(GST-03) 홀드 중 미세 틱. 손가락이 그대로 있는데 본체가 "쑥 더
+  /// 들어가는" 깊이감을 촉각으로 보조한다. home_screen이 침몰 깊이 정점
+  /// (0.5·0.85 통과 등)에서 호출 → 내부 60ms throttle로 연속 호출 안전.
+  ///
+  /// 아주 약하게: selectionClick은 lightImpact보다 가벼워 "깊어짐"을 방해하지
+  /// 않고 살짝 결만 더한다(pressDown medium과 대비되는 미세 신호).
+  /// (Core Haptics 가변 강도라면 깊이에 비례해 amplitude를 키우는 게 이상적 —
+  ///  실기기/네이티브 작업 필요.)
+  void pressHoldTick() {
+    final now = DateTime.now();
+    if (now.difference(_holdTickLast) < _holdTickGap) return;
+    _holdTickLast = now;
+    HapticFeedback.selectionClick();
+  }
 
   // ── P3 신규: 부드러운 성공 / 연속 진동 근사 ──────────────────────
   // 의식 고도화(태우기 잔불 마무리·보석함 닫힘·파쇄기 투입)용.

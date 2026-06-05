@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
 
 import '../../../core/haptics.dart';
+import '../../../core/ritual_audio.dart';
 import '../../../core/strings.dart';
 import '../../../state/session.dart';
 import '../../../theme/app_theme.dart';
@@ -339,6 +340,8 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
 
     // 연속 연소 햅틱 시작(haptics 소유 API).
     _blazeHandle = Haptics.instance.startBurnBlaze();
+    // 효과음: 연소 동안 fire.mp3 루프(프로토타입 그대로, volume 0.8).
+    RitualAudio.instance.startFire();
     // 3초 고정 자동 연소 시작.
     _burnCtrl.forward(from: 0);
     setState(() {});
@@ -355,6 +358,9 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
     // 발사한다(아래 _kMessageDelay 콜백). 여기선 stop만.
     _blazeHandle?.stop();
     _blazeHandle = null;
+    // 효과음: 전소와 함께 fire 루프 정지 → 잔불 타닥타닥 여운 루프로 전환.
+    RitualAudio.instance.stopFire();
+    RitualAudio.instance.startEmberCrackle();
 
     // 전소 지점에서 위로 솟는 큰 ember 버스트(레퍼런스 complete 30개) + 흰재 whoosh.
     if (_paperRect != Rect.zero) {
@@ -426,6 +432,8 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
 
   // ── '처음으로': 세션 리셋 + 홈 복귀(기존 _backToHome 동작과 동일) ──
   void _backToHome() {
+    // 잔불 타닥타닥 여운 정지(누수 방지).
+    RitualAudio.instance.stopEmberCrackle();
     SessionScope.of(context).reset();
     Navigator.of(context).popUntil((r) => r.isFirst);
   }
@@ -434,6 +442,7 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
   void dispose() {
     // 누수 0: 진동·타이머·컨트롤러·ticker 모두 정리.
     _blazeHandle?.stop();
+    RitualAudio.instance.stopAll();
     _burnCtrl.dispose();
     _flameReturnCtrl.dispose();
     _ticker.dispose();
