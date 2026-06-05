@@ -276,6 +276,15 @@ class EmotionBall {
     grabbed = false;
   }
 
+  /// 의식 완료 후 홈 복귀 시 공을 화면 중앙·정지 상태로 되돌린다.
+  /// (굴리다 만 위치/속도를 리셋. 잔여 변형(squash 등)은 update에서 자연 감쇠.)
+  void recenter() {
+    pos = bounds.center;
+    vel = Offset.zero;
+    grabbed = false;
+    pressCancel(); // 누르기 침몰이 남아 있으면 무팝으로 정리
+  }
+
   /// 제자리 쓰다듬기(GST-04). [step]은 직전 프레임 대비 손가락 이동량,
   /// [localPos]는 손가락의 현재 화면 좌표(위치 반응용, v8 §1-B).
   ///

@@ -216,6 +216,7 @@ class _HomeScreenState extends State<HomeScreen>
   /// 자체는 평생 누적이므로 초기화하지 않는다(계속 누적).
   void _restoreHomeInitial() {
     if (!mounted) return;
+    _ball?.recenter(); // 의식/글쓰기에서 돌아오면 말랑이를 가운데 원래 자리로
     setState(() => _touched = false);
   }
 
@@ -579,11 +580,17 @@ class _HomeScreenState extends State<HomeScreen>
               final List<String> msgParts = homeMessages[msgIdx].split('\n');
               final String msgLine1 = msgParts.isNotEmpty ? msgParts[0] : '';
               final String msgLine2 = msgParts.length > 1 ? msgParts[1] : '';
-              // 매일 첫 접속(오늘 첫 실행)이고 아직 아무것도 안 흘려보냈으면, 둘째(작은)
-              // 줄을 '오늘, 처음 흘려보낼까요'로 대체. 그 외엔 멘트 원래 둘째 줄.
-              final String secondLine = (_showDailyGreeting && _releaseCount == 0)
-                  ? '오늘, 처음 흘려보낼까요'
-                  : msgLine2;
+              // 둘째(작은) 줄: 한 번이라도 흘려보냈으면 'N번째 흘려보냄', 오늘 첫
+              // 접속이면 '오늘, 처음 흘려보낼까요', 그 외(같은 날 재실행·아직 안
+              // 흘려보냄)엔 멘트 원래 둘째 줄.
+              final String secondLine;
+              if (_releaseCount > 0) {
+                secondLine = '$_releaseCount번째 흘려보냄';
+              } else if (_showDailyGreeting) {
+                secondLine = '오늘, 처음 흘려보낼까요';
+              } else {
+                secondLine = msgLine2;
+              }
               return Stack(
                 children: [
                   // 공 + 물결 캔버스 + 포인터
