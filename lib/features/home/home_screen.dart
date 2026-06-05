@@ -12,7 +12,6 @@ import 'emotion_ball.dart';
 import 'emotion_ball_painter.dart';
 import 'home_help_sheet.dart';
 import 'home_messages.dart';
-import 'release_counter.dart';
 import 'sky_background.dart';
 
 /// 2단계 첫 화면(홈). 감정 오브제(공)와 4종 제스처 인터랙션의 무대.
@@ -95,14 +94,11 @@ class _HomeScreenState extends State<HomeScreen>
   // 화면에 표시할 누적 흘려보냄 횟수(의식 완료 횟수). 진입 시·완료 시 갱신.
   int _releaseCount = 0;
 
-  // ── 공 놀이(인터랙션) 카운트(v2 §1-B) ─────────────────────────
-  // 공을 튕기고·흔들고·굴리고·만지고·누른 평생 누적 횟수. 진입 시 lifetime을
-  // 비동기 로드해 메모리에서 증가시키고, 디스크 쓰기는 디바운스(주기 Timer/완료/
-  // dispose)로만 한다. 매 제스처 setState는 ~100ms 스로틀로 리빌드 폭주 방지.
+  // ── 공 놀이(인터랙션) 카운트 ──────────────────────────────────
+  // 공을 튕기고·흔들고·굴리고·만지고·누른 횟수. **세션 한정** — 영구 저장하지
+  // 않으므로 앱을 나갔다 들어오면 0으로 리셋된다(의식 횟수와 동일 정책). 0에서
+  // 시작해 저장소 로드가 없으므로, 첫 제스처부터 지연 없이 즉시 카운트된다.
   int _interactionCount = 0;
-  bool _interactionLoaded = false; // lifetime 로드 완료 여부
-  int _interactionSavedAt = 0; // 마지막으로 디스크에 반영한 값
-  Timer? _interactionSaveTimer; // 변경분 디바운스 저장(~3s 주기)
 
   // ── 의식 완료 감지(§6) — SessionScope listen만, P2/P3 무수정 ──────
   SessionState? _session; // didChangeDependencies에서 바인딩
@@ -157,21 +153,10 @@ class _HomeScreenState extends State<HomeScreen>
     super.initState();
     _ticker = createTicker(_onTick)..start();
     _listenSensors();
-    // 흘려보냄 횟수(releaseCount)는 세션 한정 — 앱을 나갔다 들어오면 0으로 리셋한다
-    // (영구 저장 안 함). 멘트는 releaseCount % 9로 세트가 넘어가므로, 재실행하면
-    // 첫 멘트부터 다시 시작한다. → ReleaseCounter.read() 호출 제거(0에서 시작).
-    // 공 놀이 평생 누적(v2 §1-B): lifetime 로드 후 메모리에서 증가시킨다.
-    ReleaseCounter.readInteraction().then((value) {
-      if (!mounted) return;
-      setState(() {
-        _interactionCount = value;
-        _interactionSavedAt = value;
-        _interactionLoaded = true;
-      });
-    });
-    // 변경분 디바운스 저장(~3s 주기): 그 사이 증가가 있었을 때만 디스크에 쓴다.
-    _interactionSaveTimer =
-        Timer.periodic(const Duration(seconds: 3), (_) => _flushInteraction());
+    // 흘려보냄 횟수(releaseCount)·공 놀이 횟수(interactionCount) **둘 다 세션 한정** —
+    // 앱을 나갔다 들어오면 0으로 리셋한다(영구 저장 안 함). 둘 다 0에서 시작하고
+    // 저장소 로드(비동기)가 없으므로, 첫 제스처부터 카운트가 지연 없이 즉시 반영된다.
+    // 멘트는 releaseCount % 9로 세트가 넘어가므로, 재실행하면 첫 멘트부터 다시 시작한다.
   }
 
   @override
@@ -203,8 +188,6 @@ class _HomeScreenState extends State<HomeScreen>
       // 흘려보냄 +1(세션 한정 in-memory, 영구 저장 안 함) 후 홈 UI 초기화.
       // 멘트도 새 releaseCount % 9로 넘어간다. 앱 재실행 시 0으로 리셋된다.
       setState(() => _releaseCount++);
-      // 의식 완료 시점에 인터랙션 누적분도 디스크에 반영(디바운스 보강).
-      _flushInteraction();
       _restoreHomeInitial();
     }
   }
@@ -217,27 +200,15 @@ class _HomeScreenState extends State<HomeScreen>
     setState(() => _touched = false);
   }
 
-  /// 공 놀이 1회 카운트(v2 §1-B). 공 위 pointer down 1회 또는 흔들기 임펄스
-  /// 발사 1회마다 +1. lifetime 로드 전이면 카운트만 보류 없이 미루지 않고
-  /// 메모리 증가만(로드 콜백이 들어오기 전 제스처는 드물고, 로드 시 덮어쓰므로
-  /// 정확도를 위해 로드 완료 후부터 집계한다).
+  /// 공 놀이 1회 카운트. 공 위 pointer down 1회 또는 흔들기 임펄스 발사 1회마다 +1.
+  /// 세션 한정 메모리 값이라 로드 대기가 없어 즉시 증가한다.
   void _bumpInteraction() {
-    if (!_interactionLoaded) return; // lifetime 로드 전엔 집계 보류(덮어쓰기 방지)
     _interactionCount++;
-    // 즉시 반영(스로틀 없음 — 바로바로 숫자가 올라가야 한다). _bumpInteraction은
-    // 터치 다운·흔들기 임펄스 같은 '이벤트'마다만 불려 빈도가 높지 않으므로 매번
-    // setState해도 부담이 적다. untouched(숨김) 상태면 굳이 리빌드하지 않는다.
+    // 즉시 반영(스로틀·로드 게이트 없음 — 바로바로 숫자가 올라가야 한다).
+    // _bumpInteraction은 터치 다운·흔들기 임펄스 같은 '이벤트'마다만 불려 빈도가
+    // 높지 않으므로 매번 setState해도 부담이 적다. untouched(숨김)면 리빌드 생략.
     if (!_touched) return;
     if (mounted) setState(() {});
-  }
-
-  /// 메모리 누적분이 마지막 저장값과 다르면 디스크에 반영(디바운스/완료/dispose).
-  void _flushInteraction() {
-    if (!_interactionLoaded) return;
-    if (_interactionCount == _interactionSavedAt) return;
-    final v = _interactionCount;
-    _interactionSavedAt = v;
-    ReleaseCounter.saveInteraction(v);
   }
 
   void _listenSensors() {
@@ -538,8 +509,6 @@ class _HomeScreenState extends State<HomeScreen>
 
   @override
   void dispose() {
-    _interactionSaveTimer?.cancel();
-    _flushInteraction(); // 마지막 누적분을 디스크에 반영
     _session?.removeListener(_onSessionChanged);
     _ticker.dispose();
     _accelSub?.cancel();
