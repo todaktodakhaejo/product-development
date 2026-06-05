@@ -6,11 +6,13 @@ import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:sensors_plus/sensors_plus.dart';
 
 import '../../core/haptics.dart';
-import '../../core/strings.dart';
-import '../../theme/app_theme.dart';
+import '../../state/session.dart';
 import '../writing/writing_screen.dart';
 import 'emotion_ball.dart';
 import 'emotion_ball_painter.dart';
+import 'home_help_sheet.dart';
+import 'home_messages.dart';
+import 'sky_background.dart';
 
 /// 2단계 첫 화면(홈). 감정 오브제(공)와 4종 제스처 인터랙션의 무대.
 ///
@@ -79,12 +81,42 @@ class _HomeScreenState extends State<HomeScreen>
   double _dragSpeed = 0; // 평활된 손가락 속도(px/s)
   bool _dragSpeedSeeded = false; // 첫 유효샘플 채택 플래그
 
-  bool _showComfort = true;
-  late final String _comfort = randomComfortMessage();
+  // ── 멘트(§2/§3) / 터치→카운트(§1) ───────────────────────────
+  // 멘트는 타이머 순환 폐기(v2 §3). 홈에 있는 동안 고정이며, 표시 멘트는
+  // homeMessages[_releaseCount % 9]. 의식을 한 번 완료(releaseCount+1)할 때마다
+  // 다음 세트로 자연히 넘어간다. AnimatedSwitcher fade는 멘트가 실제 바뀔 때만.
+  // 현재 시각(날짜·시간 표시용). _onTick에서 분 단위로만 갱신.
+  DateTime _now = DateTime.now();
+  // 공을 한 번이라도 터치하면 true → 멘트/날짜/releaseCount fade-out,
+  // interactionCount fade-in. 세션 동안 유지되고, 의식 완료 복귀(§1)나
+  // 글쓰기 복귀 시에만 초기화된다.
+  bool _touched = false;
+  // 화면에 표시할 누적 흘려보냄 횟수(의식 완료 횟수, 세션 한정). 멘트 인덱스 구동.
+  int _releaseCount = 0;
+
+  // ── 공 놀이(인터랙션) 카운트 ──────────────────────────────────
+  // 공을 튕기고·흔들고·굴리고·만지고·누른 횟수. **세션 한정** — 영구 저장하지
+  // 않으므로 앱을 나갔다 들어오면 0으로 리셋된다(의식 횟수와 동일 정책). 0에서
+  // 시작해 저장소 로드가 없으므로, 첫 제스처부터 지연 없이 즉시 카운트된다.
+  int _interactionCount = 0;
+
+  // ── 의식 완료 감지(§6) — SessionScope listen만, P2/P3 무수정 ──────
+  SessionState? _session; // didChangeDependencies에서 바인딩
+  // ritual이 한 번이라도 non-null이 된 적 있으면 true. reset로 null이 될 때
+  // 이 플래그가 켜져 있으면 '의식 완료'로 판정해 카운트를 올린다.
+  bool _ritualWasChosen = false;
 
   Duration _lastTick = Duration.zero;
 
   static const double _slop = 14;
+
+  // ── 홈 레이아웃 상수(§C, 프로토타입 Home.tsx 기준) ──────────────
+  // 날짜는 상단 중앙(SafeArea 기준 top).
+  static const double _kDateTop = 32;
+  // 멘트 블록 최소 상단 여백(작은 기기에서 날짜와 겹침 방지).
+  static const double _kMsgBoxMinTop = 68;
+  // 하단 힌트 위치(바로 글쓰기 버튼 위에 띄움).
+  static const double _kHintBottom = 88;
 
   // 흔들기(GST-01) 선형 가속도 임계(m/s², §1 강화). userAccelerometer는 중력이
   // 제거돼 정지 시 ≈0, 직선으로 흔들면 즉시 큰 값이 잡힌다. 임계를 낮춰(9) 쉽게
@@ -95,8 +127,8 @@ class _HomeScreenState extends State<HomeScreen>
       Duration(milliseconds: 70); // 90→70 (v8 §2 연속 반응 즉각)
 
   // 드래그 판별 임계(v6 §2 — 속도 기반). 거리·방향전환 기반 상수는 폐기.
-  static const double kRollSpeed = 900; // px/s, 손가락 속도가 이를 넘으면 굴리기(§1 완화: 420→900)
-  static const double kRollNet = 1.2; // ×radius, 느려도 이만큼 끌면 굴리기
+  static const double kRollSpeed = 650; // px/s, 손가락 속도가 이를 넘으면 굴리기(900→650: 굴리기 시작 더 쉽게)
+  static const double kRollNet = 0.5; // ×radius, 느려도 이만큼 끌면 굴리기(0.7→0.5: 천천히 끌어도 금방 따라와 데굴데굴)
   // stroke 커밋 후 roll 탈출 임계(v8 §1-A). 커밋된 쓰다듬기에서는 net 기반 탈출을
   // 제거하고, 오직 명백한 빠른 플릭(이 속도 초과)일 때만 roll로 전환한다. 가로/세로/
   // 대각 어느 방향으로 넓게 쓰다듬어도 굴리기로 새지 않는다.
@@ -117,6 +149,63 @@ class _HomeScreenState extends State<HomeScreen>
     super.initState();
     _ticker = createTicker(_onTick)..start();
     _listenSensors();
+    // 흘려보냄 횟수(releaseCount)·공 놀이 횟수(interactionCount) **둘 다 세션 한정** —
+    // 앱을 나갔다 들어오면 0으로 리셋한다(영구 저장 안 함). 둘 다 0에서 시작하고
+    // 저장소 로드(비동기)가 없으므로, 첫 제스처부터 카운트가 지연 없이 즉시 반영된다.
+    // 멘트는 releaseCount % 9로 세트가 넘어가므로, 재실행하면 첫 멘트부터 다시 시작한다.
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // 세션 완료 감지(§6): SessionScope를 listen만(읽기 전용). 안전 패턴으로
+    // 인스턴스가 바뀌면 이전 리스너를 떼고 새로 건다(여기서 reset/write 호출 금지).
+    final session = SessionScope.of(context);
+    if (!identical(session, _session)) {
+      _session?.removeListener(_onSessionChanged);
+      _session = session;
+      _session!.addListener(_onSessionChanged);
+    }
+  }
+
+  /// 세션 변화 콜백(§6, 읽기 전용 판정).
+  /// ritual이 한 번이라도 선택되면 _ritualWasChosen=true. 이후 글·의식이 모두
+  /// 비워진 채(=reset 호출됨) 알림이 오면 '의식 완료'로 보고 카운트 +1 + 홈 초기화.
+  void _onSessionChanged() {
+    final s = _session;
+    if (s == null || !mounted) return;
+    if (s.ritual != null) {
+      _ritualWasChosen = true;
+      return;
+    }
+    // ritual==null. text까지 비고 직전에 의식을 골랐던 적이 있으면 완료.
+    if (s.text.isEmpty && _ritualWasChosen) {
+      _ritualWasChosen = false;
+      // 흘려보냄 +1(세션 한정 in-memory, 영구 저장 안 함) 후 홈 UI 초기화.
+      // 멘트도 새 releaseCount % 9로 넘어간다. 앱 재실행 시 0으로 리셋된다.
+      setState(() => _releaseCount++);
+      _restoreHomeInitial();
+    }
+  }
+
+  /// 홈을 초기(untouched) 상태로 되돌린다(§1).
+  /// 멘트+날짜+releaseCount 표시, interactionCount 숨김. interactionCount 값
+  /// 자체는 평생 누적이므로 초기화하지 않는다(계속 누적).
+  void _restoreHomeInitial() {
+    if (!mounted) return;
+    _ball?.recenter(); // 의식/글쓰기에서 돌아오면 말랑이를 가운데 원래 자리로
+    setState(() => _touched = false);
+  }
+
+  /// 공 놀이 1회 카운트. 공 위 pointer down 1회 또는 흔들기 임펄스 발사 1회마다 +1.
+  /// 세션 한정 메모리 값이라 로드 대기가 없어 즉시 증가한다.
+  void _bumpInteraction() {
+    _interactionCount++;
+    // 즉시 반영(스로틀·로드 게이트 없음 — 바로바로 숫자가 올라가야 한다).
+    // _bumpInteraction은 터치 다운·흔들기 임펄스 같은 '이벤트'마다만 불려 빈도가
+    // 높지 않으므로 매번 setState해도 부담이 적다. untouched(숨김)면 리빌드 생략.
+    if (!_touched) return;
+    if (mounted) setState(() {});
   }
 
   void _listenSensors() {
@@ -167,7 +256,8 @@ class _HomeScreenState extends State<HomeScreen>
           level = HapticLevel.heavy;
         }
         Haptics.instance.fire(level, throttle: false);
-        if (_showComfort) setState(() => _showComfort = false);
+        _bumpInteraction(); // 흔들기 임펄스 발사 1회 = 공 놀이 +1(§1-B)
+        _onTouched();
       },
       onError: (_) {}, // 센서 미지원 기기에서도 터치는 동작
       cancelOnError: false,
@@ -213,6 +303,13 @@ class _HomeScreenState extends State<HomeScreen>
     _ripples.removeWhere((r) => r.dead);
 
     _frame.value++;
+
+    // 날짜·시간 표시 갱신(§3): 분이 바뀐 경우에만 setState로 텍스트 갱신.
+    final now = DateTime.now();
+    if (now.minute != _now.minute || now.hour != _now.hour) {
+      _now = now;
+      if (mounted) setState(() {});
+    }
   }
 
   // ── 포인터(터치) 처리 ───────────────────────────────────────────
@@ -243,8 +340,19 @@ class _HomeScreenState extends State<HomeScreen>
     if (ball.hitTest(pos)) {
       ball.pressStart(pos);
       Haptics.instance.pressDown();
+      // 공 위 pointer down 1회 = 공 놀이 +1(§1-B). 누르기/굴리기/쓰다듬기 시작은
+      // 모두 한 번의 손길이므로 down에서 한 번만 집계한다(이동 전환에서 중복 없음).
+      _bumpInteraction();
     }
-    if (_showComfort) setState(() => _showComfort = false); // HOME-04
+    _onTouched(); // HOME-04: 첫 터치에 멘트→카운트 전환(§1)
+  }
+
+  /// 공을 한 번이라도 터치하면(§1) 멘트/날짜/releaseCount fade-out → 같은
+  /// 상단 자리에 interactionCount fade-in. 이미 전환됐으면 무시(세션 동안 유지).
+  /// interactionCount 값은 _bumpInteraction에서 갱신되므로 여기선 전환만 한다.
+  void _onTouched() {
+    if (_touched) return;
+    setState(() => _touched = true);
   }
 
   void _onPointerMove(PointerMoveEvent e) {
@@ -389,13 +497,16 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   void _goToWriting() {
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const WritingScreen()),
-    );
+    // 복귀 시(글쓰기 취소/뒤로) 홈을 멘트 화면으로 복원(§6 보강). 카운트 증가는
+    // 의식 완료 감지(_onSessionChanged)에서만 일어나므로 여기선 UI만 초기화.
+    Navigator.of(context)
+        .push(MaterialPageRoute(builder: (_) => const WritingScreen()))
+        .then((_) => _restoreHomeInitial());
   }
 
   @override
   void dispose() {
+    _session?.removeListener(_onSessionChanged);
     _ticker.dispose();
     _accelSub?.cancel();
     _frame.dispose();
@@ -404,8 +515,27 @@ class _HomeScreenState extends State<HomeScreen>
 
   @override
   Widget build(BuildContext context) {
+    // §2/§B 소비: 홈만 motion의 SkyBackground로 감싼다(시간대 morph 배경).
+    // 글자색은 motion이 제공하는 계약 `skyTextColorAt(DateTime.now())`(현재 시각
+    // 보간된 --on-bg)로 결정한다. 기존 dark/light 분기는 이걸로 대체(가독성).
+    final Color onBg = skyTextColorAt(DateTime.now());
+    // 멘트: 가장 또렷하게(opacity 0.9 느낌).
+    final Color msgColor = onBg.withValues(alpha: 0.90);
+    // 날짜/힌트 등 보조: 살짝 투명.
+    final Color subColor = onBg.withValues(alpha: 0.72);
+    // 카운트는 더 저대비(공 경험 방해 금지, §4).
+    final Color countColor = onBg.withValues(alpha: 0.55);
+    // 도움말 시트는 기존 tone enum 계약을 그대로 쓴다(호환 유지).
+    final SkyTone tone = skyToneAt(DateTime.now());
+    final bool dark = tone == SkyTone.dark;
+    // 도움말 `?` 버튼 전경/배경.
+    final Color helpFg = onBg.withValues(alpha: 0.85);
+    final Color helpBg = dark
+        ? Colors.white.withValues(alpha: 0.14)
+        : Colors.white.withValues(alpha: 0.55);
+
     return Scaffold(
-      body: AppBackground(
+      body: SkyBackground(
         child: SafeArea(
           child: LayoutBuilder(
             builder: (context, constraints) {
@@ -416,6 +546,21 @@ class _HomeScreenState extends State<HomeScreen>
               } else {
                 _ball!.resize(rect);
               }
+              // 멘트를 '공 바로 위 중앙'에 두기 위한 좌표 계산(§C-1).
+              // 공은 화면 중앙(rect.center)에 있고 반경은 _ball.radius. 멘트 박스는
+              // 사라져도 공이 안 튀게 고정 높이(_kMsgBoxH)로 예약하고, 그 박스의
+              // 멘트는 화면 상단부(공보다 한참 위)에 둔다(프로토타입 레이아웃).
+              double msgBoxTop = rect.height * 0.12;
+              if (msgBoxTop < _kMsgBoxMinTop) msgBoxTop = _kMsgBoxMinTop;
+              // 멘트를 두 줄로 분리 — 첫 줄 크게, 둘째 줄 작게.
+              final int msgIdx = _releaseCount % homeMessages.length;
+              final List<String> msgParts = homeMessages[msgIdx].split('\n');
+              final String msgLine1 = msgParts.isNotEmpty ? msgParts[0] : '';
+              final String msgLine2 = msgParts.length > 1 ? msgParts[1] : '';
+              // 둘째(작은) 줄: 아직 안 흘려보냈으면 '오늘, 처음 흘려보낼까요'(오늘 처음
+              // 켠 인사), 한 번이라도 했으면 멘트 원래 둘째 줄. ('N번째 흘려보냄'은 3줄째.)
+              final String secondLine =
+                  _releaseCount > 0 ? msgLine2 : '오늘, 처음 흘려보낼까요';
               return Stack(
                 children: [
                   // 공 + 물결 캔버스 + 포인터
@@ -436,23 +581,166 @@ class _HomeScreenState extends State<HomeScreen>
                     ),
                   ),
 
-                  // HOME-03 위로 멘트 (만지면 사라짐)
+                  // 날짜(§C-2): 상단 중앙, 작게·살짝 투명. 프로토타입처럼
+                  // 첫 터치 시 멘트와 함께 fade-out 한다(직전 '항상 표시'를 되돌림).
                   Positioned(
-                    top: 28,
+                    top: _kDateTop,
                     left: 0,
                     right: 0,
                     child: IgnorePointer(
                       child: AnimatedOpacity(
-                        opacity: _showComfort ? 1 : 0,
+                        opacity: _touched ? 0 : 1,
                         duration: const Duration(milliseconds: 600),
+                        curve: Curves.easeOut,
                         child: Text(
-                          _comfort,
+                          _formatDateTime(_now),
                           textAlign: TextAlign.center,
-                          style: const TextStyle(
-                            fontSize: 18,
-                            color: Colors.white70,
-                            height: 1.5,
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: subColor,
+                            letterSpacing: 0.3,
                           ),
+                        ),
+                      ),
+                    ),
+                  ),
+
+                  // 멘트/카운트 영역(§C-1,3,4): 공 바로 위 중앙. 고정 높이(_kMsgBoxH)
+                  // 박스에 예약해 멘트가 사라져도 공이 안 튄다. untouched는 멘트+
+                  // releaseCount, touched는 같은 자리에 interactionCount fade-in.
+                  Positioned(
+                    top: msgBoxTop,
+                    left: 0,
+                    right: 0,
+                    child: IgnorePointer(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          // 멘트 첫 줄 — 크게. 첫 터치 시 fade-out.
+                          AnimatedOpacity(
+                            opacity: _touched ? 0 : 1,
+                            duration: const Duration(milliseconds: 600),
+                            curve: Curves.easeOut,
+                            child: ConstrainedBox(
+                              constraints: const BoxConstraints(maxWidth: 320),
+                              child: Text(
+                                msgLine1,
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  fontSize: 24,
+                                  color: msgColor,
+                                  height: 1.4,
+                                  letterSpacing: 0.2,
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          // 둘째 줄 자리 ↔ interaction 카운트(같은 위치 cross-fade).
+                          // 멘트가 사라지면 그 '둘째 줄 자리'에 interaction이 뜬다(§사용자 지시).
+                          Stack(
+                            alignment: Alignment.topCenter,
+                            children: [
+                              AnimatedOpacity(
+                                opacity: _touched ? 0 : 1,
+                                duration: const Duration(milliseconds: 600),
+                                curve: Curves.easeOut,
+                                child: ConstrainedBox(
+                                  constraints:
+                                      const BoxConstraints(maxWidth: 300),
+                                  child: Text(
+                                    secondLine,
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      color: subColor,
+                                      height: 1.5,
+                                      letterSpacing: 0.2,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              AnimatedOpacity(
+                                opacity: _touched ? 1 : 0,
+                                duration: const Duration(milliseconds: 700),
+                                curve: Curves.easeOut,
+                                child: Text(
+                                  '$_interactionCount interactions',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    color: countColor,
+                                    letterSpacing: 0.4,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          // 3번째 줄(작게·은은히): 한 번이라도 흘려보냈으면 'N번째
+                          // 흘려보냄'. 아직이면 둘째 줄이 '오늘, 처음 흘려보낼까요'이므로
+                          // 3줄째는 생략한다. 첫 터치 시 fade-out.
+                          if (_releaseCount > 0) ...[
+                            const SizedBox(height: 8),
+                            AnimatedOpacity(
+                              opacity: _touched ? 0 : 1,
+                              duration: const Duration(milliseconds: 600),
+                              curve: Curves.easeOut,
+                              child: Text(
+                                '$_releaseCount번째 흘려보냄',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: countColor,
+                                  letterSpacing: 0.4,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+
+                  // 하단 힌트(§C-5): 터치 전 "감정말랑이를 마음껏 만져보세요"를
+                  // 은은하게(opacity≈0.6). 첫 터치 시 fade-out. '바로 글쓰기' 버튼·
+                  // 도움말 ? 버튼과 공존(아래 버튼 위에 띄운다).
+                  Positioned(
+                    bottom: _kHintBottom,
+                    left: 0,
+                    right: 0,
+                    child: IgnorePointer(
+                      child: AnimatedOpacity(
+                        opacity: _touched ? 0 : 0.6,
+                        duration: const Duration(milliseconds: 500),
+                        curve: Curves.easeOut,
+                        child: Text(
+                          '감정말랑이를 마음껏 만져보세요',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: onBg,
+                            letterSpacing: 0.2,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+
+                  // 상단 우측: 도움말 `?` 버튼(반투명 원, §5).
+                  Positioned(
+                    top: 20,
+                    right: 16,
+                    child: Material(
+                      color: helpBg,
+                      shape: const CircleBorder(),
+                      child: InkWell(
+                        customBorder: const CircleBorder(),
+                        onTap: () => HomeHelpSheet.show(context, tone),
+                        child: SizedBox(
+                          width: 40,
+                          height: 40,
+                          child: Icon(Icons.question_mark,
+                              size: 18, color: helpFg),
                         ),
                       ),
                     ),
@@ -469,7 +757,7 @@ class _HomeScreenState extends State<HomeScreen>
                         icon: const Icon(Icons.edit_note, size: 18),
                         label: const Text('바로 글쓰기'),
                         style: TextButton.styleFrom(
-                          foregroundColor: Colors.white60,
+                          foregroundColor: subColor,
                         ),
                       ),
                     ),
@@ -481,5 +769,16 @@ class _HomeScreenState extends State<HomeScreen>
         ),
       ),
     );
+  }
+
+  /// 상단에 작게 표시할 날짜·시간 포맷(예: '6월 4일 화요일 · 오후 9:05').
+  String _formatDateTime(DateTime t) {
+    const weekdays = ['월', '화', '수', '목', '금', '토', '일'];
+    final wd = weekdays[t.weekday - 1];
+    final isPm = t.hour >= 12;
+    final h12 = t.hour % 12 == 0 ? 12 : t.hour % 12;
+    final ap = isPm ? '오후' : '오전';
+    final mm = t.minute.toString().padLeft(2, '0');
+    return '${t.month}월 ${t.day}일 $wd요일 · $ap $h12:$mm';
   }
 }

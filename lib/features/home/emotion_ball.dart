@@ -39,6 +39,19 @@ class EmotionBall {
   double _wobblePhase = 0;
   double wobbleAmp = 0;
 
+  // ── 슬라임 호흡·blob 모핑 위상(v11 §A-2,3) ──────────────────────
+  // update가 매 프레임 dt만큼 전진시키는 free-running 위상. painter가 읽어
+  // idle 호흡 출렁임(~2.5s, scaleX/scaleY 어긋남)과 유기적 blob 모핑(~6.5s)을
+  // 그린다. 물리(pos/vel)와 독립이라 공이 멈춰도 "미세하게 살아있게" 유지된다.
+  double _breathePhase = 0; // 호흡(2.5s 주기)
+  double _morphPhase = 0; // blob 모핑(6.5s 주기)
+
+  /// painter가 읽는 호흡 위상(라디안). 2.5s 주기 idle 출렁임용.
+  double get breathePhase => _breathePhase;
+
+  /// painter가 읽는 blob 모핑 위상(라디안). 6.5s 주기 외곽 일그러짐용.
+  double get morphPhase => _morphPhase;
+
   bool grabbed = false;
 
   // ── 쓰다듬기 위치 반응(GST-04, v8 §1-B) 상태 ──────────────────
@@ -47,12 +60,21 @@ class EmotionBall {
   // 공 자체는 전혀 움직이지 않으므로(완전 제자리) pos/vel과는 독립적인 표면 반응.
   Offset _strokeContact = Offset.zero; // 중심 기준 로컬좌표(radius*0.85로 clamp)
   double _strokeAmp = 0; // 0~1, stroke 중 상승·시간 감쇠
+  // v11 §A-5: 쓰다듬는 손가락의 "흐름 방향·세기"(액체가 쓸리는 stretch+skew용).
+  // stroke step(직전 프레임 이동)에서 부드럽게 따라가는 속도 벡터(px/frame 근사),
+  // stroke가 멈추면 시간 감쇠로 잦아든다. painter가 이 벡터로 표면을 흐르듯 변형.
+  Offset _strokeFlow = Offset.zero;
 
   /// painter가 읽는 쓰다듬기 접촉 위치(중심 기준 로컬좌표). 표면 광택 중심.
   Offset get strokeContact => _strokeContact;
 
   /// painter가 읽는 쓰다듬기 접촉 세기(0~1). 광택 알파/반경에 사용.
   double get strokeAmp => _strokeAmp;
+
+  /// painter가 읽는 쓰다듬기 흐름 벡터(손가락 속도 방향·세기, px 근사).
+  /// 표면 stretch+skew("액체가 쓸리는" 결)의 축·세기로 쓴다. stroke 중 상승,
+  /// 멈추면 감쇠해 0으로. 누르기 변형과 확실히 다른 결을 만든다(§A-5).
+  Offset get strokeFlow => _strokeFlow;
 
   /// 직전 프레임의 벽 충돌 세기(0~1). 0이면 충돌 없음. 읽고 나면 소비.
   double lastImpact = 0;
@@ -78,9 +100,11 @@ class EmotionBall {
   bool _tick85Armed = false;
   bool _tickPending = false;
 
-  // 침몰 0.45s(ease-out), 복원 0.5s elasticOut. (v3 §2)
+  // 침몰 0.45s(ease-out), 복원 0.62s 슬라임 오버슈트. (v3 §2 / v11 §A-4)
+  // v11: 떼는 순간 "쫀득 통통"을 위해 복원을 더 드라마틱하게(낮은 damping, 1~2회
+  // wobble) — _releaseDur를 0.5→0.62로 늘리고 _springBack 곡선을 별도로 사용.
   static const double _holdInDur = 0.45;
-  static const double _releaseDur = 0.5;
+  static const double _releaseDur = 0.62;
 
   static double _radiusFor(Rect b) => (b.shortestSide * 0.22).clamp(64.0, 150.0);
 
@@ -113,19 +137,41 @@ class EmotionBall {
     final toCenter = pos - localPos;
     final d = toCenter.distance;
     // 정중앙이면 영벡터 회피 — 위에서 누른 느낌으로 위쪽(-y)을 기본 축.
-    _pressDir = d > 0.001 ? toCenter / d : const Offset(0, -1);
+    final newDir = d > 0.001 ? toCenter / d : const Offset(0, -1);
     // v9 §2-B: 접촉점(중심 기준 로컬좌표)을 radius*0.7 안으로 clamp해 저장 —
     // 본체 가장자리를 눌러도 덴트가 표면 안에 머물게.
     final contact = localPos - pos;
     final cd = contact.distance;
     final maxContact = radius * 0.7;
-    _pressContact = cd > maxContact ? contact / cd * maxContact : contact;
+    final newContact = cd > maxContact ? contact / cd * maxContact : contact;
+
+    // v12 §3: 새 누르기는 진행 중이던 복원/이전 press 상태를 "즉시" 끊고 갈아탄다.
+    // 직전 누르기의 스프링 복원(elastic 오버슈트, _curDepth가 음수까지 통통)이
+    // 아직 끝나지 않은 채 다른 지점/방향으로 다시 누르면 반응이 느리게 느껴졌다.
+    // → 복원을 중단(_releaseT=-1)하고, 접촉점이 크게 바뀌었으면(다른 지점/방향)
+    //   잔여 깊이를 즉시 0으로 리셋해 새 지점이 "지연 없이 바로" 가라앉기 시작하게.
+    //   같은 자리 이어 누르기는 기존처럼 현재 깊이에서 매끄럽게 이어붙인다.
+    final movedFar = (newContact - _pressContact).distance > radius * 0.25;
+    final wasRestoring = _releaseT >= 0;
+    // 음수 깊이(복원 오버슈트 반동) 잔상도 새 누르기엔 0부터 시작하는 게 자연스럽다.
+    if (movedFar || wasRestoring || _curDepth < 0) {
+      _curDepth = _curDepth.clamp(0.0, 1.0); // 반동(음수) 제거
+      if (movedFar) _curDepth = 0; // 다른 지점이면 즉시 평상에서 새로 가라앉음
+    }
+
+    _pressDir = newDir;
+    _pressContact = newContact;
+    // v13: 누르는 순간 공을 손가락으로 "잡아" 즉시 멈춘다. 흔들기/굴리기로 속도가
+    // 남은 채 누르면 공이 함몰된 상태로 날아가다 마찰로 멈춰 "잠깐 멈춤" 버그처럼
+    // 보였다 → 누르면 그 자리에서 바로 잡혀 가라앉도록 vel을 0으로.
+    vel = Offset.zero;
     _holding = true;
-    // 진행 중이던 복원이 있더라도 현재 깊이에서 이어 눌리도록 _curDepth 유지.
-    // 홀드 시간은 현재 깊이에 해당하는 시점부터 다시 적분(이어 누르기 자연스럽게).
+    // 홀드 시간은 (리셋 반영된) 현재 깊이에 해당하는 시점부터 다시 적분.
     _holdT = _depthToHoldTime(_curDepth);
-    _releaseT = -1;
+    _releaseT = -1; // 진행 중이던 복원 즉시 중단
+    _releaseDepth = 0;
     // 미세 틱: 이미 통과한 정점은 다시 울리지 않도록 현재 깊이 기준으로 무장.
+    _tickPending = false;
     _tick50Armed = _curDepth >= 0.5;
     _tick85Armed = _curDepth >= 0.85;
   }
@@ -197,13 +243,18 @@ class EmotionBall {
     return x * _holdInDur;
   }
 
-  /// elasticOut 근사(Flutter Curves.elasticOut와 동형, period 0.4).
-  static double _elasticOut(double t) {
+  /// v11 §A-4: 누르기 해제 시 "쫀득 통통" 스프링 복원(낮은 damping 감쇠 진동).
+  /// 감쇠 정현파 0→1. 표준 elasticOut보다 **decay를 낮추고(2^-6.5t) 주기를 넓혀
+  /// (period 0.62)** 1~2회 또렷한 오버슈트 wobble을 남긴다 — 떼는 순간 본체가
+  /// 통통 튀며 평상으로 돌아오는 슬라임 느낌. _releaseDepth*(1-_springBack)로 써서
+  /// 현재 깊이에서부터 0으로 차오르며 통통댄다.
+  static double _springBack(double t) {
     if (t <= 0) return 0;
     if (t >= 1) return 1;
-    const period = 0.4;
+    const period = 0.62; // 넓은 주기 → wobble 적게(1~2회) 또렷하게
     const s = period / 4;
-    return pow(2, -10 * t).toDouble() *
+    // 2^-6.5t: elasticOut(2^-10t)보다 천천히 감쇠 → 낮은 damping(쫀득) 체감.
+    return pow(2, -6.5 * t).toDouble() *
             sin((t - s) * (2 * pi) / period) +
         1;
   }
@@ -247,6 +298,15 @@ class EmotionBall {
     grabbed = false;
   }
 
+  /// 의식 완료 후 홈 복귀 시 공을 화면 중앙·정지 상태로 되돌린다.
+  /// (굴리다 만 위치/속도를 리셋. 잔여 변형(squash 등)은 update에서 자연 감쇠.)
+  void recenter() {
+    pos = bounds.center;
+    vel = Offset.zero;
+    grabbed = false;
+    pressCancel(); // 누르기 침몰이 남아 있으면 무팝으로 정리
+  }
+
   /// 제자리 쓰다듬기(GST-04). [step]은 직전 프레임 대비 손가락 이동량,
   /// [localPos]는 손가락의 현재 화면 좌표(위치 반응용, v8 §1-B).
   ///
@@ -269,6 +329,12 @@ class EmotionBall {
     // 접촉 세기 상승(이동 길이 비례). update에서 천천히(0.45/s) 감쇠.
     // v10 §3: 상승 계수 0.5→0.4로 약간 부드럽게(급상승 완화).
     _strokeAmp = (_strokeAmp + len / radius * 0.4).clamp(0.0, 1.0);
+    // v12 §1: 손가락 흐름 방향·세기를 "더 천천히" 따라가게(저역통과 EMA 강화).
+    // 액체가 쓸리는 stretch+skew 축으로 painter가 사용. 기존 0.5는 손가락 raw step에
+    // 너무 즉각 반응해 "튕기듯 날카롭게" 보였다 → 수렴 비율을 0.18로 낮춰 목표값으로
+    // 천천히 ease. 방향 전환·속도 변화가 부드럽게 뭉개지며 잔잔히 흐른다.
+    // (멈추면 update의 완화된 감쇠로 서서히 잦아든다 — "액체가 천천히 쓸리는" 결.)
+    _strokeFlow += (step - _strokeFlow) * 0.18;
     vel = Offset.zero; // fling 금지
     // 매 move마다 살짝씩만 더해 부드럽게 출렁이게(스파이크 방지) — update의
     // wobbleAmp 감쇠(-dt*1.4)와 맞물려 멈추면 자연 감쇠한다.
@@ -281,8 +347,16 @@ class EmotionBall {
   void update(double dt, Offset gravity) {
     lastImpact = 0;
     _wobblePhase += dt * 18;
+    // 슬라임 호흡·blob 모핑 위상 전진(free-running, 항상 미세하게 살아있게).
+    // 2π/2.5≈2.513 rad/s(호흡), 2π/6.5≈0.967 rad/s(모핑). 2π에서 wrap해 누적 오차 방지.
+    _breathePhase = (_breathePhase + dt * 2.5133) % (2 * pi);
+    _morphPhase = (_morphPhase + dt * 0.9666) % (2 * pi);
     wobbleAmp = (wobbleAmp - dt * 1.4).clamp(0.0, 1.0);
     squash = (squash - dt * 3.0).clamp(0.0, 1.0);
+    // v12 §1: 쓰다듬기 흐름 벡터 시간 감쇠를 완화(6.0→2.6/s, 멈추면 ~0.9s에 잦아듦).
+    // 손가락을 떼거나 멈추면 stretch+skew가 "급히 끊기지 않고" 부드럽게 평상 표면으로
+    // 흘러 돌아온다 — 날카로운 튕김 제거, 쫀득하게 ease-out.
+    _strokeFlow *= (1 - (2.6 * dt).clamp(0.0, 1.0));
     // 쓰다듬기 접촉 광택 세기 시간 감쇠. v10 §4: 0.85→0.45/s로 늦춤 —
     // 멈췄을 때 ~2.2s에 걸쳐 부드럽게 사그라들어 "급격히 줄어듦"을 제거(자연 ease-out).
     _strokeAmp = (_strokeAmp - dt * 0.45).clamp(0.0, 1.0);
@@ -300,8 +374,11 @@ class EmotionBall {
       // 복원: _releaseDepth에서 elasticOut으로 0까지(살짝 오버슈트), 0.5s.
       _releaseT += dt;
       final t = (_releaseT / _releaseDur).clamp(0.0, 1.0);
-      // (1 - elasticOut)에 시작 깊이를 곱해 현재 깊이에서부터 차오르게.
-      _curDepth = (_releaseDepth * (1 - _elasticOut(t))).clamp(0.0, 1.0);
+      // (1 - springBack)에 시작 깊이를 곱해 현재 깊이에서부터 통통 차오르게.
+      // springBack은 elasticOut보다 낮은 damping이라 0 부근에서 음수까지 살짝
+      // 오버슈트(_curDepth가 0 아래로) → 본체가 평상보다 더 부풀었다 돌아오는
+      // "쫀득 통통". painter가 음수 pressDepth를 부풂(역방향 squash)으로 해석한다.
+      _curDepth = _releaseDepth * (1 - _springBack(t));
       if (t >= 1.0) {
         _curDepth = 0;
         _releaseT = -1;
@@ -400,12 +477,21 @@ class EmotionBall {
   bool hitTest(Offset p) => (p - pos).distance <= radius * 1.25;
 
   /// 현재 변형을 반영한 (scaleX, scaleY).
+  ///
+  /// v11 §A-3: 여기에 idle 호흡 출렁임을 합성한다 — scaleX/scaleY가 **어긋난
+  /// 위상**으로 출렁여(가로 부풀면 세로 눌림) 쫀득한 슬라임 호흡을 만든다.
+  /// 프로토타입 키프레임(scaleX 1↔1.04 / scaleY 1↔0.965) 느낌을 정현파로 근사.
   Offset get scale {
     final w = sin(_wobblePhase) * wobbleAmp * 0.12;
+    // 호흡: 가로는 +위상, 세로는 약간 어긋난(반대에 가까운) 위상으로 출렁.
+    // 진폭은 미세하게(가로 0.04 / 세로 0.035) — "항상 살아있되 과하지 않게".
+    final bx = 1 + sin(_breathePhase) * 0.04;
+    final by = 1 + sin(_breathePhase + 2.4) * 0.035; // 위상차로 어긋남(쫀득)
     // squashDir 축으로 눌리고 직교축으로 늘어남
     final along = 1 - squash * 0.5 + w;
     final cross = 1 + squash * 0.4 - w;
     final horizontal = squashDir.dx.abs() > squashDir.dy.abs();
-    return horizontal ? Offset(along, cross) : Offset(cross, along);
+    final base = horizontal ? Offset(along, cross) : Offset(cross, along);
+    return Offset(base.dx * bx, base.dy * by);
   }
 }
