@@ -161,6 +161,10 @@ class EmotionBall {
 
     _pressDir = newDir;
     _pressContact = newContact;
+    // v13: 누르는 순간 공을 손가락으로 "잡아" 즉시 멈춘다. 흔들기/굴리기로 속도가
+    // 남은 채 누르면 공이 함몰된 상태로 날아가다 마찰로 멈춰 "잠깐 멈춤" 버그처럼
+    // 보였다 → 누르면 그 자리에서 바로 잡혀 가라앉도록 vel을 0으로.
+    vel = Offset.zero;
     _holding = true;
     // 홀드 시간은 (리셋 반영된) 현재 깊이에 해당하는 시점부터 다시 적분.
     _holdT = _depthToHoldTime(_curDepth);
