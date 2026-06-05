@@ -7,6 +7,7 @@ import 'package:sensors_plus/sensors_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/haptics.dart';
+import '../../core/ritual_audio.dart';
 import '../../state/session.dart';
 import '../writing/writing_screen.dart';
 import 'emotion_ball.dart';
@@ -312,6 +313,7 @@ class _HomeScreenState extends State<HomeScreen>
     // 벽 충돌 햅틱
     if (ball.lastImpact > 0) {
       Haptics.instance.impactByStrength(ball.lastImpact);
+      RitualAudio.instance.objetSquish(gain: 0.7, throttle: true); // 벽 충돌 스퀴시
     }
 
     // 누르기 홀드 중 미세 틱(§2): 침몰 깊이가 깊어지는 정점(0.5·0.85 통과)을 ball이
@@ -364,6 +366,7 @@ class _HomeScreenState extends State<HomeScreen>
     if (ball.hitTest(pos)) {
       ball.pressStart(pos);
       Haptics.instance.pressDown();
+      RitualAudio.instance.objetSquish(gain: 1.0); // 누르기 시작 슬라임 스퀴시
       // 공 위 pointer down 1회 = 공 놀이 +1(§1-B). 누르기/굴리기/쓰다듬기 시작은
       // 모두 한 번의 손길이므로 down에서 한 번만 집계한다(이동 전환에서 중복 없음).
       _bumpInteraction();
@@ -439,6 +442,8 @@ class _HomeScreenState extends State<HomeScreen>
             (_strokeEnergy + stepLen / r * 0.4).clamp(0.0, 1.0); // step 비례 증가
         // 위로받는 부드러운 저강도 텍스처를 흐르듯 발사(throttle은 strokeSoft 내장).
         Haptics.instance.strokeSoft();
+        RitualAudio.instance
+            .objetSquish(gain: 0.6, throttle: true); // 쓰다듬기 슬라임
       }
 
       // ROLL 거동: catchup 중엔 ease 추종으로 gap을 좁히고, 이후 full 추종.
@@ -458,6 +463,8 @@ class _HomeScreenState extends State<HomeScreen>
           final speed01 =
               (moveDt > 0 ? (stepLen / moveDt) / 2600 : 0.0).clamp(0.0, 1.0);
           Haptics.instance.rollFriction(speed01);
+          RitualAudio.instance
+              .objetSquish(gain: 0.5, throttle: true); // 굴리기 마찰 슬라임
         }
       }
     }
@@ -500,6 +507,7 @@ class _HomeScreenState extends State<HomeScreen>
       if (ball.hitTest(_downPos)) {
         ball.pressEnd();
         Haptics.instance.pressRelease();
+        RitualAudio.instance.objetSquelch(); // 손 뗄 때 squelch
       }
     } else if (_dragMode == _DragMode.roll) {
       // fling(v8 §4): 방향은 EMA(_flingVel) 방향을 유지하되, 크기는 EMA 크기와

@@ -33,6 +33,22 @@ class RitualAudio {
   final AudioPlayer _skyB = AudioPlayer(playerId: 'ritual_sky_b');
   // 폭죽 원샷 2보이스 라운드로빈(빠른 연속 팡팡이 서로 끊지 않도록).
   bool _fwToggle = false;
+  // 오브제(공) 스퀴시·릴리스 round-robin 풀(빠른 연속 터치가 서로 안 끊기게).
+  final List<AudioPlayer> _objetPool = [
+    AudioPlayer(playerId: 'objet_0'),
+    AudioPlayer(playerId: 'objet_1'),
+    AudioPlayer(playerId: 'objet_2'),
+  ];
+  int _objetIdx = 0;
+  DateTime _objetLast = DateTime.fromMillisecondsSinceEpoch(0);
+  // 글쓰기 타이핑 round-robin 풀.
+  final List<AudioPlayer> _typePool = [
+    AudioPlayer(playerId: 'type_0'),
+    AudioPlayer(playerId: 'type_1'),
+  ];
+  int _typeIdx = 0;
+  DateTime _typeLast = DateTime.fromMillisecondsSinceEpoch(0);
+  final Random _rng = Random();
 
   // ── 하늘 앰비언트 더블버퍼 상태 ──────────────────────────────────────────
   // sky_float.wav 길이(30s, seamless). 클립이 길어 전환(크로스페이드)이 드물다.
@@ -234,6 +250,51 @@ class RitualAudio {
     store(t);
   }
 
+  // ── 오브제(공) ─────────────────────────────────────────────────────────────
+  /// 공 만지기 — slime 스퀴시 슬라이스 random 재생(round-robin). throttle=true면
+  /// 연속 제스처(쓰다듬기·굴리기) 스팸을 막기 위해 ~70ms 간격 제한.
+  Future<void> objetSquish({double gain = 0.9, bool throttle = false}) {
+    if (throttle) {
+      final now = DateTime.now();
+      if (now.difference(_objetLast).inMilliseconds < 70) return Future.value();
+      _objetLast = now;
+    }
+    return _safe(() async {
+      final p = _objetPool[_objetIdx];
+      _objetIdx = (_objetIdx + 1) % _objetPool.length;
+      await p.stop();
+      await p.setReleaseMode(ReleaseMode.release);
+      await p.play(AssetSource('audio/slime_${_rng.nextInt(6)}.wav'),
+          volume: gain);
+    });
+  }
+
+  /// 공에서 손 뗄 때 — squelch 슬라이스 random 재생(round-robin).
+  Future<void> objetSquelch({double gain = 1.0}) => _safe(() async {
+        final p = _objetPool[_objetIdx];
+        _objetIdx = (_objetIdx + 1) % _objetPool.length;
+        await p.stop();
+        await p.setReleaseMode(ReleaseMode.release);
+        await p.play(AssetSource('audio/squelch_${_rng.nextInt(3)}.wav'),
+            volume: gain);
+      });
+
+  // ── 글쓰기 ─────────────────────────────────────────────────────────────────
+  /// 키 입력 — type 슬라이스 random 재생(round-robin, ~40ms throttle).
+  Future<void> typeKey({double gain = 0.9}) {
+    final now = DateTime.now();
+    if (now.difference(_typeLast).inMilliseconds < 40) return Future.value();
+    _typeLast = now;
+    return _safe(() async {
+      final p = _typePool[_typeIdx];
+      _typeIdx = (_typeIdx + 1) % _typePool.length;
+      await p.stop();
+      await p.setReleaseMode(ReleaseMode.release);
+      await p.play(AssetSource('audio/type_${_rng.nextInt(5)}.wav'),
+          volume: gain);
+    });
+  }
+
   // ── 보석함 ───────────────────────────────────────────────────────────────
   /// 투입 차임 — jewel_intake.wav 원샷(사인 760+1140Hz 2음).
   Future<void> jewelIntake() => _safe(() async {
@@ -261,5 +322,11 @@ class RitualAudio {
         await _emberLoop.stop();
         await _skyA.stop();
         await _skyB.stop();
+        for (final p in _objetPool) {
+          await p.stop();
+        }
+        for (final p in _typePool) {
+          await p.stop();
+        }
       });
 }
