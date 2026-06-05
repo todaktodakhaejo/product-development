@@ -12,6 +12,7 @@ import '../writing/writing_screen.dart';
 import 'emotion_ball.dart';
 import 'emotion_ball_painter.dart';
 import 'home_help_sheet.dart';
+import 'home_sfx.dart';
 import 'home_messages.dart';
 import 'sky_background.dart';
 
@@ -154,6 +155,7 @@ class _HomeScreenState extends State<HomeScreen>
     super.initState();
     _ticker = createTicker(_onTick)..start();
     _listenSensors();
+    HomeSfx.instance.warmUp(); // 오디오 컨텍스트 선반영(unlock). best-effort.
     // 흘려보냄 횟수(releaseCount)·공 놀이 횟수(interactionCount) **둘 다 세션 한정** —
     // 앱을 나갔다 들어오면 0으로 리셋한다(영구 저장 안 함). 둘 다 0에서 시작하고
     // 저장소 로드(비동기)가 없으므로, 첫 제스처부터 카운트가 지연 없이 즉시 반영된다.
@@ -312,6 +314,7 @@ class _HomeScreenState extends State<HomeScreen>
     // 벽 충돌 햅틱
     if (ball.lastImpact > 0) {
       Haptics.instance.impactByStrength(ball.lastImpact);
+      HomeSfx.instance.wall(ball.lastImpact); // 충돌 세기로 볼륨 차등(best-effort).
     }
 
     // 누르기 홀드 중 미세 틱(§2): 침몰 깊이가 깊어지는 정점(0.5·0.85 통과)을 ball이
@@ -364,6 +367,7 @@ class _HomeScreenState extends State<HomeScreen>
     if (ball.hitTest(pos)) {
       ball.pressStart(pos);
       Haptics.instance.pressDown();
+      HomeSfx.instance.press(); // 쑥 들어가는 '말랑'(best-effort).
       // 공 위 pointer down 1회 = 공 놀이 +1(§1-B). 누르기/굴리기/쓰다듬기 시작은
       // 모두 한 번의 손길이므로 down에서 한 번만 집계한다(이동 전환에서 중복 없음).
       _bumpInteraction();
@@ -439,6 +443,7 @@ class _HomeScreenState extends State<HomeScreen>
             (_strokeEnergy + stepLen / r * 0.4).clamp(0.0, 1.0); // step 비례 증가
         // 위로받는 부드러운 저강도 텍스처를 흐르듯 발사(throttle은 strokeSoft 내장).
         Haptics.instance.strokeSoft();
+        HomeSfx.instance.rub(); // 여린 '사락'(내장 throttle, best-effort).
       }
 
       // ROLL 거동: catchup 중엔 ease 추종으로 gap을 좁히고, 이후 full 추종.
@@ -500,6 +505,7 @@ class _HomeScreenState extends State<HomeScreen>
       if (ball.hitTest(_downPos)) {
         ball.pressEnd();
         Haptics.instance.pressRelease();
+        HomeSfx.instance.release(); // 톡 차오르는 '뽕'(best-effort).
       }
     } else if (_dragMode == _DragMode.roll) {
       // fling(v8 §4): 방향은 EMA(_flingVel) 방향을 유지하되, 크기는 EMA 크기와
@@ -534,6 +540,7 @@ class _HomeScreenState extends State<HomeScreen>
     _ticker.dispose();
     _accelSub?.cancel();
     _frame.dispose();
+    HomeSfx.instance.stopAll(); // 잔여 효과음/타이머 정리(다음 화면으로 안 샘).
     super.dispose();
   }
 

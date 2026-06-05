@@ -40,3 +40,7 @@ flutter:
     - assets/audio/sky_float.wav
     # 태우기 전소 후 — 잔불 타닥타닥 여운 루프(합성 생성).
     - assets/audio/crackle.wav
+    # 홈 감정 공(말랑이) 제스처음 — 프로토타입 public/sfx 원본.
+    # slime: 누르기/놓기/문지름/벽충돌(속도·볼륨만 다르게). squelch: 꾹 눌러 넘어가는 순간.
+    - assets/audio/slime.mp3
+    - assets/audio/squelch.mp3
