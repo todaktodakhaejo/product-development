@@ -321,6 +321,7 @@ class _HomeScreenState extends State<HomeScreen>
     // 시각 침몰과 햅틱이 desync 없이 동기. (시작 pressDown·뗄 때 pressRelease는 포인터에서.)
     if (ball.consumePressHoldTick()) {
       Haptics.instance.pressHoldTick();
+      RitualAudio.instance.objetStretch(gain: 0.5); // 깊게 눌러 늘어나는 쫀득
     }
 
     for (final r in _ripples) {
@@ -367,6 +368,7 @@ class _HomeScreenState extends State<HomeScreen>
       ball.pressStart(pos);
       Haptics.instance.pressDown();
       RitualAudio.instance.objetSquish(gain: 1.0); // 누르기 시작 슬라임 스퀴시
+      RitualAudio.instance.objetStretch(gain: 0.55); // + 쫀득 몰캉 레이어
       // 공 위 pointer down 1회 = 공 놀이 +1(§1-B). 누르기/굴리기/쓰다듬기 시작은
       // 모두 한 번의 손길이므로 down에서 한 번만 집계한다(이동 전환에서 중복 없음).
       _bumpInteraction();
@@ -444,6 +446,7 @@ class _HomeScreenState extends State<HomeScreen>
         Haptics.instance.strokeSoft();
         RitualAudio.instance
             .objetSquish(gain: 0.6, throttle: true); // 쓰다듬기 슬라임
+        RitualAudio.instance.objetStretch(gain: 0.4); // + 쓰다듬으며 쫀득
       }
 
       // ROLL 거동: catchup 중엔 ease 추종으로 gap을 좁히고, 이후 full 추종.

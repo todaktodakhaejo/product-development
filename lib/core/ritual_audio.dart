@@ -41,6 +41,13 @@ class RitualAudio {
   ];
   int _objetIdx = 0;
   DateTime _objetLast = DateTime.fromMillisecondsSinceEpoch(0);
+  // 쫀득·몰캉 스트레치(떡 늘어나는) 레이어 풀 — slime과 동시에 깔리도록 별도 채널.
+  final List<AudioPlayer> _chewyPool = [
+    AudioPlayer(playerId: 'chewy_0'),
+    AudioPlayer(playerId: 'chewy_1'),
+  ];
+  int _chewyIdx = 0;
+  DateTime _chewyLast = DateTime.fromMillisecondsSinceEpoch(0);
   // 글쓰기 타이핑 round-robin 풀.
   final List<AudioPlayer> _typePool = [
     AudioPlayer(playerId: 'type_0'),
@@ -269,6 +276,22 @@ class RitualAudio {
     });
   }
 
+  /// 떡 늘어나는 쫀득·몰캉 스트레치 레이어 — mochi 슬라이스 random 재생(별도 채널).
+  /// slime과 동시에 깔려 말랑이 만지는 질감을 더한다. ~90ms throttle.
+  Future<void> objetStretch({double gain = 0.5}) {
+    final now = DateTime.now();
+    if (now.difference(_chewyLast).inMilliseconds < 90) return Future.value();
+    _chewyLast = now;
+    return _safe(() async {
+      final p = _chewyPool[_chewyIdx];
+      _chewyIdx = (_chewyIdx + 1) % _chewyPool.length;
+      await p.stop();
+      await p.setReleaseMode(ReleaseMode.release);
+      await p.play(AssetSource('audio/mochi_${_rng.nextInt(4)}.wav'),
+          volume: gain);
+    });
+  }
+
   /// 공에서 손 뗄 때 — squelch 슬라이스 random 재생(round-robin).
   Future<void> objetSquelch({double gain = 1.0}) => _safe(() async {
         final p = _objetPool[_objetIdx];
@@ -323,6 +346,9 @@ class RitualAudio {
         await _skyA.stop();
         await _skyB.stop();
         for (final p in _objetPool) {
+          await p.stop();
+        }
+        for (final p in _chewyPool) {
           await p.stop();
         }
         for (final p in _typePool) {

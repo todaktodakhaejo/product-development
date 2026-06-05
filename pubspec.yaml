@@ -50,6 +50,11 @@ flutter:
     - assets/audio/squelch_0.wav
     - assets/audio/squelch_1.wav
     - assets/audio/squelch_2.wav
+    # 떡 늘어나는 쫀득·몰캉 스트레치(합성, 누를 때 레이어).
+    - assets/audio/mochi_0.wav
+    - assets/audio/mochi_1.wav
+    - assets/audio/mochi_2.wav
+    - assets/audio/mochi_3.wav
     # 글쓰기 — 타이핑 5슬라이스.
     - assets/audio/type_0.wav
     - assets/audio/type_1.wav
