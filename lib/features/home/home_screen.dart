@@ -695,7 +695,7 @@ class _HomeScreenState extends State<HomeScreen>
                                 duration: const Duration(milliseconds: 700),
                                 curve: Curves.easeOut,
                                 child: Text(
-                                  '$_interactionCount interaction',
+                                  '$_interactionCount interactions',
                                   textAlign: TextAlign.center,
                                   style: TextStyle(
                                     fontSize: 14,
