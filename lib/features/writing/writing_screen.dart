@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../core/ritual_audio.dart';
 import '../../state/session.dart';
 import '../../theme/app_theme.dart';
 import '../ritual/ritual_select_screen.dart';
@@ -16,6 +17,7 @@ class _WritingScreenState extends State<WritingScreen> {
   final _controller = TextEditingController();
   late SessionState _session;
   bool _restored = false;
+  int _prevLen = 0; // 직전 글자 수(늘어날 때만 타이핑 효과음).
 
   @override
   void didChangeDependencies() {
@@ -28,6 +30,7 @@ class _WritingScreenState extends State<WritingScreen> {
       // 커서를 글 끝으로 두어 이어서 쓰기 편하게.
       _controller.selection =
           TextSelection.collapsed(offset: _controller.text.length);
+      _prevLen = _controller.text.length; // 복원분엔 효과음 안 나게 기준 맞춤.
     }
   }
 
@@ -85,11 +88,14 @@ class _WritingScreenState extends State<WritingScreen> {
                   child: TextField(
                     controller: _controller,
                     autofocus: true,
-                    onChanged: (_) {
+                    onChanged: (v) {
+                      // 글자가 늘어날 때만 타이핑 효과음(지우기엔 무음).
+                      if (v.length > _prevLen) RitualAudio.instance.typeKey();
+                      _prevLen = v.length;
                       // 입력할 때마다 세션에 초안 임시 보존(알림 없음).
                       // dispose에서 저장하면 의식 완료 reset 직후 다시 덮어써져
                       // 초기화가 안 되므로, 저장 시점을 입력으로 옮긴다.
-                      _session.saveDraft(_controller.text);
+                      _session.saveDraft(v);
                       setState(() {});
                     },
                     maxLines: null,

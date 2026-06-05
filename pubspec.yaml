@@ -42,3 +42,24 @@ flutter:
     - assets/audio/sky_float.wav
     # 태우기 전소 후 — 잔불 타닥타닥 여운 루프(합성 생성).
     - assets/audio/crackle.wav
+    # 오브제(공) 만지기 — slime 스퀴시 6슬라이스 + squelch(릴리스) 3슬라이스.
+    - assets/audio/slime_0.wav
+    - assets/audio/slime_1.wav
+    - assets/audio/slime_2.wav
+    - assets/audio/slime_3.wav
+    - assets/audio/slime_4.wav
+    - assets/audio/slime_5.wav
+    - assets/audio/squelch_0.wav
+    - assets/audio/squelch_1.wav
+    - assets/audio/squelch_2.wav
+    # 떡 늘어나는 쫀득·몰캉 스트레치(합성, 누를 때 레이어).
+    - assets/audio/mochi_0.wav
+    - assets/audio/mochi_1.wav
+    - assets/audio/mochi_2.wav
+    - assets/audio/mochi_3.wav
+    # 글쓰기 — 타이핑 5슬라이스.
+    - assets/audio/type_0.wav
+    - assets/audio/type_1.wav
+    - assets/audio/type_2.wav
+    - assets/audio/type_3.wav
+    - assets/audio/type_4.wav
