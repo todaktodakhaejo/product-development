@@ -552,16 +552,15 @@ class _HomeScreenState extends State<HomeScreen>
               // 멘트는 화면 상단부(공보다 한참 위)에 둔다(프로토타입 레이아웃).
               double msgBoxTop = rect.height * 0.12;
               if (msgBoxTop < _kMsgBoxMinTop) msgBoxTop = _kMsgBoxMinTop;
-              // 멘트를 두 줄로 분리 — 첫 줄 크게, 둘째 줄 작게(둘째 줄은 항상 멘트).
+              // 멘트를 두 줄로 분리 — 첫 줄 크게, 둘째 줄 작게.
               final int msgIdx = _releaseCount % homeMessages.length;
               final List<String> msgParts = homeMessages[msgIdx].split('\n');
               final String msgLine1 = msgParts.isNotEmpty ? msgParts[0] : '';
               final String msgLine2 = msgParts.length > 1 ? msgParts[1] : '';
-              // 3번째 줄(작게·은은히)에 표시할 흘려보냄 카운트. 아직 안 했으면
-              // '오늘, 처음 흘려보낼까요'(=오늘 처음 켠 상태).
-              final String countLine = _releaseCount > 0
-                  ? '$_releaseCount번째 흘려보냄'
-                  : '오늘, 처음 흘려보낼까요';
+              // 둘째(작은) 줄: 아직 안 흘려보냈으면 '오늘, 처음 흘려보낼까요'(오늘 처음
+              // 켠 인사), 한 번이라도 했으면 멘트 원래 둘째 줄. ('N번째 흘려보냄'은 3줄째.)
+              final String secondLine =
+                  _releaseCount > 0 ? msgLine2 : '오늘, 처음 흘려보낼까요';
               return Stack(
                 children: [
                   // 공 + 물결 캔버스 + 포인터
@@ -650,7 +649,7 @@ class _HomeScreenState extends State<HomeScreen>
                                   constraints:
                                       const BoxConstraints(maxWidth: 300),
                                   child: Text(
-                                    msgLine2,
+                                    secondLine,
                                     textAlign: TextAlign.center,
                                     style: TextStyle(
                                       fontSize: 14,
@@ -677,22 +676,26 @@ class _HomeScreenState extends State<HomeScreen>
                               ),
                             ],
                           ),
-                          const SizedBox(height: 8),
-                          // 3번째 줄(작게·은은히): 흘려보냄 카운트. 첫 터치 시 fade-out.
-                          AnimatedOpacity(
-                            opacity: _touched ? 0 : 1,
-                            duration: const Duration(milliseconds: 600),
-                            curve: Curves.easeOut,
-                            child: Text(
-                              countLine,
-                              textAlign: TextAlign.center,
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: countColor,
-                                letterSpacing: 0.4,
+                          // 3번째 줄(작게·은은히): 한 번이라도 흘려보냈으면 'N번째
+                          // 흘려보냄'. 아직이면 둘째 줄이 '오늘, 처음 흘려보낼까요'이므로
+                          // 3줄째는 생략한다. 첫 터치 시 fade-out.
+                          if (_releaseCount > 0) ...[
+                            const SizedBox(height: 8),
+                            AnimatedOpacity(
+                              opacity: _touched ? 0 : 1,
+                              duration: const Duration(milliseconds: 600),
+                              curve: Curves.easeOut,
+                              child: Text(
+                                '$_releaseCount번째 흘려보냄',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: countColor,
+                                  letterSpacing: 0.4,
+                                ),
                               ),
                             ),
-                          ),
+                          ],
                         ],
                       ),
                     ),
