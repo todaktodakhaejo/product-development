@@ -79,13 +79,13 @@ class HomeHelpSheet extends StatelessWidget {
               ),
               const SizedBox(height: 16),
               _HelpRow(dot: dot, title: title, body: body,
-                  label: '누르기', desc: '꾹 누르면 말랑하게 침몰해요.'),
+                  label: '누르기', desc: '꾹 눌러 보세요, 말랑하게 들어가요.'),
               _HelpRow(dot: dot, title: title, body: body,
-                  label: '흔들기', desc: '폰을 흔들면 통통 튀어 올라요.'),
+                  label: '흔들기', desc: '원하는 방향으로, 원하는 만큼 흔들어 봐요.'),
               _HelpRow(dot: dot, title: title, body: body,
-                  label: '굴리기', desc: '손가락으로 데굴데굴 굴려보세요.'),
+                  label: '굴리기', desc: '손가락으로 데굴데굴 굴려 봐요.'),
               _HelpRow(dot: dot, title: title, body: body,
-                  label: '쓰다듬기', desc: '살살 문지르면 은은히 빛나요.'),
+                  label: '쓰다듬기', desc: '살살 쓰다듬으면 은은히 빛나요.'),
               const SizedBox(height: 16),
               // 하단 안내: 진동에 맞춘 잔잔한 효과음(효과음 자체 구현은 다음 단계).
               Container(

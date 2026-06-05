@@ -113,11 +113,7 @@ class _HomeScreenState extends State<HomeScreen>
   // ── 홈 레이아웃 상수(§C, 프로토타입 Home.tsx 기준) ──────────────
   // 날짜는 상단 중앙(SafeArea 기준 top).
   static const double _kDateTop = 32;
-  // 멘트 예약 박스 높이(멘트가 사라져도 공이 안 튀게 고정 예약).
-  static const double _kMsgBoxH = 92;
-  // 멘트 박스 하단과 공 상단 사이 여백(공 '바로 위' 느낌).
-  static const double _kMsgGap = 24;
-  // 작은 기기에서 박스 top이 음수가 될 때의 최소 상단 여백(날짜와 겹침 방지).
+  // 멘트 블록 최소 상단 여백(작은 기기에서 날짜와 겹침 방지).
   static const double _kMsgBoxMinTop = 68;
   // 하단 힌트 위치(바로 글쓰기 버튼 위에 띄움).
   static const double _kHintBottom = 88;
@@ -132,7 +128,7 @@ class _HomeScreenState extends State<HomeScreen>
 
   // 드래그 판별 임계(v6 §2 — 속도 기반). 거리·방향전환 기반 상수는 폐기.
   static const double kRollSpeed = 900; // px/s, 손가락 속도가 이를 넘으면 굴리기(§1 완화: 420→900)
-  static const double kRollNet = 1.2; // ×radius, 느려도 이만큼 끌면 굴리기
+  static const double kRollNet = 0.7; // ×radius, 느려도 이만큼 끌면 굴리기(1.2→0.7: 천천히 시작해도 금방 따라옴)
   // stroke 커밋 후 roll 탈출 임계(v8 §1-A). 커밋된 쓰다듬기에서는 net 기반 탈출을
   // 제거하고, 오직 명백한 빠른 플릭(이 속도 초과)일 때만 roll로 전환한다. 가로/세로/
   // 대각 어느 방향으로 넓게 쓰다듬어도 굴리기로 새지 않는다.
@@ -552,12 +548,14 @@ class _HomeScreenState extends State<HomeScreen>
               // 멘트를 '공 바로 위 중앙'에 두기 위한 좌표 계산(§C-1).
               // 공은 화면 중앙(rect.center)에 있고 반경은 _ball.radius. 멘트 박스는
               // 사라져도 공이 안 튀게 고정 높이(_kMsgBoxH)로 예약하고, 그 박스의
-              // '하단'이 공 상단보다 _kMsgGap 위에 오도록 top을 역산한다.
-              final double ballCenterY = rect.center.dy;
-              final double ballRadius = _ball!.radius;
-              double msgBoxTop = ballCenterY - ballRadius - _kMsgGap - _kMsgBoxH;
-              // 화면이 짧아 음수가 되면(작은 기기) 상단 여백 최소 보장.
+              // 멘트는 화면 상단부(공보다 한참 위)에 둔다(프로토타입 레이아웃).
+              double msgBoxTop = rect.height * 0.12;
               if (msgBoxTop < _kMsgBoxMinTop) msgBoxTop = _kMsgBoxMinTop;
+              // 현재 멘트를 두 줄로 분리 — 첫 줄은 크게, 둘째 줄은 작게(차별화).
+              final int msgIdx = _releaseCount % homeMessages.length;
+              final List<String> msgParts = homeMessages[msgIdx].split('\n');
+              final String msgLine1 = msgParts.isNotEmpty ? msgParts[0] : '';
+              final String msgLine2 = msgParts.length > 1 ? msgParts[1] : '';
               return Stack(
                 children: [
                   // 공 + 물결 캔버스 + 포인터
@@ -610,74 +608,57 @@ class _HomeScreenState extends State<HomeScreen>
                     left: 0,
                     right: 0,
                     child: IgnorePointer(
-                      child: SizedBox(
-                        height: _kMsgBoxH,
-                        child: Stack(
-                          alignment: Alignment.bottomCenter,
-                          children: [
-                            // untouched: 멘트 + releaseCount. 첫 터치 시 위로 살짝
-                            // 떠오르며(translate -6) opacity 0 fade-out.
-                            AnimatedOpacity(
-                              opacity: _touched ? 0 : 1,
-                              duration: const Duration(milliseconds: 600),
-                              curve: Curves.easeOut,
-                              child: AnimatedSlide(
-                                offset: _touched
-                                    ? const Offset(0, -0.06)
-                                    : Offset.zero,
-                                duration: const Duration(milliseconds: 600),
-                                curve: Curves.easeOut,
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    // 멘트: releaseCount % 9 고정(의식 완료 시에만 전환).
-                                    // 2줄·중앙정렬·maxWidth 300.
-                                    ConstrainedBox(
-                                      constraints:
-                                          const BoxConstraints(maxWidth: 300),
-                                      child: AnimatedSwitcher(
-                                        duration:
-                                            const Duration(milliseconds: 800),
-                                        child: Text(
-                                          homeMessages[_releaseCount %
-                                              homeMessages.length],
-                                          key: ValueKey(_releaseCount %
-                                              homeMessages.length),
-                                          textAlign: TextAlign.center,
-                                          maxLines: 2,
-                                          style: TextStyle(
-                                            fontSize: 18,
-                                            color: msgColor,
-                                            height: 1.6,
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                    const SizedBox(height: 8),
-                                    // 흘려보냄 누적 횟수(§C-3). 멘트 근처 은은히.
-                                    Text(
-                                      _releaseCount > 0
-                                          ? '$_releaseCount번째 흘려보냄'
-                                          : '오늘, 처음 흘려보낼까요',
-                                      textAlign: TextAlign.center,
-                                      style: TextStyle(
-                                        fontSize: 14,
-                                        color: countColor,
-                                        letterSpacing: 0.4,
-                                      ),
-                                    ),
-                                  ],
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          // 멘트 첫 줄 — 크게. 첫 터치 시 fade-out.
+                          AnimatedOpacity(
+                            opacity: _touched ? 0 : 1,
+                            duration: const Duration(milliseconds: 600),
+                            curve: Curves.easeOut,
+                            child: ConstrainedBox(
+                              constraints: const BoxConstraints(maxWidth: 320),
+                              child: Text(
+                                msgLine1,
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  fontSize: 24,
+                                  color: msgColor,
+                                  height: 1.4,
+                                  letterSpacing: 0.2,
                                 ),
                               ),
                             ),
-                            // touched: 공 놀이 횟수(§C-4)를 같은 자리(공 위 중앙)에
-                            // fade-in. "{N} interaction" 형식, 노는 동안 실시간 증가.
-                            AnimatedOpacity(
-                              opacity: _touched ? 1 : 0,
-                              duration: const Duration(milliseconds: 700),
-                              curve: Curves.easeOut,
-                              child: Padding(
-                                padding: const EdgeInsets.only(bottom: 2),
+                          ),
+                          const SizedBox(height: 8),
+                          // 둘째 줄 자리 ↔ interaction 카운트(같은 위치 cross-fade).
+                          // 멘트가 사라지면 그 '둘째 줄 자리'에 interaction이 뜬다(§사용자 지시).
+                          Stack(
+                            alignment: Alignment.topCenter,
+                            children: [
+                              AnimatedOpacity(
+                                opacity: _touched ? 0 : 1,
+                                duration: const Duration(milliseconds: 600),
+                                curve: Curves.easeOut,
+                                child: ConstrainedBox(
+                                  constraints:
+                                      const BoxConstraints(maxWidth: 300),
+                                  child: Text(
+                                    msgLine2,
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      color: subColor,
+                                      height: 1.5,
+                                      letterSpacing: 0.2,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              AnimatedOpacity(
+                                opacity: _touched ? 1 : 0,
+                                duration: const Duration(milliseconds: 700),
+                                curve: Curves.easeOut,
                                 child: Text(
                                   '$_interactionCount interaction',
                                   textAlign: TextAlign.center,
@@ -688,9 +669,27 @@ class _HomeScreenState extends State<HomeScreen>
                                   ),
                                 ),
                               ),
+                            ],
+                          ),
+                          const SizedBox(height: 10),
+                          // 흘려보냄 누적 횟수 — 작게·은은히. 첫 터치 시 fade-out.
+                          AnimatedOpacity(
+                            opacity: _touched ? 0 : 1,
+                            duration: const Duration(milliseconds: 600),
+                            curve: Curves.easeOut,
+                            child: Text(
+                              _releaseCount > 0
+                                  ? '$_releaseCount번째 흘려보냄'
+                                  : '오늘, 처음 흘려보낼까요',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: countColor,
+                                letterSpacing: 0.4,
+                              ),
                             ),
-                          ],
-                        ),
+                          ),
+                        ],
                       ),
                     ),
                   ),
