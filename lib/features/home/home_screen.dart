@@ -131,8 +131,8 @@ class _HomeScreenState extends State<HomeScreen>
       Duration(milliseconds: 70); // 90→70 (v8 §2 연속 반응 즉각)
 
   // 드래그 판별 임계(v6 §2 — 속도 기반). 거리·방향전환 기반 상수는 폐기.
-  static const double kRollSpeed = 900; // px/s, 손가락 속도가 이를 넘으면 굴리기(§1 완화: 420→900)
-  static const double kRollNet = 0.7; // ×radius, 느려도 이만큼 끌면 굴리기(1.2→0.7: 천천히 시작해도 금방 따라옴)
+  static const double kRollSpeed = 650; // px/s, 손가락 속도가 이를 넘으면 굴리기(900→650: 굴리기 시작 더 쉽게)
+  static const double kRollNet = 0.5; // ×radius, 느려도 이만큼 끌면 굴리기(0.7→0.5: 천천히 끌어도 금방 따라와 데굴데굴)
   // stroke 커밋 후 roll 탈출 임계(v8 §1-A). 커밋된 쓰다듬기에서는 net 기반 탈출을
   // 제거하고, 오직 명백한 빠른 플릭(이 속도 초과)일 때만 roll로 전환한다. 가로/세로/
   // 대각 어느 방향으로 넓게 쓰다듬어도 굴리기로 새지 않는다.

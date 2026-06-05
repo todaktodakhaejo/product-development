@@ -34,6 +34,16 @@ class EmotionBallPainter extends CustomPainter {
   // 손가락 딤플 음영색 rgba(150,70,95).
   static const Color _dimpleShade = Color(0xFF96465F);
 
+  // ── blob 경로 캐시(v12 §2: 매 프레임 베지어 재계산 회피) ──────────────
+  // 유기적 blob은 morphPhase가 0.967rad/s로 "아주 천천히" 도는 미세 모핑이라
+  // 매 프레임 풀 재계산이 필요 없다. phase를 0.06rad 양자화(≈16스텝/회전)해
+  // 같은 버킷이면 직전 Path를 재사용한다. 실기기에서 stroke/press 중 매 프레임
+  // 일어나던 cubicTo 8회×Catmull-Rom 계산을 대부분 제거 → 프레임 비용 절감.
+  // (캐시는 radius가 바뀌면도 무효화 — resize 시 _blobPath가 새로 그린다.)
+  Path? _blobCache;
+  double _blobCachePhase = -999;
+  double _blobCacheRadius = -1;
+
   @override
   void paint(Canvas canvas, Size size) {
     // 물결 (누르기 GST-03) — 본체 변형과 독립이므로 월드 좌표에서 먼저.
@@ -64,24 +74,26 @@ class EmotionBallPainter extends CustomPainter {
 
     // ── 쓰다듬기 흐름 stretch+skew(§A-5: 액체가 쓸리는 결) ──
     // 공은 제자리(이동 없음)이되 표면만 손가락 속도 방향으로 늘어나고 비틀린다.
-    // strokeFlow(px 근사)를 ±26px에서 포화시켜 스케일/스큐로 매핑. 누르기와
-    // 확실히 다른 결(납작 splat이 아니라 한쪽으로 미끄러지는 stretch).
+    // v12 §1: strokeFlow는 ball에서 강한 EMA로 부드럽게 누적되므로 여기 강도를 낮춰
+    // "잔잔히 흐르게" 한다. 포화 기준을 ±34px로 넓히고(같은 흐름이 덜 격하게 차도록),
+    // stretch +0.16→+0.10 / squash -0.07→-0.045 / skew ±0.14→±0.08로 약화 —
+    // 튕김·날카로움 제거, 액체가 천천히 쓸리는 쫀득한 결.
     final flow = ball.strokeFlow;
-    final fx = (flow.dx / 26).clamp(-1.0, 1.0);
-    final fy = (flow.dy / 26).clamp(-1.0, 1.0);
+    final fx = (flow.dx / 34).clamp(-1.0, 1.0);
+    final fy = (flow.dy / 34).clamp(-1.0, 1.0);
     if (fx.abs() > 0.001 || fy.abs() > 0.001) {
-      // 이동 축으로 늘고(최대 +0.16) 직교축은 살짝 눌림. skew는 ±0.14 rad.
+      // 이동 축으로 늘고(최대 +0.10) 직교축은 살짝 눌림. skew는 ±0.08 rad.
       final mag = sqrt(fx * fx + fy * fy).clamp(0.0, 1.0);
-      final stretchAlong = 1 + 0.16 * mag;
-      final squashCross = 1 - 0.07 * mag;
+      final stretchAlong = 1 + 0.10 * mag;
+      final squashCross = 1 - 0.045 * mag;
       final ang = atan2(fy, fx);
       canvas.rotate(ang);
       canvas.scale(stretchAlong, squashCross);
       canvas.rotate(-ang);
-      // 끈적 트레일링: 흐름 방향으로 표면을 비트는 전단(skew).
+      // 끈적 트레일링: 흐름 방향으로 표면을 비트는 전단(skew, 약화).
       canvas.transform(Float64List.fromList(<double>[
-        1, fy * 0.14, 0, 0, //
-        fx * 0.14, 1, 0, 0, //
+        1, fy * 0.08, 0, 0, //
+        fx * 0.08, 1, 0, 0, //
         0, 0, 1, 0, //
         0, 0, 0, 1, //
       ]));
@@ -138,25 +150,30 @@ class EmotionBallPainter extends CustomPainter {
       ).createShader(Rect.fromCircle(center: Offset.zero, radius: radius));
     canvas.drawPath(blob, body);
 
-    // ── 젤 inset 음영: 어두운 우하단 / 밝은 좌상단(검정 금지) ──
-    // blob 안쪽에만 보이도록 클립하고, 가장자리에서 안쪽으로 떨어지는 두 radial을
-    // 덧칠한다. 우하단은 짙은 핑크(193,96,128) 그늘, 좌상단은 흰 림 라이트.
+    // ── 젤 inset 음영 + 구체 터미네이터(검정 금지) ──
+    // v12 §2(성능): 직전엔 clipPath(blob) save/restore 블록을 두 번(inset용·shade용)
+    // 잡아 매 프레임 클립을 2회 쌓았다 → 단일 클립 블록으로 합쳐 클립/저장 비용을 반감.
+    // 또한 "우하단 어두운 inset"과 "구체 터미네이터 그늘"이 둘 다 우하단 짙은 핑크라
+    // 거의 겹쳤으므로 inset 하나(우하단)로 통합해 radial 1장을 제거한다(룩 유지).
     canvas.save();
     canvas.clipPath(blob);
-    // 어두운 우하단 inset (-10 -12 26 rgba(193,96,128,0.4))
-    final insetDark = Paint()
+    // 통합 우하단 그늘: inset(193,96,128) 가장자리 + 터미네이터(coolShade)를 한 radial로.
+    // 가장자리에서 안쪽으로 떨어지는 짙은 핑크 — inset 음영과 구체감을 동시에 낸다.
+    final shadeCol = Color.lerp(_jelInsetDark,
+        Color.lerp(AppColors.jellyCore, AppColors.jellyShade, 0.55)!, 0.35)!;
+    final lowerShade = Paint()
       ..shader = RadialGradient(
-        center: const Alignment(0.55, 0.62),
-        radius: 1.15,
+        center: const Alignment(0.5, 0.6),
+        radius: 1.12,
         colors: [
-          _jelInsetDark.withValues(alpha: 0.0),
-          _jelInsetDark.withValues(alpha: 0.0),
-          _jelInsetDark.withValues(alpha: 0.40),
+          shadeCol.withValues(alpha: 0.10),
+          shadeCol.withValues(alpha: 0.18),
+          shadeCol.withValues(alpha: 0.42),
         ],
-        stops: const [0.0, 0.62, 1.0],
+        stops: const [0.0, 0.6, 1.0],
       ).createShader(Rect.fromCircle(center: Offset.zero, radius: radius * 1.1));
-    canvas.drawCircle(Offset.zero, radius * 1.1, insetDark);
-    // 밝은 좌상단 inset (10 12 26 rgba(255,255,255,0.55))
+    canvas.drawCircle(Offset.zero, radius * 1.1, lowerShade);
+    // 밝은 좌상단 inset (10 12 26 rgba(255,255,255,0.55)) — 흰 림 라이트.
     final insetLight = Paint()
       ..shader = RadialGradient(
         center: const Alignment(-0.52, -0.6),
@@ -171,26 +188,10 @@ class EmotionBallPainter extends CustomPainter {
     canvas.drawCircle(Offset.zero, radius * 1.05, insetLight);
     canvas.restore();
 
-    // ── 구체 음영(터미네이터): 빛 반대쪽(우하단) 부드러운 짙은 핑크 ──
-    final coolShade =
-        Color.lerp(AppColors.jellyCore, AppColors.jellyShade, 0.55)!;
-    canvas.save();
-    canvas.clipPath(blob);
-    final shade = Paint()
-      ..shader = RadialGradient(
-        center: const Alignment(0.42, 0.55),
-        radius: 1.05,
-        colors: [
-          coolShade.withValues(alpha: 0.32),
-          coolShade.withValues(alpha: 0.12),
-          coolShade.withValues(alpha: 0.0),
-        ],
-        stops: const [0.0, 0.5, 1.0],
-      ).createShader(Rect.fromCircle(center: Offset.zero, radius: radius));
-    canvas.drawCircle(Offset.zero, radius, shade);
-    canvas.restore();
-
     // ── 하이라이트(좌상단) — 누르기 중엔 덴트 쪽으로 끌려가 본체가 휘어 보이게 ──
+    // v12 §2(성능): 직전엔 부드러운 하이라이트(blur4)와 또렷한 스펙큘러(blur1.5)를
+    // 각각 maskFilter blur로 그렸다 → 부드러운 광택 하나만 blur로 두고, 또렷한
+    // 스펙큘러는 blur 없는 작은 흰 점으로 겹쳐 표현(blur 레이어 1개 제거). 룩 유지.
     final hiBase = Offset(-radius * 0.32, -radius * 0.36);
     final hiPos = pressing ? hiBase + dent * (radius * 0.20 * pd) : hiBase;
     final hi = Paint()
@@ -198,13 +199,11 @@ class EmotionBallPainter extends CustomPainter {
       ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4);
     canvas.drawCircle(hiPos, radius * 0.16, hi);
 
-    // 작고 또렷한 스펙큘러 광택(top-left).
+    // 작고 또렷한 스펙큘러 광택(top-left) — blur 없이(antialias만) 가벼운 흰 점.
     final specBase = Offset(-radius * 0.38, -radius * 0.42);
     final specPos = pressing ? specBase + dent * (radius * 0.20 * pd) : specBase;
-    final spec = Paint()
-      ..color = Colors.white.withValues(alpha: 0.7)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 1.5);
-    canvas.drawCircle(specPos, radius * 0.07, spec);
+    final spec = Paint()..color = Colors.white.withValues(alpha: 0.7);
+    canvas.drawCircle(specPos, radius * 0.06, spec);
 
     // ── 누르기 손가락 자리 딤플 음영 rgba(150,70,95,0.45)→0, 0.42*지름 ──
     // 양수 깊이(실제 눌림)에서만. radial로 손가락 접점이 살짝 들어간 그늘.
@@ -239,17 +238,33 @@ class EmotionBallPainter extends CustomPainter {
   ///
   /// 8방향 반경을 정현파로 ±약 6% 흔들어(프로토타입 border-radius 키프레임 근사)
   /// 닫힌 카드무-롬 스무딩 베지어로 잇는다. 과하지 않게(미세) — 슬라임 덩어리감.
+  ///
+  /// v12 §2(성능): phase를 0.06rad 버킷으로 양자화해 캐시한다. morphPhase가
+  /// 0.967rad/s로 천천히 돌므로 같은 버킷(≈62ms)이면 직전 Path를 그대로 재사용 —
+  /// 매 프레임 일어나던 8회 cubicTo 베지어 재계산을 대부분 제거한다. radius가
+  /// 바뀌면(resize) 캐시를 무효화한다.
   Path _blobPath(double radius, double phase) {
+    // phase 양자화(버킷). 같은 버킷·같은 radius면 캐시 재사용.
+    final q = (phase / 0.06).floorToDouble() * 0.06;
+    if (_blobCache != null &&
+        _blobCacheRadius == radius &&
+        (_blobCachePhase - q).abs() < 1e-9) {
+      return _blobCache!;
+    }
     const n = 8;
     final pts = <Offset>[];
     for (var i = 0; i < n; i++) {
       final a = i / n * 2 * pi;
       // 각 꼭짓점마다 다른 위상으로 흔들어 비대칭 일그러짐(완전 원 회피).
-      final wob = 0.045 * sin(phase + i * 1.7) + 0.025 * sin(phase * 0.6 + i * 2.9);
+      final wob = 0.045 * sin(q + i * 1.7) + 0.025 * sin(q * 0.6 + i * 2.9);
       final rr = radius * (1 + wob);
       pts.add(Offset(cos(a) * rr, sin(a) * rr));
     }
-    return _closedSmoothPath(pts);
+    final path = _closedSmoothPath(pts);
+    _blobCache = path;
+    _blobCachePhase = q;
+    _blobCacheRadius = radius;
+    return path;
   }
 
   /// 점들을 카드무-롬→베지어로 부드럽게 잇는 닫힌 경로.

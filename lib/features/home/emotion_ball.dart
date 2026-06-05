@@ -137,19 +137,37 @@ class EmotionBall {
     final toCenter = pos - localPos;
     final d = toCenter.distance;
     // 정중앙이면 영벡터 회피 — 위에서 누른 느낌으로 위쪽(-y)을 기본 축.
-    _pressDir = d > 0.001 ? toCenter / d : const Offset(0, -1);
+    final newDir = d > 0.001 ? toCenter / d : const Offset(0, -1);
     // v9 §2-B: 접촉점(중심 기준 로컬좌표)을 radius*0.7 안으로 clamp해 저장 —
     // 본체 가장자리를 눌러도 덴트가 표면 안에 머물게.
     final contact = localPos - pos;
     final cd = contact.distance;
     final maxContact = radius * 0.7;
-    _pressContact = cd > maxContact ? contact / cd * maxContact : contact;
+    final newContact = cd > maxContact ? contact / cd * maxContact : contact;
+
+    // v12 §3: 새 누르기는 진행 중이던 복원/이전 press 상태를 "즉시" 끊고 갈아탄다.
+    // 직전 누르기의 스프링 복원(elastic 오버슈트, _curDepth가 음수까지 통통)이
+    // 아직 끝나지 않은 채 다른 지점/방향으로 다시 누르면 반응이 느리게 느껴졌다.
+    // → 복원을 중단(_releaseT=-1)하고, 접촉점이 크게 바뀌었으면(다른 지점/방향)
+    //   잔여 깊이를 즉시 0으로 리셋해 새 지점이 "지연 없이 바로" 가라앉기 시작하게.
+    //   같은 자리 이어 누르기는 기존처럼 현재 깊이에서 매끄럽게 이어붙인다.
+    final movedFar = (newContact - _pressContact).distance > radius * 0.25;
+    final wasRestoring = _releaseT >= 0;
+    // 음수 깊이(복원 오버슈트 반동) 잔상도 새 누르기엔 0부터 시작하는 게 자연스럽다.
+    if (movedFar || wasRestoring || _curDepth < 0) {
+      _curDepth = _curDepth.clamp(0.0, 1.0); // 반동(음수) 제거
+      if (movedFar) _curDepth = 0; // 다른 지점이면 즉시 평상에서 새로 가라앉음
+    }
+
+    _pressDir = newDir;
+    _pressContact = newContact;
     _holding = true;
-    // 진행 중이던 복원이 있더라도 현재 깊이에서 이어 눌리도록 _curDepth 유지.
-    // 홀드 시간은 현재 깊이에 해당하는 시점부터 다시 적분(이어 누르기 자연스럽게).
+    // 홀드 시간은 (리셋 반영된) 현재 깊이에 해당하는 시점부터 다시 적분.
     _holdT = _depthToHoldTime(_curDepth);
-    _releaseT = -1;
+    _releaseT = -1; // 진행 중이던 복원 즉시 중단
+    _releaseDepth = 0;
     // 미세 틱: 이미 통과한 정점은 다시 울리지 않도록 현재 깊이 기준으로 무장.
+    _tickPending = false;
     _tick50Armed = _curDepth >= 0.5;
     _tick85Armed = _curDepth >= 0.85;
   }
@@ -307,10 +325,12 @@ class EmotionBall {
     // 접촉 세기 상승(이동 길이 비례). update에서 천천히(0.45/s) 감쇠.
     // v10 §3: 상승 계수 0.5→0.4로 약간 부드럽게(급상승 완화).
     _strokeAmp = (_strokeAmp + len / radius * 0.4).clamp(0.0, 1.0);
-    // v11 §A-5: 손가락 흐름 방향·세기를 부드럽게 따라가게(저역통과). 액체가 쓸리는
-    // stretch+skew 축으로 painter가 사용. step(직전 프레임 이동) 쪽으로 0.5 비율
-    // 수렴 — 방향 전환 시 매끄럽게 휘고, stroke가 멈추면 update에서 감쇠한다.
-    _strokeFlow += (step - _strokeFlow) * 0.5;
+    // v12 §1: 손가락 흐름 방향·세기를 "더 천천히" 따라가게(저역통과 EMA 강화).
+    // 액체가 쓸리는 stretch+skew 축으로 painter가 사용. 기존 0.5는 손가락 raw step에
+    // 너무 즉각 반응해 "튕기듯 날카롭게" 보였다 → 수렴 비율을 0.18로 낮춰 목표값으로
+    // 천천히 ease. 방향 전환·속도 변화가 부드럽게 뭉개지며 잔잔히 흐른다.
+    // (멈추면 update의 완화된 감쇠로 서서히 잦아든다 — "액체가 천천히 쓸리는" 결.)
+    _strokeFlow += (step - _strokeFlow) * 0.18;
     vel = Offset.zero; // fling 금지
     // 매 move마다 살짝씩만 더해 부드럽게 출렁이게(스파이크 방지) — update의
     // wobbleAmp 감쇠(-dt*1.4)와 맞물려 멈추면 자연 감쇠한다.
@@ -329,9 +349,10 @@ class EmotionBall {
     _morphPhase = (_morphPhase + dt * 0.9666) % (2 * pi);
     wobbleAmp = (wobbleAmp - dt * 1.4).clamp(0.0, 1.0);
     squash = (squash - dt * 3.0).clamp(0.0, 1.0);
-    // 쓰다듬기 흐름 벡터 시간 감쇠(멈추면 ~0.4s에 잦아듦). stretch+skew가
-    // 손을 떼면 부드럽게 평상 표면으로 ease-out.
-    _strokeFlow *= (1 - (6.0 * dt).clamp(0.0, 1.0));
+    // v12 §1: 쓰다듬기 흐름 벡터 시간 감쇠를 완화(6.0→2.6/s, 멈추면 ~0.9s에 잦아듦).
+    // 손가락을 떼거나 멈추면 stretch+skew가 "급히 끊기지 않고" 부드럽게 평상 표면으로
+    // 흘러 돌아온다 — 날카로운 튕김 제거, 쫀득하게 ease-out.
+    _strokeFlow *= (1 - (2.6 * dt).clamp(0.0, 1.0));
     // 쓰다듬기 접촉 광택 세기 시간 감쇠. v10 §4: 0.85→0.45/s로 늦춤 —
     // 멈췄을 때 ~2.2s에 걸쳐 부드럽게 사그라들어 "급격히 줄어듦"을 제거(자연 ease-out).
     _strokeAmp = (_strokeAmp - dt * 0.45).clamp(0.0, 1.0);
