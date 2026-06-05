@@ -24,4 +24,13 @@ class StorageService {
 
   /// 온보딩 완료를 기록한다. 다음 실행부터 홈으로 직행하게 된다.
   Future<void> setOnboardingDone() => _prefs.setBool(_kOnboardingDone, true);
+
+  static const _kAnalyticsEnabled = 'analytics_enabled';
+
+  /// 분석(PostHog) 수집 동의 여부. 기본 ON, 옵트아웃 시 false.
+  bool get analyticsEnabled => _prefs.getBool(_kAnalyticsEnabled) ?? true;
+
+  /// 사용자가 설정에서 수집을 끄거나 켤 때 호출.
+  Future<void> setAnalyticsEnabled(bool value) =>
+      _prefs.setBool(_kAnalyticsEnabled, value);
 }

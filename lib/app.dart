@@ -1,16 +1,23 @@
 import 'package:flutter/material.dart';
 
+import 'core/analytics.dart';
 import 'features/home/home_screen.dart';
 import 'features/onboarding/onboarding_screen.dart';
 import 'services/storage_service.dart';
+import 'state/analytics_scope.dart';
 import 'state/session.dart';
 import 'state/storage_scope.dart';
 import 'theme/app_theme.dart';
 
 class EmotionResolutionApp extends StatefulWidget {
-  const EmotionResolutionApp({super.key, required this.storage});
+  const EmotionResolutionApp({
+    super.key,
+    required this.storage,
+    required this.analytics,
+  });
 
   final StorageService storage;
+  final AnalyticsService analytics;
 
   @override
   State<EmotionResolutionApp> createState() => _EmotionResolutionAppState();
@@ -29,8 +36,10 @@ class _EmotionResolutionAppState extends State<EmotionResolutionApp> {
   Widget build(BuildContext context) {
     return StorageScope(
       storage: widget.storage,
-      child: SessionScope(
-        notifier: _session,
+      child: AnalyticsScope(
+        analytics: widget.analytics,
+        child: SessionScope(
+          notifier: _session,
         child: MaterialApp(
           title: '감정 해소',
           debugShowCheckedModeBanner: false,
@@ -40,6 +49,7 @@ class _EmotionResolutionAppState extends State<EmotionResolutionApp> {
               ? const HomeScreen()
               : const OnboardingScreen(),
         ),
+      ),
       ),
     );
   }
