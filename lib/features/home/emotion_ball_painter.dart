@@ -148,6 +148,14 @@ class EmotionBallPainter extends CustomPainter {
       ).createShader(Rect.fromCircle(center: Offset.zero, radius: radius));
     canvas.drawPath(blob, body);
 
+    // ── 굴러 보이는 표면 단서: 은은한 비대칭 얼룩 3개가 회전각 따라 표면을 돈다 ──
+    // 밋밋한 글로시 블롭은 회전이 안 보이므로, 본체 톤(jellyCore↔jellyEdge)을
+    // 살짝 벗어나지 않는 매우 옅은 음영/하이톤 블롭을 공 표면 위에 띄운다.
+    // rollAngle만큼 궤도각이 돌고, 구의 깊이감을 위해 "공 뒤쪽(코사인 부호)"으로
+    // 갈수록 페이드 → 표면을 타고 넘어가며 사라지는 "구르는 결". 스페큘러(광원)는
+    // 월드 고정이므로 여기서 돌리지 않는다(표면 디테일만 회전 — 요구사항 2).
+    _paintRollMottle(canvas, radius, ball.rollAngle, blob);
+
     // ── 젤 inset 음영 + 구체 터미네이터(검정 금지) ──
     // v12 §2(성능): 직전엔 clipPath(blob) save/restore 블록을 두 번(inset용·shade용)
     // 잡아 매 프레임 클립을 2회 쌓았다 → 단일 클립 블록으로 합쳐 클립/저장 비용을 반감.
@@ -241,6 +249,46 @@ class EmotionBallPainter extends CustomPainter {
 
     canvas.restore(); // 표면 효과 clip 해제
 
+    canvas.restore();
+  }
+
+  // ── 굴림 표면 얼룩(claymorphism 톤 유지) ──────────────────────
+  // 결정적 3개: 기준 궤도각 + 깊이축 위상. alpha를 매우 낮게(≤0.10) 둬
+  // "은은하게 굴러가는 결"만 남기고 또렷한 무늬/표정은 피한다.
+  static const List<({double phi, double rad, double size, bool light})>
+      _mottle = [
+    (phi: 0.0, rad: 0.42, size: 0.40, light: true), // 밝은 하이톤
+    (phi: 2.3, rad: 0.55, size: 0.34, light: false), // 옅은 음영
+    (phi: 4.4, rad: 0.34, size: 0.30, light: false), // 옅은 음영
+  ];
+
+  /// 회전각 [angle]에 따라 표면 얼룩 3개가 공 표면을 도는 모습을 그린다.
+  ///
+  /// 각 얼룩은 단위 구 위의 한 점으로 모델링: 궤도각(phi+angle)으로 가로 위치를
+  /// 정하고, 위도(rad)로 화면상 반지름을 정한다. 깊이 z=cos(궤도각)이 양수일 때만
+  /// (앞면) 보이고, 뒷면으로 넘어가면 페이드 → "표면을 타고 넘어가는" 구름.
+  void _paintRollMottle(Canvas canvas, double radius, double angle, Path blob) {
+    canvas.save();
+    canvas.clipPath(blob);
+    for (final m in _mottle) {
+      final orbit = m.phi + angle;
+      final z = cos(orbit); // +면 앞(보임), -면 뒤(숨음)
+      // 뒷면은 완전히 페이드(0), 가장자리로 갈수록 부드럽게 약해짐.
+      final face = (z * 1.2).clamp(0.0, 1.0);
+      if (face <= 0.001) continue;
+      // 가로는 sin(궤도각)*위도, 세로는 얼룩 고유 위도로 표면 위 점을 배치.
+      final cx = sin(orbit) * radius * m.rad;
+      final cy = -cos(m.phi * 1.7) * radius * m.rad * 0.6;
+      // 앞면 중앙일수록(z=1) 또렷, 옆으로 갈수록 납작해지는 느낌(원근).
+      final r = radius * m.size * (0.6 + 0.4 * face);
+      final base = m.light
+          ? Colors.white
+          : Color.lerp(AppColors.jellyCore, AppColors.jellyShade, 0.5)!;
+      final paint = Paint()
+        ..color = base.withValues(alpha: (m.light ? 0.10 : 0.08) * face)
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, radius * 0.22);
+      canvas.drawCircle(Offset(cx, cy), r, paint);
+    }
     canvas.restore();
   }
 

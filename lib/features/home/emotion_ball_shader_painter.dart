@@ -102,6 +102,11 @@ class EmotionBallShaderPainter extends CustomPainter {
     // 문지르기 세기(22): 푸딩 swell + 일렁임 강화용.
     shader.setFloat(22, ball.strokeAmp.clamp(0.0, 1.0));
 
+    // 굴림 회전각(23): 표면 얼룩이 이 각도만큼 돌아 "구르는" 단서를 준다.
+    // 가로 굴리기가 표면을 가로로 흐르게: rollShift의 가로 성분을 각으로 환산.
+    // (rollShift는 rad 단위 누적 변위라 그대로 표면 경도 회전에 쓴다.)
+    shader.setFloat(23, ball.rollShift.dx);
+
     canvas.drawRect(Offset.zero & size, Paint()..shader = shader);
 
     // v17: 손가락 따라다니던 화이트 bloom은 제거했다 — 문지르기는 이제 셰이더의 이동

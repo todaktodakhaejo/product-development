@@ -69,6 +69,26 @@ class EmotionBall {
 
   bool grabbed = false;
 
+  // ── 굴림 회전(roll, GST-02) 상태 ──────────────────────────────
+  // "미끄러짐 없는 구름": 이동 거리 d만큼 표면이 d/radius 라디안 회전한다.
+  // 화면은 2D이므로 회전을 두 갈래로 들고 painter/셰이더가 표면 단서를 돈다:
+  //  · _roll(2D 벡터): 표면 텍스처가 "이동 반대 방향"으로 흘러가는 누적 변위
+  //    (rad 단위, x/y 각각). 어느 방향으로 굴려도 결이 그 방향으로 흐른다.
+  //  · _angle(스칼라): 진행 방향 부호를 반영한 누적 회전각. painter의
+  //    "표면 얼룩이 도는" 단서가 이동량에 비례해 돌게 한다.
+  // grab(delta)에서 즉시 누적하고, 놓은 뒤 fling은 update에서 vel로 적분해
+  // 회전이 마찰과 함께 자연 감속하며 이어진다(멈추면 회전도 멈춤).
+  Offset _roll = Offset.zero; // 표면 변위(rad), 이동 반대 방향 누적
+  double _angle = 0; // 누적 회전각(rad), 진행 방향 부호 반영
+
+  /// painter/셰이더가 읽는 누적 회전각(rad). 표면 얼룩/결을 이 각도만큼 돌린다.
+  /// 스페큘러(광원)는 월드 고정이라 이 값으로 돌리지 않는다(표면 디테일만).
+  double get rollAngle => _angle;
+
+  /// painter/셰이더가 읽는 표면 변위 벡터(rad). 이동 반대 방향으로 흐르는
+  /// "구르는 결"의 축·세기. 어느 방향으로 굴려도 그 방향으로 표면이 흐른다.
+  Offset get rollShift => _roll;
+
   // ── 쓰다듬기 위치 반응(GST-04, v8 §1-B) 상태 ──────────────────
   // 손가락이 닿는 자리를 중심 기준 로컬좌표로 들고 있다가(painter가 그 위치에
   // 화이트 bloom 광택을 그림), stroke가 멈추면 시간 감쇠(~1.2s)로 잦아든다.
@@ -370,7 +390,25 @@ class EmotionBall {
       squashDir = delta / d;
     }
     _bumpWobble(min(0.4, d / radius));
+    // 굴림 회전 누적: 이동 거리 d만큼 표면이 d/radius rad 회전(미끄러짐 없는 구름).
+    _applyRoll(delta);
     pos = next;
+  }
+
+  /// 이동량 [delta]만큼 "미끄러짐 없는 구름" 회전을 누적한다.
+  ///
+  /// - [_roll]: 표면 텍스처가 이동 **반대** 방향으로 흐르도록 -delta/radius 누적
+  ///   (공이 오른쪽으로 구르면 윗면 결은 왼쪽으로 흘러 보임).
+  /// - [_angle]: 진행 방향 부호(우/하 양수)를 반영한 스칼라 각 누적 — painter의
+  ///   "표면 얼룩이 도는" 단서용. 미세 이동(<0.05px)은 무시해 정지 시 떨림 방지.
+  void _applyRoll(Offset delta) {
+    final d = delta.distance;
+    if (d < 0.05) return;
+    _roll -= delta / radius; // 표면은 이동 반대로 흐름
+    // 진행 방향 부호: 가로 성분 우선(좌우 굴리기가 흔함), 보조로 세로.
+    final sign =
+        delta.dx.abs() >= delta.dy.abs() ? delta.dx.sign : delta.dy.sign;
+    _angle += d / radius * (sign == 0 ? 1 : sign);
   }
 
   void release() {
@@ -385,6 +423,9 @@ class EmotionBall {
     grabbed = false;
     pressCancel(); // 누르기 침몰이 남아 있으면 무팝으로 정리
     _extraPresses.clear(); // 멀티터치 함몰점도 정리
+    // 굴림 회전 잔상도 리셋(중앙 복귀는 "초기화"이므로 결을 평상으로).
+    _roll = Offset.zero;
+    _angle = 0;
   }
 
   /// 제자리 쓰다듬기(GST-04). [step]은 직전 프레임 대비 손가락 이동량,
@@ -497,7 +538,11 @@ class EmotionBall {
     final friction = speed > _kFastSpeed ? 0.9 : 1.7;
     vel *= (1 - friction * dt);
 
-    pos += vel * dt;
+    final step = vel * dt;
+    pos += step;
+    // fling 굴림: 실제 변위만큼 회전 누적 → vel이 마찰로 줄면 회전도 함께 감속,
+    // 멈추면(step≈0) 회전도 멈춘다(요구사항 3). grab과 같은 식이라 인계가 매끄럽다.
+    _applyRoll(step);
 
     final collided = _collideWalls();
 
