@@ -59,6 +59,8 @@ flutter:
     - assets/audio/mochi_1.wav
     - assets/audio/mochi_2.wav
     - assets/audio/mochi_3.wav
+    # 문지르기 연속 루프(부드러운 soft rub, 끊김 없음).
+    - assets/audio/rub.wav
     # 글쓰기 — 타이핑 5슬라이스.
     - assets/audio/type_0.wav
     - assets/audio/type_1.wav

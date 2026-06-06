@@ -48,6 +48,11 @@ class RitualAudio {
   ];
   int _chewyIdx = 0;
   DateTime _chewyLast = DateTime.fromMillisecondsSinceEpoch(0);
+  // 문지르기 연속 루프(끊김 없는 부드러운 rub) — 별도 채널 + 페이드 인/아웃.
+  final AudioPlayer _rub = AudioPlayer(playerId: 'objet_rub');
+  bool _rubOn = false;
+  Timer? _rubFade;
+  static const double _kRubVolume = 0.34;
   // 글쓰기 타이핑 round-robin 풀.
   final List<AudioPlayer> _typePool = [
     AudioPlayer(playerId: 'type_0'),
@@ -302,6 +307,39 @@ class RitualAudio {
             volume: gain);
       });
 
+  /// 문지르기 시작 — 부드러운 rub 루프를 페이드인으로 켠다(이미 켜져 있으면 무시).
+  /// 손을 뗄 때까지 끊김 없이 이어진다(슬라이스 retrigger 대신 연속 루프).
+  Future<void> startRub() => _safe(() async {
+        if (_rubOn) return;
+        _rubOn = true;
+        _rubFade?.cancel();
+        await _rub.setReleaseMode(ReleaseMode.loop);
+        await _rub.setVolume(0);
+        await _rub.play(AssetSource('audio/rub.wav'), volume: 0);
+        _ramp(_rubFade, _rub, 0, _kRubVolume,
+            const Duration(milliseconds: 160), (t) => _rubFade = t);
+      });
+
+  /// 문지르기 종료 — rub 루프를 짧게 페이드아웃 후 정지(클릭 방지).
+  Future<void> stopRub() => _safe(() async {
+        if (!_rubOn) return;
+        _rubOn = false;
+        _rubFade?.cancel();
+        const stepMs = 40;
+        const steps = 4; // ~160ms 페이드아웃
+        var i = 0;
+        const start = _kRubVolume;
+        _rubFade = Timer.periodic(const Duration(milliseconds: stepMs), (t) {
+          i++;
+          final v = start * (1 - i / steps);
+          _rub.setVolume(v < 0 ? 0 : v);
+          if (i >= steps) {
+            t.cancel();
+            _rub.stop();
+          }
+        });
+      });
+
   // ── 글쓰기 ─────────────────────────────────────────────────────────────────
   /// 키 입력 — type 슬라이스 random 재생(round-robin, ~40ms throttle).
   Future<void> typeKey({double gain = 0.9}) {
@@ -354,5 +392,8 @@ class RitualAudio {
         for (final p in _typePool) {
           await p.stop();
         }
+        _rubOn = false;
+        _rubFade?.cancel();
+        await _rub.stop();
       });
 }

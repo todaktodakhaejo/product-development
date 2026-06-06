@@ -491,13 +491,14 @@ class _HomeScreenState extends State<HomeScreen>
             (_strokeEnergy + stepLen / r * 0.4).clamp(0.0, 1.0); // step 비례 증가
         // 위로받는 부드러운 저강도 텍스처를 흐르듯 발사(throttle은 strokeSoft 내장).
         Haptics.instance.strokeSoft();
-        RitualAudio.instance
-            .objetSquish(gain: 0.6, throttle: true); // 쓰다듬기 슬라임
-        RitualAudio.instance.objetStretch(gain: 0.4); // + 쓰다듬으며 쫀득
+        // 문지르는 동안엔 슬라이스 retrigger(뚝뚝 끊김) 대신 부드러운 rub 루프를
+        // 손 뗄 때까지 연속으로 켠다(startRub은 이미 켜져 있으면 무시).
+        RitualAudio.instance.startRub();
       }
 
       // ROLL 거동: catchup 중엔 ease 추종으로 gap을 좁히고, 이후 full 추종.
       if (_dragMode == _DragMode.roll) {
+        RitualAudio.instance.stopRub(); // 굴리기로 전환되면 문지르기 rub 정지
         if (_rollCatchup > 0) {
           ball.grab(pos, ease: 0.4);
           _rollCatchup--;
@@ -550,6 +551,7 @@ class _HomeScreenState extends State<HomeScreen>
       return;
     }
     _pointerId = null;
+    RitualAudio.instance.stopRub(); // 손 뗄 때 문지르기 rub 정지
     if (!_moved) {
       // 누르기 홀드 종료(GST-03, §2): 드래그로 전환되지 않고 제자리에서 손을 뗌.
       // pressStart는 _onPointerDown(본체 위)에서 이미 걸렸으므로 여기서 복원 시작 +
