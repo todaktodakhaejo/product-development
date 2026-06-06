@@ -125,7 +125,7 @@ class EmotionBall {
   // v18: "길게 누를수록 골이 더 깊어지게" — 0.45s에 최대로 꽉 차던 것을 1.4s로 늘려
   // 오래 누르고 있을수록 점점 깊이 파이게 한다(곡선도 _holdDepthFor에서 꾸준히 깊어지는
   // x^0.7로 교체). 복원은 기존처럼 0.62s 쫀득 통통.
-  static const double _holdInDur = 1.0;
+  static const double _holdInDur = 0.6;
   static const double _releaseDur = 0.62;
 
   static double _radiusFor(Rect b) => (b.shortestSide * 0.22).clamp(64.0, 150.0);

@@ -47,8 +47,8 @@ void main() {
 
   // 멀티터치 함몰: 누름점 5개를 각각 "손가락 크기" 가우시안으로 법선을 꺾고,
   // 교란 벡터를 합산한다 → 여러 군데를 동시에 누르면 그 자리마다 따로 쏙 파인다.
-  float sigma = uRadius * 0.20;        // 함몰 폭(작게 — 손가락 한 개)
-  float sigmaB = uRadius * 0.40;       // 둘레 rim(부풂) 폭 — 더 넓게
+  float sigma = uRadius * 0.30;        // 함몰 폭(엄지 크기 — 넓게, 잘 보이게 v18c)
+  float sigmaB = uRadius * 0.55;       // 둘레 rim(부풂) 폭 — 더 넓게
   vec2 pert = vec2(0.0);
   float gsh = 0.0;                     // 함몰 안쪽 그늘용(가장 깊은 곳 기준)
   for (int i = 0; i < 5; i++) {
@@ -56,8 +56,8 @@ void main() {
     float dpt = clamp(uTouch[i * 3 + 2], 0.0, 1.0);
     float di = length(p - tp);
     float gi = exp(-(di * di) / (2.0 * sigma * sigma)) * dpt;
-    // (1) 손가락 자리 함몰(법선을 안쪽으로 꺾음). 진폭 0.60 — 더 깊이 파이게(v18b).
-    pert += -(p - tp) / (sigma * sigma) * gi * (uRadius * 0.60);
+    // (1) 손가락 자리 함몰(법선을 안쪽으로 꺾음). 진폭 0.85 — 넓힌 만큼 깊이 유지(v18c).
+    pert += -(p - tp) / (sigma * sigma) * gi * (uRadius * 0.85);
     // (2) 문지를 때만(uStroke) 그 둘레가 솟는 rim — "눌린 자리 주변이 퍼지는" 슬라임
     //     느낌. 넓은 가우시안의 기울기를 반대 부호로 더해(법선 바깥쪽) 융기 띠를 만든다.
     float gb = exp(-(di * di) / (2.0 * sigmaB * sigmaB)) * dpt;
