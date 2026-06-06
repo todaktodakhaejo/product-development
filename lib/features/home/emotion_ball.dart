@@ -81,15 +81,6 @@ class EmotionBall {
   Offset _roll = Offset.zero; // 표면 변위(rad), 이동 반대 방향 누적
   double _angle = 0; // 누적 회전각(rad), 진행 방향 부호 반영
 
-  // ── 굴림 운동감(rolling squash-stretch) 신호 ──────────────────
-  // "지금 얼마나 빠르게 어느 방향으로 굴러가는가"를 부드럽게(EMA) 들고 있는다.
-  // _applyRoll이 매 이동마다 진행 방향·세기를 주입하고, update가 시간 감쇠시킨다.
-  // → 굴리는 동안엔 진행축으로 살짝 눌리고 늘어나는 변형(squash-stretch)을 주고,
-  //   멈추면 0으로 잦아들어 변형이 사라진다(요구사항 3: 정지 시 변형 멈춤).
-  // grab의 squash/squashDir(끄는 반대 방향 출렁임)와는 별개 채널이라 충돌하지 않고,
-  // painter/셰이더가 두 신호를 합성해 "굴러가는 부피감"을 만든다.
-  Offset _rollVel = Offset.zero; // 진행 방향 단위벡터 × 세기(0~1 근사), EMA 평활
-
   /// painter/셰이더가 읽는 누적 회전각(rad). 표면 얼룩/결을 이 각도만큼 돌린다.
   /// 스페큘러(광원)는 월드 고정이라 이 값으로 돌리지 않는다(표면 디테일만).
   double get rollAngle => _angle;
@@ -97,10 +88,6 @@ class EmotionBall {
   /// painter/셰이더가 읽는 표면 변위 벡터(rad). 이동 반대 방향으로 흐르는
   /// "구르는 결"의 축·세기. 어느 방향으로 굴려도 그 방향으로 표면이 흐른다.
   Offset get rollShift => _roll;
-
-  /// painter/셰이더가 읽는 굴림 운동 벡터(진행 방향 × 세기, 대략 0~1).
-  /// rolling squash-stretch(진행축 눌림+늘림)용. 구르는 동안만 유효하고 멈추면 0.
-  Offset get rollVelocity => _rollVel;
 
   // ── 쓰다듬기 위치 반응(GST-04, v8 §1-B) 상태 ──────────────────
   // 손가락이 닿는 자리를 중심 기준 로컬좌표로 들고 있다가(painter가 그 위치에
@@ -220,7 +207,6 @@ class EmotionBall {
     // 남은 채 누르면 공이 함몰된 상태로 날아가다 마찰로 멈춰 "잠깐 멈춤" 버그처럼
     // 보였다 → 누르면 그 자리에서 바로 잡혀 가라앉도록 vel을 0으로.
     vel = Offset.zero;
-    _rollVel = Offset.zero; // 누르려 잡으면 굴림 운동 변형도 즉시 멈춤
     _holding = true;
     // 홀드 시간은 (리셋 반영된) 현재 깊이에 해당하는 시점부터 다시 적분.
     _holdT = _depthToHoldTime(_curDepth);
@@ -423,11 +409,6 @@ class EmotionBall {
     final sign =
         delta.dx.abs() >= delta.dy.abs() ? delta.dx.sign : delta.dy.sign;
     _angle += d / radius * (sign == 0 ? 1 : sign);
-    // 굴림 운동감 주입: 진행 방향 단위벡터 × 세기(이동량/반지름, 상한 ~1)를 EMA로
-    // 섞는다. 빠르게 끌수록(프레임당 변위 큼) 세기가 커져 진행축 squash가 또렷해진다.
-    final dir = delta / d;
-    final mag = (d / radius * 2.2).clamp(0.0, 1.0); // 한 프레임 변위 → 운동 세기
-    _rollVel += (dir * mag - _rollVel) * 0.35; // 목표로 천천히 ease(부드럽게)
   }
 
   void release() {
@@ -445,7 +426,6 @@ class EmotionBall {
     // 굴림 회전 잔상도 리셋(중앙 복귀는 "초기화"이므로 결을 평상으로).
     _roll = Offset.zero;
     _angle = 0;
-    _rollVel = Offset.zero;
   }
 
   /// 제자리 쓰다듬기(GST-04). [step]은 직전 프레임 대비 손가락 이동량,
@@ -494,10 +474,6 @@ class EmotionBall {
     _morphPhase = (_morphPhase + dt * 0.9666) % (2 * pi);
     wobbleAmp = (wobbleAmp - dt * 1.4).clamp(0.0, 1.0);
     squash = (squash - dt * 3.0).clamp(0.0, 1.0);
-    // 굴림 운동 벡터 시간 감쇠(~6/s, 멈추면 ~0.4s에 잦아듦). _applyRoll가 매 이동마다
-    // 다시 채우므로 구르는 동안은 유지되고, 손을 떼고 fling이 멈추면(이동≈0) 변형이
-    // 자연스럽게 사라진다 → 정지 시 squash-stretch 0(요구사항 3).
-    _rollVel *= (1 - (6.0 * dt).clamp(0.0, 1.0));
     // v12 §1: 쓰다듬기 흐름 벡터 시간 감쇠를 완화(6.0→2.6/s, 멈추면 ~0.9s에 잦아듦).
     // 손가락을 떼거나 멈추면 stretch+skew가 "급히 끊기지 않고" 부드럽게 평상 표면으로
     // 흘러 돌아온다 — 날카로운 튕김 제거, 쫀득하게 ease-out.

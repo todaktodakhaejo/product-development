@@ -107,13 +107,6 @@ class EmotionBallShaderPainter extends CustomPainter {
     // (rollShift는 rad 단위 누적 변위라 그대로 표면 경도 회전에 쓴다.)
     shader.setFloat(23, ball.rollShift.dx);
 
-    // 굴림 운동 벡터(24,25): 진행 방향 × 세기 → rolling squash-stretch.
-    // 멈추면 (0,0)이라 셰이더가 변형을 건너뛴다(정지 시 원형 유지).
-    final rv = ball.rollVelocity;
-    shader
-      ..setFloat(24, rv.dx)
-      ..setFloat(25, rv.dy);
-
     canvas.drawRect(Offset.zero & size, Paint()..shader = shader);
 
     // v17: 손가락 따라다니던 화이트 bloom은 제거했다 — 문지르기는 이제 셰이더의 이동

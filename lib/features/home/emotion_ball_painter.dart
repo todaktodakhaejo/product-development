@@ -69,18 +69,6 @@ class EmotionBallPainter extends CustomPainter {
     final swell = 1 + 0.05 * ball.strokeAmp.clamp(0.0, 1.0);
     canvas.scale(scale.dx * swell, scale.dy * swell);
 
-    // ── rolling squash-stretch(굴림 운동감) ──
-    // 진행축으로 늘고 직교축으로 살짝 눌리는 럭비공 변형. ball.rollVelocity가
-    // 구르는 동안만 유효(멈추면 0 → 원형). 셰이더 주 경로와 같은 세기(±18%).
-    final rv = ball.rollVelocity;
-    final rmag = rv.distance.clamp(0.0, 1.0);
-    if (rmag > 0.001) {
-      final ra = atan2(rv.dy, rv.dx);
-      canvas.rotate(ra);
-      canvas.scale(1 + 0.18 * rmag, 1 - 0.18 * 0.6 * rmag);
-      canvas.rotate(-ra);
-    }
-
     // ── 쓰다듬기 흐름 stretch+skew(§A-5: 액체가 쓸리는 결) ──
     // 공은 제자리(이동 없음)이되 표면만 손가락 속도 방향으로 늘어나고 비틀린다.
     // v12 §1: strokeFlow는 ball에서 강한 EMA로 부드럽게 누적되므로 여기 강도를 낮춰
@@ -264,56 +252,42 @@ class EmotionBallPainter extends CustomPainter {
     canvas.restore();
   }
 
-  // ── 굴림 표면 얼룩(대폭 강화: 구슬/마블 점이 또렷이 넘어감) ────────────
-  // 결정적 6개 점(밝은/어두운 교차) + 고유 위도. alpha를 ±5% 수준에서 크게 올려
-  // (밝은 0.30 / 어두운 0.26 peak) "공 위를 점이 넘어가는" 부피감을 확실히 보이게 한다.
-  // 파스텔 톤은 jellyCore↔jellyShade 범위 음영/하이톤으로 유지(검정·원색 금지).
-  static const List<({double phi, double lat, double size, bool light})>
+  // ── 굴림 표면 얼룩(claymorphism 톤 유지) ──────────────────────
+  // 결정적 3개: 기준 궤도각 + 깊이축 위상. alpha를 매우 낮게(≤0.10) 둬
+  // "은은하게 굴러가는 결"만 남기고 또렷한 무늬/표정은 피한다.
+  static const List<({double phi, double rad, double size, bool light})>
       _mottle = [
-    (phi: 0.0, lat: 0.10, size: 0.40, light: false), // 어두운 점(적도)
-    (phi: 1.05, lat: -0.45, size: 0.32, light: true), // 밝은 점(아래)
-    (phi: 2.1, lat: 0.40, size: 0.36, light: false), // 어두운 점(위)
-    (phi: 3.1, lat: -0.10, size: 0.42, light: true), // 밝은 점(적도)
-    (phi: 4.2, lat: 0.30, size: 0.30, light: false), // 어두운 점(위)
-    (phi: 5.2, lat: -0.35, size: 0.34, light: true), // 밝은 점(아래)
+    (phi: 0.0, rad: 0.42, size: 0.40, light: true), // 밝은 하이톤
+    (phi: 2.3, rad: 0.55, size: 0.34, light: false), // 옅은 음영
+    (phi: 4.4, rad: 0.34, size: 0.30, light: false), // 옅은 음영
   ];
 
-  /// 회전각 [angle]에 따라 표면 얼룩 6개가 공 표면을 또렷이 넘어가는 모습을 그린다.
+  /// 회전각 [angle]에 따라 표면 얼룩 3개가 공 표면을 도는 모습을 그린다.
   ///
-  /// 각 얼룩은 단위 구 위의 한 점: 경도=phi+angle, 위도=lat로 구면 위치를 정하고
-  /// 정사영해 화면 위치를 둔다. 깊이 z=cos(경도)·cos(위도)가 양수일 때만(앞면) 보이고
-  /// 뒷면으로 넘어가면 페이드. 가장자리(z 작음)로 갈수록 가로 폭이 압축되어(구면 원근)
-  /// "구가 돌아 넘어가는" 깊이감을 분명히 한다.
+  /// 각 얼룩은 단위 구 위의 한 점으로 모델링: 궤도각(phi+angle)으로 가로 위치를
+  /// 정하고, 위도(rad)로 화면상 반지름을 정한다. 깊이 z=cos(궤도각)이 양수일 때만
+  /// (앞면) 보이고, 뒷면으로 넘어가면 페이드 → "표면을 타고 넘어가는" 구름.
   void _paintRollMottle(Canvas canvas, double radius, double angle, Path blob) {
     canvas.save();
     canvas.clipPath(blob);
     for (final m in _mottle) {
-      final lon = m.phi + angle;
-      // 단위 구 좌표(카메라 +z가 뷰어). 위도 lat, 경도 lon.
-      final cl = cos(m.lat);
-      final sx = sin(lon) * cl; // 화면 x
-      final sy = sin(m.lat); // 화면 y(위도 고정)
-      final sz = cos(lon) * cl; // 깊이(+면 앞)
-      // 뒷면은 페이드. 앞면 중앙(sz=1)일수록 또렷.
-      final face = (sz * 1.3).clamp(0.0, 1.0);
+      final orbit = m.phi + angle;
+      final z = cos(orbit); // +면 앞(보임), -면 뒤(숨음)
+      // 뒷면은 완전히 페이드(0), 가장자리로 갈수록 부드럽게 약해짐.
+      final face = (z * 1.2).clamp(0.0, 1.0);
       if (face <= 0.001) continue;
-      final cx = sx * radius * 0.82;
-      final cy = sy * radius * 0.82;
-      // 가로 폭은 가장자리로 갈수록 압축(원근), 세로는 유지. face로 크기·진함 변조.
-      final rW = radius * m.size * (0.45 + 0.55 * face);
-      final rH = radius * m.size * (0.7 + 0.3 * face);
+      // 가로는 sin(궤도각)*위도, 세로는 얼룩 고유 위도로 표면 위 점을 배치.
+      final cx = sin(orbit) * radius * m.rad;
+      final cy = -cos(m.phi * 1.7) * radius * m.rad * 0.6;
+      // 앞면 중앙일수록(z=1) 또렷, 옆으로 갈수록 납작해지는 느낌(원근).
+      final r = radius * m.size * (0.6 + 0.4 * face);
       final base = m.light
-          ? Color.lerp(AppColors.jellyCore, Colors.white, 0.7)!
-          : Color.lerp(AppColors.jellyCore, AppColors.jellyShade, 0.75)!;
+          ? Colors.white
+          : Color.lerp(AppColors.jellyCore, AppColors.jellyShade, 0.5)!;
       final paint = Paint()
-        ..color = base.withValues(alpha: (m.light ? 0.30 : 0.26) * face)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, radius * 0.16);
-      // 원근 압축을 위해 가로/세로 다른 반경 → 타원으로 그린다.
-      canvas.save();
-      canvas.translate(cx, cy);
-      canvas.scale(rW / rH, 1.0);
-      canvas.drawCircle(Offset.zero, rH, paint);
-      canvas.restore();
+        ..color = base.withValues(alpha: (m.light ? 0.10 : 0.08) * face)
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, radius * 0.22);
+      canvas.drawCircle(Offset(cx, cy), r, paint);
     }
     canvas.restore();
   }
