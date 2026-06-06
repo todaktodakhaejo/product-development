@@ -60,10 +60,7 @@ class EmotionBallPainter extends CustomPainter {
     // 누르기 깊이: v11 §A-4에서 복원 시 음수까지 오버슈트(통통 부풂)할 수 있어
     // [-0.3, 1.0]로 받는다. 양수=손가락에 눌려 납작(splat), 음수=반동으로 부풂.
     final pd = ball.pressDepth.clamp(-0.3, 1.0);
-    final pressing = pd > 0.001; // 손가락이 닿아 있는(딤플/하이라이트 이동) 동안
-    // pressDir = 누른 지점→중심 방향. 덴트는 그 반대(손가락 쪽)로 들어간다.
-    final dent = pressing ? -ball.pressDir : Offset.zero;
-    final pressAng = atan2(ball.pressDir.dy, ball.pressDir.dx);
+    final pressing = pd > 0.001; // 손가락이 닿아 있는 동안(딤플 표시)
 
     canvas.save();
     canvas.translate(ball.pos.dx, ball.pos.dy);
@@ -99,23 +96,15 @@ class EmotionBallPainter extends CustomPainter {
       ]));
     }
 
-    // ── 누르기 splat: 넓고 납작 + 손가락쪽 이동(§A-4) ──
-    if (pd.abs() > 0.001) {
-      // pressDir 축으로 회전 정렬 후 그 축(along)을 납작하게·직교축(cross)을 부풀려
-      // "넓고 납작 철퍼덕". pd=1 → along 0.70 / cross 1.18(프로토타입 1.18/0.78 대응).
-      // 음수 pd(반동)에서는 along>1, cross<1 → 평상보다 부푼 "통통" 오버슈트.
-      final along = 1 - pd * 0.30;
-      final cross = 1 + pd * 0.18;
-      canvas.rotate(pressAng);
-      canvas.scale(along, cross);
-      canvas.rotate(-pressAng);
-      // 손가락 쪽으로 본체 미세 이동(들어가는 방향감). 양수 깊이에서만.
-      if (pressing) {
-        canvas.translate(dent.dx * radius * 0.16 * pd, dent.dy * radius * 0.16 * pd);
-      }
+    // ── 누르기: 공 전체는 둥글게, 손가락 댄 자리만 국소 함몰(아래 _blobPath dent) ──
+    // 전역 변형(타원/균일축소)은 하지 않는다. 떼는 순간(음수 깊이)엔 전체가
+    // **균일하게**(원형 유지) 부풀었다 돌아오는 "통통" 반동만 준다.
+    if (pd < -0.001) {
+      canvas.scale(1 - pd * 0.10); // pd<0 → >1 (살짝 부풂, 원형 유지)
     }
 
     // 유기적 blob 경로(미세 모핑). 본체/음영/클립에 공유.
+    // 외곽선은 누르기로 변형하지 않는다(원형 그대로) — 함몰은 아래 오목 음영으로만 표현.
     final blob = _blobPath(radius, ball.morphPhase);
 
     // ── 쓰다듬기 글로우(본체 뒤 폭신한 발광) ──
@@ -197,37 +186,47 @@ class EmotionBallPainter extends CustomPainter {
     canvas.drawCircle(Offset.zero, radius * 1.05, insetLight);
     canvas.restore();
 
-    // ── 하이라이트(좌상단) — 누르기 중엔 덴트 쪽으로 끌려가 본체가 휘어 보이게 ──
-    // v12 §2(성능): 직전엔 부드러운 하이라이트(blur4)와 또렷한 스펙큘러(blur1.5)를
-    // 각각 maskFilter blur로 그렸다 → 부드러운 광택 하나만 blur로 두고, 또렷한
-    // 스펙큘러는 blur 없는 작은 흰 점으로 겹쳐 표현(blur 레이어 1개 제거). 룩 유지.
+    // ── 표면 광택·딤플·bloom: 공 안쪽으로만 그린다(원형 밖으로 안 새게 clip) ──
+    canvas.save();
+    canvas.clipPath(blob);
+
+    // 하이라이트(좌상단, 광원 고정) — clip 덕에 공 밖으로 삐져나오지 않는다.
     final hiBase = Offset(-radius * 0.32, -radius * 0.36);
-    final hiPos = pressing ? hiBase + dent * (radius * 0.20 * pd) : hiBase;
     final hi = Paint()
       ..color = Colors.white.withValues(alpha: 0.5)
       ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4);
-    canvas.drawCircle(hiPos, radius * 0.16, hi);
+    canvas.drawCircle(hiBase, radius * 0.16, hi);
 
-    // 작고 또렷한 스펙큘러 광택(top-left) — blur 없이(antialias만) 가벼운 흰 점.
+    // 작고 또렷한 스펙큘러 광택(top-left) — blur 없이(antialias만).
     final specBase = Offset(-radius * 0.38, -radius * 0.42);
-    final specPos = pressing ? specBase + dent * (radius * 0.20 * pd) : specBase;
     final spec = Paint()..color = Colors.white.withValues(alpha: 0.7);
-    canvas.drawCircle(specPos, radius * 0.06, spec);
+    canvas.drawCircle(specBase, radius * 0.06, spec);
 
-    // ── 누르기 손가락 자리 딤플 음영 rgba(150,70,95,0.45)→0, 0.42*지름 ──
-    // 양수 깊이(실제 눌림)에서만. radial로 손가락 접점이 살짝 들어간 그늘.
+    // ── 누른 자리: "3D로 쏙 들어간" 오목 함몰 음영(외곽선은 원형 그대로) ──
+    // 누른 지점(가운데 포함)에 그린다. 구의 본조명은 좌상단 → 오목(concave)은
+    // 음영이 뒤집혀, 입구(중심)는 그늘지고 **먼 안쪽 벽(우하단)** 이 빛을 받아야
+    // "안으로 파인" 입체로 보인다. (테두리가 아니라 그 자리 표면이 들어감)
     if (pressing) {
-      final contact = dent * (radius * (0.42 + 0.12 * pd));
-      final dimpleR = radius * 0.42; // 지름의 0.42 → 반경 기준
-      final dimple = Paint()
+      final contact = ball.pressContact; // 손가락이 닿은 실제 자리(가운데 포함)
+      final dimpleR = radius * (0.52 + 0.05 * pd);
+      // (1) cavity 그늘 — 깊고 또렷하게(중심이 짙음). 잘 보이도록 강하게.
+      final cavity = Paint()
         ..shader = RadialGradient(
           colors: [
-            _dimpleShade.withValues(alpha: (0.45 * pd).clamp(0.0, 0.45)),
+            _dimpleShade.withValues(alpha: (0.72 * pd).clamp(0.0, 0.72)),
+            _dimpleShade.withValues(alpha: (0.32 * pd).clamp(0.0, 0.32)),
             _dimpleShade.withValues(alpha: 0.0),
           ],
-          stops: const [0.0, 1.0],
-        ).createShader(Rect.fromCircle(center: contact, radius: dimpleR));
-      canvas.drawCircle(contact, dimpleR, dimple);
+          stops: const [0.0, 0.55, 1.0],
+        ).createShader(Rect.fromCircle(center: contact, radius: dimpleR))
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3);
+      canvas.drawCircle(contact, dimpleR, cavity);
+      // (2) 먼 안쪽 벽(우하단)이 빛을 받는 또렷한 광택 — "오목 입체"의 핵심 신호.
+      final farLit = Paint()
+        ..color = Colors.white.withValues(alpha: (0.5 * pd).clamp(0.0, 0.5))
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5);
+      canvas.drawCircle(contact + Offset(radius * 0.16, radius * 0.16),
+          radius * 0.18, farLit);
     }
 
     // ── 쓰다듬기 위치 반응(손가락 닿는 자리 따라다니는 화이트 bloom) ──
@@ -239,6 +238,8 @@ class EmotionBallPainter extends CustomPainter {
         ..maskFilter = MaskFilter.blur(BlurStyle.normal, 14 + 14 * sa);
       canvas.drawCircle(ball.strokeContact, radius * (0.30 + 0.10 * sa), bloom);
     }
+
+    canvas.restore(); // 표면 효과 clip 해제
 
     canvas.restore();
   }
@@ -264,8 +265,9 @@ class EmotionBallPainter extends CustomPainter {
     final pts = <Offset>[];
     for (var i = 0; i < n; i++) {
       final a = i / n * 2 * pi;
-      // 각 꼭짓점마다 다른 위상으로 흔들어 비대칭 일그러짐(완전 원 회피).
-      final wob = 0.045 * sin(q + i * 1.7) + 0.025 * sin(q * 0.6 + i * 2.9);
+      // 각 꼭짓점마다 다른 위상으로 미세하게 흔들어 살짝만 유기적(거의 원형).
+      // 사용자 피드백: idle에 너무 꿀렁여 헷갈림 → 진폭을 ±7%→±2.8%로 줄여 차분·둥글게.
+      final wob = 0.018 * sin(q + i * 1.7) + 0.010 * sin(q * 0.6 + i * 2.9);
       final rr = radius * (1 + wob);
       pts.add(Offset(cos(a) * rr, sin(a) * rr));
     }

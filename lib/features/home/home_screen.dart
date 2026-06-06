@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:math';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
@@ -12,6 +13,7 @@ import '../../state/session.dart';
 import '../writing/writing_screen.dart';
 import 'emotion_ball.dart';
 import 'emotion_ball_painter.dart';
+import 'emotion_ball_shader_painter.dart';
 import 'home_help_sheet.dart';
 import 'home_messages.dart';
 import 'sky_background.dart';
@@ -44,6 +46,9 @@ class _HomeScreenState extends State<HomeScreen>
   late final Ticker _ticker;
   final ValueNotifier<int> _frame = ValueNotifier(0);
 
+  // 3D 함몰용 프래그먼트 셰이더(비동기 로드). 로드 전/실패 시 기존 painter로 폴백.
+  ui.FragmentShader? _ballShader;
+
   EmotionBall? _ball;
   final List<Ripple> _ripples = [];
 
@@ -59,6 +64,9 @@ class _HomeScreenState extends State<HomeScreen>
   // 포인터 상태 (누르기 / 굴리기 / 쓰다듬기 통합)
   int? _pointerId;
   Offset _downPos = Offset.zero;
+  // 누르기 시작이 공 위였는지(v16). 공 위에서 시작한 제스처는 "문지르기"가 기본이고
+  // 속도와 무관하게 공을 멀리 끌고 갔을 때(net>반지름×1.2)만 굴리기로 전환한다.
+  bool _downOnBall = false;
   Offset _lastPos = Offset.zero;
   Duration _lastMoveTime = Duration.zero;
   Offset _flingVel = Offset.zero;
@@ -138,7 +146,11 @@ class _HomeScreenState extends State<HomeScreen>
   // stroke 커밋 후 roll 탈출 임계(v8 §1-A). 커밋된 쓰다듬기에서는 net 기반 탈출을
   // 제거하고, 오직 명백한 빠른 플릭(이 속도 초과)일 때만 roll로 전환한다. 가로/세로/
   // 대각 어느 방향으로 넓게 쓰다듬어도 굴리기로 새지 않는다.
-  static const double kStrokeEscape = 1300; // px/s
+  static const double kStrokeEscape = 1300; // px/s (공 밖 시작 stroke의 roll 탈출용)
+  // v16: 공 위에서 시작한 제스처가 굴리기로 전환되는 net 이동 임계(×radius). 제자리
+  // 문지르기는 net이 작게 왕복하므로(시작점 기준 변위) 이 값을 넘지 않아 안 굴러간다.
+  // 공을 확실히 끌고 갔을 때만(시작점에서 1.2반지름 이상 멀어짐) 굴리기로 커밋.
+  static const double kRollNetOnBall = 1.2;
   // 손가락 속도 EMA/clamp 상수(v6 §1).
   static const double kDragMinDt = 0.004; // 이보다 짧은 dt 샘플은 속도 계산서 제외
   static const double kDragSpeedClamp = 4000; // 순간속도 magnitude 상한(px/s)
@@ -160,6 +172,17 @@ class _HomeScreenState extends State<HomeScreen>
     // 저장소 로드(비동기)가 없으므로, 첫 제스처부터 카운트가 지연 없이 즉시 반영된다.
     // 멘트는 releaseCount % 9로 세트가 넘어가므로, 재실행하면 첫 멘트부터 다시 시작한다.
     _checkDailyFirst();
+    _loadBallShader();
+  }
+
+  /// 공 3D 함몰 셰이더 로드(웹 미지원 시 폴백). 성공하면 그 painter로 전환.
+  Future<void> _loadBallShader() async {
+    try {
+      final program = await ui.FragmentProgram.fromAsset('shaders/ball.frag');
+      if (mounted) setState(() => _ballShader = program.fragmentShader());
+    } catch (_) {
+      // 셰이더 미지원/실패 → 기존 EmotionBallPainter로 그대로 진행.
+    }
   }
 
   /// 오늘 첫 실행인지 날짜로 판정. 저장된 마지막 날짜와 오늘이 다르면 '오늘 처음'
@@ -341,12 +364,24 @@ class _HomeScreenState extends State<HomeScreen>
 
   // ── 포인터(터치) 처리 ───────────────────────────────────────────
   void _onPointerDown(PointerDownEvent e) {
-    if (_pointerId != null) return;
     final ball = _ball;
     if (ball == null) return;
     final pos = e.localPosition;
+    // 멀티터치(v14): 주 포인터가 이미 있으면, 추가 손가락은 본체 위일 때 독립
+    // 함몰점으로만 동작한다(양 엄지로 두 군데 동시 누르기). 굴리기/쓰다듬기·fling
+    // 상태머신은 주 포인터 1개만 구동하므로 추가 손가락은 건드리지 않는다.
+    if (_pointerId != null) {
+      if (ball.hitTest(pos)) {
+        ball.extraPressStart(e.pointer, pos);
+        Haptics.instance.pressDown();
+        _bumpInteraction();
+        _onTouched();
+      }
+      return;
+    }
     _pointerId = e.pointer;
     _downPos = _lastPos = pos;
+    _downOnBall = ball.hitTest(pos); // 공 위 시작? → 문지르기 기본 분기 결정
     _lastMoveTime = e.timeStamp;
     _moved = false;
     // fling 속도 평활 리셋(v5 §1): 새 드래그마다 속도/첫샘플 플래그 초기화.
@@ -364,7 +399,7 @@ class _HomeScreenState extends State<HomeScreen>
     // 누르기 홀드(GST-03, §2): 본체 위에서 누르기 시작 → 누르는 동안 침몰.
     // 이동(slop 초과)이 시작되면 _onPointerMove에서 pressEnd로 전환된다.
     // 본체 밖이면 누르기 침몰 없이(Ripple은 떼는 순간 onPointerUp에서) 진행.
-    if (ball.hitTest(pos)) {
+    if (_downOnBall) {
       ball.pressStart(pos);
       Haptics.instance.pressDown();
       RitualAudio.instance.objetSquish(gain: 1.0); // 누르기 시작 슬라임 스퀴시
@@ -385,9 +420,13 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   void _onPointerMove(PointerMoveEvent e) {
-    if (e.pointer != _pointerId) return;
     final ball = _ball;
     if (ball == null) return;
+    // 멀티터치(v14): 추가 손가락 이동 → 그 함몰점이 손가락을 따라간다(없으면 무시).
+    if (e.pointer != _pointerId) {
+      ball.extraPressMove(e.pointer, e.localPosition);
+      return;
+    }
     final pos = e.localPosition;
     final step = pos - _lastPos;
     final stepLen = step.distance;
@@ -406,11 +445,8 @@ class _HomeScreenState extends State<HomeScreen>
 
     if (!_moved && (pos - _downPos).distance > _slop) {
       _moved = true;
-      // 누르기 → 드래그 전환(v6 §3): 침몰을 팝 없이 즉시 취소(pressEnd의 elastic
-      // 복원 팝이 쓰다듬기 시작에서 "꿀렁"으로 오인되던 문제 제거).
-      ball.pressCancel();
-      // 모드 미확정(none)으로 두고 곧바로 아래 속도 평가에서 stroke/roll 결정한다
-      // ('잠정 roll/pending로 시작' 제거).
+      // v16: 침몰은 여기서 취소하지 않는다 — 공 위에서 시작했으면(문지르기) 손가락을
+      // 따라가는 이동 함몰로 이어가고, 굴리기로 확정되는 순간에만 아래에서 취소한다.
       _dragMode = _DragMode.none;
     }
 
@@ -422,9 +458,16 @@ class _HomeScreenState extends State<HomeScreen>
       //  - 초기(none): speed>kRollSpeed || net>r*kRollNet → roll, 아니면 stroke(v7 유지).
       //  - 커밋된 stroke: net 기반 탈출 제거. 오직 명백한 빠른 플릭(speed>kStrokeEscape)
       //    일 때만 roll로 전환 → 가로/세로/대각 넓게 쓰다듬어도 안 굴러간다.
-      final bool wantRoll = _dragMode == _DragMode.stroke
-          ? _dragSpeed > kStrokeEscape
-          : (_dragSpeed > kRollSpeed || net > r * kRollNet);
+      // v16: 공 위에서 시작한 제스처는 "문지르기"가 기본 — 속도는 무시하고, 공을
+      // 확실히 끌고 갔을 때(시작점에서 net>반지름×1.2)만 굴리기로 전환한다. 제자리
+      // 문지르기는 시작점 기준 변위가 작게 왕복하므로 이 임계를 넘지 않아 안 굴러간다.
+      // (세게/빠르게 문질러도 속도 때문에 굴러가던 문제 해결.)
+      // 공 밖에서 시작한 드래그는 함몰 대상이 아니므로 기존 속도/거리 판정을 유지한다.
+      final bool wantRoll = _downOnBall
+          ? net > r * kRollNetOnBall
+          : (_dragMode == _DragMode.stroke
+              ? _dragSpeed > kStrokeEscape
+              : (_dragSpeed > kRollSpeed || net > r * kRollNet));
       if (_dragMode != _DragMode.roll && wantRoll) {
         // ROLL 진입(sticky): 명백한 굴리기.
         final wasStroke = _dragMode == _DragMode.stroke;
@@ -435,11 +478,15 @@ class _HomeScreenState extends State<HomeScreen>
         // 몇 프레임 따라잡는다(처음부터 빠른 굴리기는 gap이 거의 없어 불필요).
         if (wasStroke) _rollCatchup = kRollCatchupFrames;
       } else if (_dragMode != _DragMode.roll) {
-        // STROKE: 느리고 국소. 공은 제자리, 표면만 출렁이고 빛이 차오른다.
+        // STROKE: 느리고 국소. 공은 제자리, 손가락 자리가 골처럼 파이며 따라온다.
+        final firstStroke = _dragMode != _DragMode.stroke;
         _dragMode = _DragMode.stroke;
-        // v8 §1-B: 현재 포인터 localPosition을 함께 넘겨 손가락 닿는 자리에 광택/변형이
-        // 따라다니게 한다(공 이동은 0, 위치 반응은 motion·painter가 소비).
-        ball.stroke(step, pos); // 제자리 고정 출렁임 + 위치 반응(공 이동 없음)
+        // v17: 문지르기 진입 순간, 정지 누르기 함몰을 팝 없이 제거해 "이동 골"로 인계한다.
+        // 이후 골은 ball.stroke가 갱신하는 strokeContact를 따라 pressPoints가 그린다.
+        if (firstStroke) ball.pressCancel();
+        // v8 §1-B: 현재 포인터 localPosition을 함께 넘겨 손가락 닿는 자리에 골/글로우가
+        // 따라다니게 한다(공 이동은 0 — strokeContact·strokeAmp만 갱신).
+        ball.stroke(step, pos); // 제자리 + 이동 함몰(strokeContact) + 둘레 글로우
         _strokeEnergy =
             (_strokeEnergy + stepLen / r * 0.4).clamp(0.0, 1.0); // step 비례 증가
         // 위로받는 부드러운 저강도 텍스처를 흐르듯 발사(throttle은 strokeSoft 내장).
@@ -494,11 +541,15 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   void _onPointerUp(PointerUpEvent e) {
-    if (e.pointer != _pointerId) return;
     final ball = _ball;
-    _pointerId = null;
-
     if (ball == null) return;
+    // 멀티터치(v14): 추가 손가락을 떼면 그 함몰점만 복원(주 포인터 상태는 불변).
+    if (e.pointer != _pointerId) {
+      ball.extraPressEnd(e.pointer);
+      Haptics.instance.pressRelease();
+      return;
+    }
+    _pointerId = null;
     if (!_moved) {
       // 누르기 홀드 종료(GST-03, §2): 드래그로 전환되지 않고 제자리에서 손을 뗌.
       // pressStart는 _onPointerDown(본체 위)에서 이미 걸렸으므로 여기서 복원 시작 +
@@ -524,11 +575,28 @@ class _HomeScreenState extends State<HomeScreen>
       if (sp > kFlingReleaseClamp) sp = kFlingReleaseClamp;
       ball.vel = dir * sp; // 던진 손맛(관성 fling)
     } else {
-      // stroke / none(미커밋): grabbed 해제만, vel 부여 안 함(날아가지 않음, v6 §2).
+      // stroke / none: 굴러가지 않게 vel 부여 없이 grabbed만 해제. 문지르기 이동 함몰은
+      // strokeAmp 감쇠(update)에 따라 손을 떼면 서서히 메워진다.
       ball.release();
     }
     _moved = false;
     _dragMode = _DragMode.none;
+  }
+
+  /// 포인터 취소(시스템 제스처·창 전환 등): 떼임 이벤트가 안 와도 함몰이 멈춰 있지
+  /// 않도록 정리한다. 주 포인터면 상태머신 리셋(무팝), 추가 손가락이면 함몰점 제거.
+  void _onPointerCancel(PointerCancelEvent e) {
+    final ball = _ball;
+    if (ball == null) return;
+    if (e.pointer == _pointerId) {
+      _pointerId = null;
+      ball.pressCancel();
+      ball.release();
+      _moved = false;
+      _dragMode = _DragMode.none;
+    } else {
+      ball.extraPressCancel(e.pointer);
+    }
   }
 
   void _goToWriting() {
@@ -607,14 +675,22 @@ class _HomeScreenState extends State<HomeScreen>
                       onPointerDown: _onPointerDown,
                       onPointerMove: _onPointerMove,
                       onPointerUp: _onPointerUp,
+                      onPointerCancel: _onPointerCancel,
                       behavior: HitTestBehavior.opaque,
                       child: CustomPaint(
-                        painter: EmotionBallPainter(
-                          ball: _ball!,
-                          ripples: _ripples,
-                          strokeEnergy: _strokeEnergy,
-                          repaint: _frame,
-                        ),
+                        painter: _ballShader != null
+                            ? EmotionBallShaderPainter(
+                                ball: _ball!,
+                                shader: _ballShader!,
+                                ripples: _ripples,
+                                repaint: _frame,
+                              )
+                            : EmotionBallPainter(
+                                ball: _ball!,
+                                ripples: _ripples,
+                                strokeEnergy: _strokeEnergy,
+                                repaint: _frame,
+                              ),
                       ),
                     ),
                   ),

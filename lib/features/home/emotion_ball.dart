@@ -1,6 +1,21 @@
 import 'dart:math';
 import 'dart:ui';
 
+/// 멀티터치 추가 함몰점(2번째 손가락~). 주 누르기와 독립적으로 각자 시간만큼
+/// 가라앉고([holding]), 떼면([holding]=false) springBack으로 차오른다.
+/// home_screen이 pointerId별로 1개씩 들고 EmotionBall이 매 프레임 깊이를 갱신한다.
+class _ExtraPress {
+  _ExtraPress(this.contact);
+
+  /// 중심 기준 로컬좌표(radius*0.7로 clamp). 손가락이 움직이면 따라간다.
+  Offset contact;
+  bool holding = true; // 누르고 있는 중
+  double holdT = 0; // 홀드 누적 시간(s)
+  double depth = 0; // 현재 깊이(0~1)
+  double releaseDepth = 0; // 뗀 순간 깊이(복원 시작점)
+  double releaseT = -1; // 복원 진행 시간(s). <0이면 비활성
+}
+
 /// 누르기(GST-03) 시 퍼지는 물결.
 class Ripple {
   Ripple(this.center) : life = 1.0;
@@ -95,15 +110,22 @@ class EmotionBall {
   // 무시하므로 복원/취소 종료 시 별도 리셋 불필요(접촉점은 깊이가 게이트).
   Offset _pressContact = Offset.zero;
 
+  // ── 멀티터치 추가 함몰(2번째 손가락~, v14) ──────────────────────
+  // 양 엄지처럼 손가락을 여러 개 동시에 누르면, 주 누르기(_curDepth) 외의 손가락은
+  // pointerId별로 _ExtraPress 하나씩을 들고 각자 독립적으로 가라앉고 복원한다.
+  // painter는 [pressPoints]로 주 누르기 + 추가 함몰점을 한꺼번에 받아 셰이더에 넘긴다.
+  final Map<int, _ExtraPress> _extraPresses = {};
+
   // 미세 틱(pressHoldTick) — 침몰 중 0.5·0.85 통과 정점에서 1회씩.
   bool _tick50Armed = false;
   bool _tick85Armed = false;
   bool _tickPending = false;
 
-  // 침몰 0.45s(ease-out), 복원 0.62s 슬라임 오버슈트. (v3 §2 / v11 §A-4)
-  // v11: 떼는 순간 "쫀득 통통"을 위해 복원을 더 드라마틱하게(낮은 damping, 1~2회
-  // wobble) — _releaseDur를 0.5→0.62로 늘리고 _springBack 곡선을 별도로 사용.
-  static const double _holdInDur = 0.45;
+  // 침몰 1.4s(꾸준히 깊어짐), 복원 0.62s 슬라임 오버슈트. (v3 §2 / v11 §A-4 / v18)
+  // v18: "길게 누를수록 골이 더 깊어지게" — 0.45s에 최대로 꽉 차던 것을 1.4s로 늘려
+  // 오래 누르고 있을수록 점점 깊이 파이게 한다(곡선도 _holdDepthFor에서 꾸준히 깊어지는
+  // x^0.7로 교체). 복원은 기존처럼 0.62s 쫀득 통통.
+  static const double _holdInDur = 1.0;
   static const double _releaseDur = 0.62;
 
   static double _radiusFor(Rect b) => (b.shortestSide * 0.22).clamp(64.0, 150.0);
@@ -215,6 +237,65 @@ class EmotionBall {
   /// "뽁" 국소 오목 덴트를 그린다. pressDepth=0이면 그리지 않으므로 게이트는 깊이가 한다.
   Offset get pressContact => _pressContact;
 
+  /// painter가 셰이더에 넘길 동시 함몰점 목록(중심 기준 로컬좌표 + 깊이).
+  /// 주 누르기(깊이>0)와 추가 손가락(_extraPresses)을 합쳐 깊은 순으로 최대 N개.
+  /// 깊이가 사실상 0인 점은 제외(셰이더 무시 대상이라 슬롯 낭비 방지).
+  List<({Offset contact, double depth})> get pressPoints {
+    final list = <({Offset contact, double depth})>[];
+    if (_curDepth > 0.001) {
+      list.add((contact: _pressContact, depth: _curDepth));
+    }
+    // v17: 문지르기 함몰 — 손가락 닿는 자리(_strokeContact)에 strokeAmp 비례 깊이로
+    // 골을 직접 만든다. 누르기(_holding)와 독립이라 공 밖에서 문질러 들어와도, 누르기
+    // 인계가 끊겨도 골이 항상 손가락을 따라 파인다("발광만 뜨고 안 파이던" 문제 해결).
+    if (_strokeAmp > 0.005) {
+      final cd = _strokeContact.distance;
+      final maxC = radius * 0.7;
+      final c = cd > maxC ? _strokeContact / cd * maxC : _strokeContact;
+      // v18: 깊이를 strokeAmp에 비례(바닥값 없이)로 — 문지르는 중엔 충분히 깊고(×1.4
+      // 상한 1.0), 손을 떼면 strokeAmp 감쇠를 따라 0으로 매끄럽게 메워진다(툭 끊김 방지).
+      final depth = (_strokeAmp * 1.4).clamp(0.0, 1.0);
+      list.add((contact: c, depth: depth));
+    }
+    for (final ep in _extraPresses.values) {
+      if (ep.depth > 0.001) {
+        list.add((contact: ep.contact, depth: ep.depth));
+      }
+    }
+    return list;
+  }
+
+  /// 멀티터치: 추가 손가락([id])이 본체를 누르기 시작. [localPos]는 화면 좌표.
+  void extraPressStart(int id, Offset localPos) {
+    _extraPresses[id] = _ExtraPress(_clampContact(localPos - pos));
+  }
+
+  /// 멀티터치: 추가 손가락([id])이 움직이면 함몰점이 그 자리를 따라간다.
+  void extraPressMove(int id, Offset localPos) {
+    final ep = _extraPresses[id];
+    if (ep == null) return;
+    ep.contact = _clampContact(localPos - pos);
+  }
+
+  /// 멀티터치: 추가 손가락([id])을 떼면 springBack 복원을 시작한다.
+  void extraPressEnd(int id) {
+    final ep = _extraPresses[id];
+    if (ep == null || !ep.holding) return;
+    ep.holding = false;
+    ep.releaseDepth = ep.depth;
+    ep.releaseT = 0;
+  }
+
+  /// 멀티터치: 추가 손가락([id]) 함몰을 즉시 제거(팝 없이, pointer cancel용).
+  void extraPressCancel(int id) => _extraPresses.remove(id);
+
+  /// 접촉점을 본체 안(radius*0.7)으로 clamp한 중심 기준 로컬좌표.
+  Offset _clampContact(Offset contact) {
+    final cd = contact.distance;
+    final maxContact = radius * 0.7;
+    return cd > maxContact ? contact / cd * maxContact : contact;
+  }
+
   /// 침몰 중 깊이가 0.5·0.85 정점을 통과한 프레임에 true를 1회 반환하고 소비.
   ///
   /// home_screen `_onTick`이 읽어 미세 틱 햅틱([pressHoldTick])을 발사한다 —
@@ -227,20 +308,18 @@ class EmotionBall {
     return false;
   }
 
-  /// 홀드 깊이(ease-out: 처음 빠르게, 끝으로 느리게)를 깊이값으로 환산.
-  /// t=0→0, t=_holdInDur→1. easeOutCubic(1-(1-x)^3).
+  /// 홀드 시간 → 깊이값. t=0→0, t=_holdInDur→1.
+  /// v18: x^0.7 — 처음 살짝 빠르게 반응(즉각 피드백)하되 끝까지 꾸준히 깊어져
+  /// "오래 누를수록 점점 더 깊이 파이는" 체감을 준다(0.45s에 꽉 차던 easeOutCubic 폐기).
   static double _holdDepthFor(double holdT) {
     final x = (holdT / _holdInDur).clamp(0.0, 1.0);
-    final inv = 1 - x;
-    return 1 - inv * inv * inv;
+    return pow(x, 0.7).toDouble();
   }
 
-  /// 깊이값을 ease-out 곡선의 역으로 환산(이어 누르기 시 홀드 시간 복원용).
+  /// 깊이값 → 홀드 시간(이어 누르기 시 홀드 시간 복원용). _holdDepthFor의 역(x=d^(1/0.7)).
   static double _depthToHoldTime(double depth) {
     final d = depth.clamp(0.0, 1.0);
-    // depth = 1-(1-x)^3  →  x = 1 - (1-depth)^(1/3)
-    final x = 1 - pow(1 - d, 1 / 3).toDouble();
-    return x * _holdInDur;
+    return pow(d, 1 / 0.7).toDouble() * _holdInDur;
   }
 
   /// v11 §A-4: 누르기 해제 시 "쫀득 통통" 스프링 복원(낮은 damping 감쇠 진동).
@@ -305,6 +384,7 @@ class EmotionBall {
     vel = Offset.zero;
     grabbed = false;
     pressCancel(); // 누르기 침몰이 남아 있으면 무팝으로 정리
+    _extraPresses.clear(); // 멀티터치 함몰점도 정리
   }
 
   /// 제자리 쓰다듬기(GST-04). [step]은 직전 프레임 대비 손가락 이동량,
@@ -382,6 +462,27 @@ class EmotionBall {
       if (t >= 1.0) {
         _curDepth = 0;
         _releaseT = -1;
+      }
+    }
+
+    // ── 멀티터치 추가 함몰 갱신(주 누르기와 동일 곡선) ──
+    // 누르고 있으면 0.45s에 걸쳐 1.0까지 가라앉고, 떼면 springBack으로 0까지 복원.
+    // 복원이 끝난 함몰점은 맵에서 제거(잔상·메모리 누수 방지).
+    if (_extraPresses.isNotEmpty) {
+      final done = <int>[];
+      _extraPresses.forEach((id, ep) {
+        if (ep.holding) {
+          ep.holdT = (ep.holdT + dt).clamp(0.0, _holdInDur);
+          ep.depth = _holdDepthFor(ep.holdT);
+        } else if (ep.releaseT >= 0) {
+          ep.releaseT += dt;
+          final t = (ep.releaseT / _releaseDur).clamp(0.0, 1.0);
+          ep.depth = ep.releaseDepth * (1 - _springBack(t));
+          if (t >= 1.0) done.add(id);
+        }
+      });
+      for (final id in done) {
+        _extraPresses.remove(id);
       }
     }
 
@@ -483,15 +584,15 @@ class EmotionBall {
   /// 프로토타입 키프레임(scaleX 1↔1.04 / scaleY 1↔0.965) 느낌을 정현파로 근사.
   Offset get scale {
     final w = sin(_wobblePhase) * wobbleAmp * 0.12;
-    // 호흡: 가로는 +위상, 세로는 약간 어긋난(반대에 가까운) 위상으로 출렁.
-    // 진폭은 미세하게(가로 0.04 / 세로 0.035) — "항상 살아있되 과하지 않게".
-    final bx = 1 + sin(_breathePhase) * 0.04;
-    final by = 1 + sin(_breathePhase + 2.4) * 0.035; // 위상차로 어긋남(쫀득)
-    // squashDir 축으로 눌리고 직교축으로 늘어남
+    // idle 호흡: 가로/세로가 어긋나 출렁이던(세로 한 번·가로 한 번 눌리던) 것을 폐기.
+    // **균일 심장박동 펄스**로 교체 — 원형을 유지한 채 전체가 살짝 커졌다 작아졌다
+    // "두둥실 몽글몽글". 진폭도 줄여(±2.2%) 가만히 있을 땐 차분하게.
+    final breathe = 1 + sin(_breathePhase) * 0.022;
+    // squashDir 축으로 눌리고 직교축으로 늘어남(드래그·충돌 등 인터랙션 반응만).
     final along = 1 - squash * 0.5 + w;
     final cross = 1 + squash * 0.4 - w;
     final horizontal = squashDir.dx.abs() > squashDir.dy.abs();
     final base = horizontal ? Offset(along, cross) : Offset(cross, along);
-    return Offset(base.dx * bx, base.dy * by);
+    return Offset(base.dx * breathe, base.dy * breathe);
   }
 }

@@ -27,6 +27,8 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  shaders:
+    - shaders/ball.frag
   assets:
     # 해소 의식 효과음 — 프로토타입(prototype-eight-bice.vercel.app) 원본 그대로.
     # fire/shred/firework/paper: 원본 mp3. jewel_*: 원본 Web Audio 합성음 오프라인 렌더(wav).
