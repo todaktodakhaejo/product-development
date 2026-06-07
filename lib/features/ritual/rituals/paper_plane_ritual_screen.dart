@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../../core/haptics.dart';
 import '../../../core/ritual_audio.dart';
 import '../../../core/strings.dart';
+import '../../../state/analytics_scope.dart';
 import '../../../state/session.dart';
 import '../../../theme/app_theme.dart';
 import '../widgets/paper_card.dart';
@@ -379,6 +380,9 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
       if (!mounted) return;
       // 멘트 페이드인 시작 순간 부드러운 완료 햅틱 1회(CompleteScreen 톤).
       Haptics.instance.fire(HapticLevel.success, throttle: false);
+      AnalyticsScope.of(context)
+        ..ritualCompleted('paperPlane')
+        ..completionViewed();
       setState(() => _showMessage = true);
     });
     Future.delayed(_kButtonDelay, () {

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../core/ritual_audio.dart';
+import '../../state/analytics_scope.dart';
 import '../../state/session.dart';
 import '../../theme/app_theme.dart';
 import '../ritual/ritual_select_screen.dart';
@@ -31,6 +32,7 @@ class _WritingScreenState extends State<WritingScreen> {
       _controller.selection =
           TextSelection.collapsed(offset: _controller.text.length);
       _prevLen = _controller.text.length; // 복원분엔 효과음 안 나게 기준 맞춤.
+      AnalyticsScope.of(context).writingStarted(); // 글쓰기 화면 진입
     }
   }
 
@@ -42,6 +44,8 @@ class _WritingScreenState extends State<WritingScreen> {
 
   void _next() {
     _session.writeText(_controller.text);
+    // 분석: 글 '내용'은 절대 전송 안 함 — 글자 수만(프라이버시 원칙).
+    AnalyticsScope.of(context).writingCompleted(_controller.text.length);
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const RitualSelectScreen()),
     );

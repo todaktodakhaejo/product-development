@@ -23,11 +23,33 @@ class EmotionResolutionApp extends StatefulWidget {
   State<EmotionResolutionApp> createState() => _EmotionResolutionAppState();
 }
 
-class _EmotionResolutionAppState extends State<EmotionResolutionApp> {
+class _EmotionResolutionAppState extends State<EmotionResolutionApp>
+    with WidgetsBindingObserver {
   late final SessionState _session = SessionState();
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  /// 앱 생명주기로 세션 경계를 잡는다(분석 session_summary용).
+  /// - 백그라운드(paused)로 가면 현재 세션을 1건으로 요약 전송.
+  /// - 다시 포그라운드(resumed)로 오면 새 세션 시작(session_started).
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      widget.analytics.endSession();
+    } else if (state == AppLifecycleState.resumed) {
+      widget.analytics.sessionStarted();
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _session.dispose();
     super.dispose();
   }

@@ -6,6 +6,7 @@ import 'package:flutter/scheduler.dart' show Ticker;
 import '../../../core/haptics.dart';
 import '../../../core/ritual_audio.dart';
 import '../../../core/strings.dart';
+import '../../../state/analytics_scope.dart';
 import '../../../state/session.dart';
 import '../../../theme/app_theme.dart';
 import '../widgets/paper_card.dart';
@@ -421,6 +422,9 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
       if (!mounted) return;
       // 멘트가 떠오르는 순간 부드러운 success 햅틱 1회(기존 CompleteScreen 톤).
       Haptics.instance.fire(HapticLevel.success, throttle: false);
+      AnalyticsScope.of(context)
+        ..ritualCompleted('burn')
+        ..completionViewed();
       setState(() => _showMessage = true);
     });
     Future.delayed(_kButtonDelay, () {
