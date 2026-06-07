@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../state/analytics_scope.dart';
 import '../../theme/app_theme.dart';
 import 'sky_background.dart';
 
@@ -18,7 +19,8 @@ class HomeHelpSheet extends StatelessWidget {
   static Future<void> show(BuildContext context, SkyTone tone) {
     return showModalBottomSheet<void>(
       context: context,
-      isScrollControlled: false,
+      // 내용(제스처 설명 + 수집 토글)이 길어 기본 높이를 넘칠 수 있어 스크롤 허용.
+      isScrollControlled: true,
       backgroundColor: Colors.transparent,
       barrierColor: Colors.black.withValues(alpha: 0.18),
       builder: (_) => HomeHelpSheet(tone: tone),
@@ -41,6 +43,10 @@ class HomeHelpSheet extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
         child: Container(
+          constraints: BoxConstraints(
+            // 작은 기기에서도 화면을 넘지 않게 — 넘치면 내부에서 스크롤.
+            maxHeight: MediaQuery.of(context).size.height * 0.85,
+          ),
           decoration: BoxDecoration(
             color: card,
             borderRadius: BorderRadius.circular(28),
@@ -53,7 +59,8 @@ class HomeHelpSheet extends StatelessWidget {
             ],
           ),
           padding: const EdgeInsets.fromLTRB(24, 22, 24, 18),
-          child: Column(
+          child: SingleChildScrollView(
+            child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -101,7 +108,12 @@ class HomeHelpSheet extends StatelessWidget {
                   style: TextStyle(fontSize: 13, height: 1.5, color: body),
                 ),
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: 16),
+              Divider(color: body.withValues(alpha: 0.18), height: 1),
+              const SizedBox(height: 8),
+              // 프라이버시: 사용 데이터 수집 옵트아웃 토글(끄면 그 즉시 전송 중단).
+              _AnalyticsToggle(title: title, body: body, dot: dot),
+              const SizedBox(height: 4),
               Align(
                 alignment: Alignment.centerRight,
                 child: TextButton(
@@ -112,8 +124,64 @@ class HomeHelpSheet extends StatelessWidget {
               ),
             ],
           ),
+          ),
         ),
       ),
+    );
+  }
+}
+
+/// 사용 데이터 수집(분석) 옵트아웃 토글. 켜면 익명 통계 전송, 끄면 즉시 중단.
+/// 글 '내용'은 어떤 경우에도 전송하지 않는다(글자 수만) — docs/ANALYTICS.md 원칙.
+class _AnalyticsToggle extends StatefulWidget {
+  const _AnalyticsToggle({
+    required this.title,
+    required this.body,
+    required this.dot,
+  });
+
+  final Color title;
+  final Color body;
+  final Color dot;
+
+  @override
+  State<_AnalyticsToggle> createState() => _AnalyticsToggleState();
+}
+
+class _AnalyticsToggleState extends State<_AnalyticsToggle> {
+  @override
+  Widget build(BuildContext context) {
+    final analytics = AnalyticsScope.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                '익명으로 앱 개선 돕기',
+                style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                  color: widget.title,
+                ),
+              ),
+            ),
+            Switch(
+              value: analytics.enabled,
+              activeColor: widget.dot,
+              onChanged: (v) async {
+                await analytics.setEnabled(v);
+                if (mounted) setState(() {});
+              },
+            ),
+          ],
+        ),
+        Text(
+          '개인정보·글 내용은 보내지 않아요. 익명 통계만 모아요.',
+          style: TextStyle(fontSize: 12, height: 1.4, color: widget.body),
+        ),
+      ],
     );
   }
 }

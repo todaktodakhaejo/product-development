@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../core/haptics.dart';
+import '../../state/analytics_scope.dart';
 import '../../state/session.dart';
 import '../../theme/app_theme.dart';
 import 'rituals/burn_ritual_screen.dart';
@@ -35,6 +36,7 @@ class RitualSelectScreen extends StatelessWidget {
   }
 
   void _select(BuildContext context, Ritual r) {
+    AnalyticsScope.of(context).ritualSelected(r.name); // burn/shredder/paperPlane/jewelryBox
     SessionScope.of(context).chooseRitual(r);
     Haptics.instance.fire(HapticLevel.selection);
     Navigator.of(context).push(

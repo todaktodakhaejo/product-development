@@ -7,8 +7,10 @@ import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:sensors_plus/sensors_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../core/analytics.dart';
 import '../../core/haptics.dart';
 import '../../core/ritual_audio.dart';
+import '../../state/analytics_scope.dart';
 import '../../state/session.dart';
 import '../writing/writing_screen.dart';
 import 'emotion_ball.dart';
@@ -60,6 +62,16 @@ class _HomeScreenState extends State<HomeScreen>
 
   // 흔들기 임펄스 방향용 난수(State 당 1개만 보유).
   final Random _rng = Random();
+
+  // ── 분석(PostHog) ──────────────────────────────────────────────
+  AnalyticsService? _analytics; // didChangeDependencies에서 바인딩
+  bool _homeViewedSent = false; // home_viewed 1회만 전송
+  // 제스처 지속시간(ms) 계산용 시작 타임스탬프(포인터 이벤트 timeStamp 기준).
+  Duration _pressDownTime = Duration.zero;
+  Duration _rollStartTime = Duration.zero;
+  Duration _strokeStartTime = Duration.zero;
+  // 흔들기 분석 throttle — 연속 임펄스(70ms)마다 보내면 과다하므로 1초에 1건.
+  DateTime _lastShakeEvent = DateTime.fromMillisecondsSinceEpoch(0);
 
   // 포인터 상태 (누르기 / 굴리기 / 쓰다듬기 통합)
   int? _pointerId;
@@ -214,6 +226,12 @@ class _HomeScreenState extends State<HomeScreen>
       _session = session;
       _session!.addListener(_onSessionChanged);
     }
+    // 분석 바인딩 + 홈 표시 1회 전송(센서 콜백 등 context 없는 곳에서도 쓰려고 보관).
+    _analytics = AnalyticsScope.of(context);
+    if (!_homeViewedSent) {
+      _homeViewedSent = true;
+      _analytics?.homeViewed();
+    }
   }
 
   /// 세션 변화 콜백(§6, 읽기 전용 판정).
@@ -305,6 +323,13 @@ class _HomeScreenState extends State<HomeScreen>
         }
         Haptics.instance.fire(level, throttle: false);
         _bumpInteraction(); // 흔들기 임펄스 발사 1회 = 공 놀이 +1(§1-B)
+        // 분석: 연속 임펄스(70ms)마다 보내면 과다 → 1초에 1건으로 throttle.
+        // 흔들기는 순간 동작이라 duration_ms=0.
+        final nowT = DateTime.now();
+        if (nowT.difference(_lastShakeEvent).inMilliseconds >= 1000) {
+          _lastShakeEvent = nowT;
+          _analytics?.gesturePerformed('shake', 0);
+        }
         _onTouched();
       },
       onError: (_) {}, // 센서 미지원 기기에서도 터치는 동작
@@ -383,6 +408,7 @@ class _HomeScreenState extends State<HomeScreen>
     _downPos = _lastPos = pos;
     _downOnBall = ball.hitTest(pos); // 공 위 시작? → 문지르기 기본 분기 결정
     _lastMoveTime = e.timeStamp;
+    _pressDownTime = e.timeStamp; // 누르기 지속시간 측정 시작점
     _moved = false;
     // fling 속도 평활 리셋(v5 §1): 새 드래그마다 속도/첫샘플 플래그 초기화.
     _flingVel = Offset.zero;
@@ -472,6 +498,7 @@ class _HomeScreenState extends State<HomeScreen>
         // ROLL 진입(sticky): 명백한 굴리기.
         final wasStroke = _dragMode == _DragMode.stroke;
         _dragMode = _DragMode.roll;
+        _rollStartTime = e.timeStamp; // 굴리기 지속시간 측정 시작점
         ball.pressCancel(); // 혹시 남은 침몰 무팝 제거
         Haptics.instance.fire(HapticLevel.light); // roll 첫 진입 알림 1회
         // stroke에서 늦게 전환됐으면 공이 손가락과 벌어져 있으므로 ease 추종으로
@@ -481,6 +508,7 @@ class _HomeScreenState extends State<HomeScreen>
         // STROKE: 느리고 국소. 공은 제자리, 손가락 자리가 골처럼 파이며 따라온다.
         final firstStroke = _dragMode != _DragMode.stroke;
         _dragMode = _DragMode.stroke;
+        if (firstStroke) _strokeStartTime = e.timeStamp; // 문지르기 시작점
         // v17: 문지르기 진입 순간, 정지 누르기 함몰을 팝 없이 제거해 "이동 골"로 인계한다.
         // 이후 골은 ball.stroke가 갱신하는 strokeContact를 따라 pressPoints가 그린다.
         if (firstStroke) ball.pressCancel();
@@ -564,6 +592,8 @@ class _HomeScreenState extends State<HomeScreen>
         ball.pressEnd();
         Haptics.instance.pressRelease();
         RitualAudio.instance.objetSquelch(); // 손 뗄 때 squelch
+        _analytics?.gesturePerformed(
+            'press', (e.timeStamp - _pressDownTime).inMilliseconds);
       }
     } else if (_dragMode == _DragMode.roll) {
       // fling(v8 §4): 방향은 EMA(_flingVel) 방향을 유지하되, 크기는 EMA 크기와
@@ -576,10 +606,16 @@ class _HomeScreenState extends State<HomeScreen>
       var sp = max(_flingVel.distance, _flingPeak * 0.8);
       if (sp > kFlingReleaseClamp) sp = kFlingReleaseClamp;
       ball.vel = dir * sp; // 던진 손맛(관성 fling)
+      _analytics?.gesturePerformed(
+          'roll', (e.timeStamp - _rollStartTime).inMilliseconds);
     } else {
       // stroke / none: 굴러가지 않게 vel 부여 없이 grabbed만 해제. 문지르기 이동 함몰은
       // strokeAmp 감쇠(update)에 따라 손을 떼면 서서히 메워진다.
       ball.release();
+      if (_dragMode == _DragMode.stroke) {
+        _analytics?.gesturePerformed(
+            'rub', (e.timeStamp - _strokeStartTime).inMilliseconds);
+      }
     }
     _moved = false;
     _dragMode = _DragMode.none;

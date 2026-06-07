@@ -7,6 +7,7 @@ import 'package:flutter/scheduler.dart' show Ticker;
 import '../../../core/haptics.dart';
 import '../../../core/ritual_audio.dart';
 import '../../../core/strings.dart';
+import '../../../state/analytics_scope.dart';
 import '../../../state/session.dart';
 import '../../../theme/app_theme.dart';
 import '../widgets/paper_card.dart';
@@ -231,6 +232,9 @@ class _JewelryBoxRitualScreenState extends State<JewelryBoxRitualScreen>
       // 심장박동은 '처음으로' 누를 때까지 계속 유지(여기서 멈추지 않는다).
       // 멘트 등장에 보관 완료의 따뜻한 success 1회만 얹는다(태우기 완료 톤).
       Haptics.instance.fire(HapticLevel.success, throttle: false);
+      AnalyticsScope.of(context)
+        ..ritualCompleted('jewelryBox')
+        ..completionViewed();
       setState(() => _showMessage = true);
     });
     Future.delayed(_kButtonDelay, () {
