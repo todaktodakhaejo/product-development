@@ -97,13 +97,19 @@ class AnalyticsService {
 
   Future<void> homeViewed() => _capture('home_viewed');
 
-  Future<void> gesturePerformed(String gestureType, int durationMs) {
+  /// 제스처 1회 수행. [gestureType]은 shake/press/roll/rub/stretch 등.
+  /// [extra]로 제스처별 부가 지표(예: 늘리기의 peak_stretch)를 함께 보낼 수 있다
+  /// (개인정보·글 내용은 금지 — 동작 지표만).
+  Future<void> gesturePerformed(String gestureType, int durationMs,
+      {Map<String, Object>? extra}) {
     _firstAction ??= 'gesture';
     if (durationMs > 0) _totalGestureMs += durationMs;
-    return _capture('gesture_performed', {
+    final props = <String, Object>{
       'gesture_type': gestureType,
       'duration_ms': durationMs,
-    });
+    };
+    if (extra != null) props.addAll(extra);
+    return _capture('gesture_performed', props);
   }
 
   Future<void> writingStarted() {
