@@ -93,6 +93,8 @@ class HomeHelpSheet extends StatelessWidget {
                   label: '굴리기', desc: '손가락으로 데굴데굴 굴려 봐요.'),
               _HelpRow(dot: dot, title: title, body: body,
                   label: '쓰다듬기', desc: '살살 쓰다듬으면 은은히 빛나요.'),
+              _HelpRow(dot: dot, title: title, body: body,
+                  label: '늘리기', desc: '두 손가락으로 잡고 쭉쭉 늘여 봐요.'),
               const SizedBox(height: 16),
               // 하단 안내: 진동에 맞춘 잔잔한 효과음(효과음 자체 구현은 다음 단계).
               Container(

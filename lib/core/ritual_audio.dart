@@ -52,7 +52,12 @@ class RitualAudio {
   final AudioPlayer _rub = AudioPlayer(playerId: 'objet_rub');
   bool _rubOn = false;
   Timer? _rubFade;
-  static const double _kRubVolume = 0.34;
+  // 웹 루프 안전망: 일부 브라우저에서 ReleaseMode.loop가 자동 반복되지 않아 클립이
+  // 한 번 재생되고 멈추는 문제 → 클립 완료를 구독해 손 뗄 때까지 수동으로 다시 잇는다.
+  StreamSubscription<void>? _rubLoopSub;
+  // 문지르기 rub 루프 볼륨. 0.34는 폰에서 거의 안 들린다는 피드백(2026-06-08)으로
+  // 0.62로 상향 — 다른 효과음(slime 0.5~0.9)에 묻히지 않고 또렷이 들리게.
+  static const double _kRubVolume = 0.62;
   // 글쓰기 타이핑 round-robin 풀.
   final List<AudioPlayer> _typePool = [
     AudioPlayer(playerId: 'type_0'),
@@ -314,10 +319,27 @@ class RitualAudio {
         _rubOn = true;
         _rubFade?.cancel();
         await _rub.setReleaseMode(ReleaseMode.loop);
-        await _rub.setVolume(0);
-        await _rub.play(AssetSource('audio/rub.wav'), volume: 0);
-        _ramp(_rubFade, _rub, 0, _kRubVolume,
-            const Duration(milliseconds: 160), (t) => _rubFade = t);
+        // 웹은 volume:0 시작이 재생 자체를 막는 경우가 있어 들리는 볼륨으로 바로 재생한 뒤
+        // setVolume으로 부드럽게 차오르게 한다(무음 0 시작 회피).
+        await _rub.play(AssetSource('audio/rub.wav'), volume: _kRubVolume);
+        await _rub.setVolume(_kRubVolume * 0.25);
+        // 웹 루프 안전망: loop가 자동 반복 안 되는 브라우저에서 클립이 끝나면 손 뗄
+        // 때까지 다시 잇는다(네이티브는 loop가 자동이라 onPlayerComplete가 안 울려 무해).
+        _rubLoopSub?.cancel();
+        _rubLoopSub = _rub.onPlayerComplete.listen((_) {
+          if (_rubOn) {
+            _rub.play(AssetSource('audio/rub.wav'), volume: _kRubVolume);
+          }
+        });
+        // 부드러운 페이드인(30ms×9≈270ms) — 문지르기 시작이 톡 튀지 않고 스르륵 차오른다.
+        const stepMs = 30;
+        const steps = 9;
+        var i = 0;
+        _rubFade = Timer.periodic(const Duration(milliseconds: stepMs), (t) {
+          i++;
+          _rub.setVolume(_kRubVolume * (0.25 + 0.75 * (i / steps)));
+          if (i >= steps) t.cancel();
+        });
       });
 
   /// 문지르기 종료 — rub 루프를 짧게 페이드아웃 후 정지(클릭 방지).
@@ -325,8 +347,11 @@ class RitualAudio {
         if (!_rubOn) return;
         _rubOn = false;
         _rubFade?.cancel();
-        const stepMs = 40;
-        const steps = 4; // ~160ms 페이드아웃
+        _rubLoopSub?.cancel(); // 수동 재반복 안전망 해제(더 안 잇게)
+        _rubLoopSub = null;
+        // 부드러운 페이드아웃(30ms×9≈270ms) — 손 뗄 때 뚝 끊기지 않고 스르륵 잦아든다.
+        const stepMs = 30;
+        const steps = 9;
         var i = 0;
         const start = _kRubVolume;
         _rubFade = Timer.periodic(const Duration(milliseconds: stepMs), (t) {
@@ -394,6 +419,8 @@ class RitualAudio {
         }
         _rubOn = false;
         _rubFade?.cancel();
+        _rubLoopSub?.cancel();
+        _rubLoopSub = null;
         await _rub.stop();
       });
 }
