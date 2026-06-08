@@ -760,8 +760,19 @@ class _HomeScreenState extends State<HomeScreen>
     final Color msgColor = onBg.withValues(alpha: 0.90);
     // 날짜/힌트 등 보조: 살짝 투명.
     final Color subColor = onBg.withValues(alpha: 0.72);
-    // 카운트는 더 저대비(공 경험 방해 금지, §4).
-    final Color countColor = onBg.withValues(alpha: 0.55);
+    // 카운트: 저대비(공 경험 방해 금지, §4)이되, 밝은 파스텔 배경에 묻혀 안 보이던
+    // 문제(사용자 피드백 2026-06-08)로 알파를 0.55→0.80으로 올리고 아래 Text에
+    // 부드러운 그림자를 더해 어느 그라데이션 위에서도 읽히게 한다.
+    final Color countColor = onBg.withValues(alpha: 0.80);
+    // 카운트 텍스트 가독용 부드러운 그림자(밝은 배경=대비 확보, 어두운 배경=무해).
+    // onBg 반대 휘도 쪽으로 은은히: 글자가 밝으면 어두운 헤일로가 떠받쳐 또렷해진다.
+    final List<Shadow> countShadows = [
+      Shadow(
+        color: Colors.black.withValues(alpha: 0.28),
+        blurRadius: 8,
+        offset: const Offset(0, 1),
+      ),
+    ];
     // 도움말 시트는 기존 tone enum 계약을 그대로 쓴다(호환 유지).
     final SkyTone tone = skyToneAt(DateTime.now());
     final bool dark = tone == SkyTone.dark;
@@ -919,6 +930,7 @@ class _HomeScreenState extends State<HomeScreen>
                                     fontSize: 14,
                                     color: countColor,
                                     letterSpacing: 0.4,
+                                    shadows: countShadows,
                                   ),
                                 ),
                               ),
@@ -940,6 +952,7 @@ class _HomeScreenState extends State<HomeScreen>
                                   fontSize: 12,
                                   color: countColor,
                                   letterSpacing: 0.4,
+                                  shadows: countShadows,
                                 ),
                               ),
                             ),
