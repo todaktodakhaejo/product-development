@@ -5,6 +5,8 @@ build/
 .flutter-plugins
 .flutter-plugins-dependencies
 pubspec.lock
+# flutter 툴 크래시 덤프(분석 서버 크래시 등)
+flutter_*.log
 
 # IDE
 .idea/

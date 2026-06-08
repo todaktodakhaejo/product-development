@@ -115,6 +115,9 @@ class _HomeScreenState extends State<HomeScreen>
   int? _stretchB; // 스트레치 중인 둘째 포인터 id
   // 늘리는 중 쫀득 사운드 폭주 방지 — along 스케일이 일정량 변할 때만 1발씩.
   double _lastStretchSoundAlong = 1.0;
+  // 분석(PostHog)용: 스트레치 지속시간·최대 늘림 추적.
+  Duration _stretchStartTime = Duration.zero;
+  double _stretchPeakAlong = 1.0; // 제스처 중 도달한 최대 along 스케일
 
   // ── 멘트(§2/§3) / 터치→카운트(§1) ───────────────────────────
   // 멘트는 타이머 순환 폐기(v2 §3). 홈에 있는 동안 고정이며, 표시 멘트는
@@ -416,7 +419,7 @@ class _HomeScreenState extends State<HomeScreen>
         _bumpInteraction();
         _onTouched();
         // 주 포인터도 공 위면 두 손가락 늘리기(GST-05)로 진입(함몰점은 유지).
-        _maybeStartStretch(e.pointer);
+        _maybeStartStretch(e.pointer, e.timeStamp);
       }
       return;
     }
@@ -603,6 +606,12 @@ class _HomeScreenState extends State<HomeScreen>
     // 두 손가락 늘리기(GST-05): 쌍 중 하나라도 떨어지면 스프링백으로 종료한다.
     // 떼는 손가락의 함몰 복원(아래 기존 경로)은 그대로 이어 수행한다.
     if (_stretchActive && (e.pointer == _stretchA || e.pointer == _stretchB)) {
+      // 분석(PostHog): 늘리기 1회 — 지속시간 + 최대 늘림(peak_stretch, along 배율 2자리).
+      _analytics?.gesturePerformed(
+        'stretch',
+        (e.timeStamp - _stretchStartTime).inMilliseconds,
+        extra: {'peak_stretch': (_stretchPeakAlong * 100).roundToDouble() / 100},
+      );
       _endStretch();
     }
     // 멀티터치(v14): 추가 손가락을 떼면 그 함몰점만 복원(주 포인터 상태는 불변).
@@ -679,7 +688,7 @@ class _HomeScreenState extends State<HomeScreen>
   /// 둘째 손가락([secondId])이 공 위에 내려왔을 때, 주 포인터도 공 위면 스트레치
   /// 진입. 두 손가락의 현재 좌표로 ball.stretchStart를 호출한다. 함몰점(주 포인터
   /// 누르기 + 둘째 extraPress)은 건드리지 않아 함몰 + 늘림이 동시에 보인다(결정 ①).
-  void _maybeStartStretch(int secondId) {
+  void _maybeStartStretch(int secondId, Duration timeStamp) {
     final ball = _ball;
     if (ball == null || _stretchActive) return;
     final primaryId = _pointerId;
@@ -693,6 +702,8 @@ class _HomeScreenState extends State<HomeScreen>
     _stretchB = secondId;
     _stretchActive = true;
     _lastStretchSoundAlong = 1.0;
+    _stretchStartTime = timeStamp; // 분석용 지속시간 시작점
+    _stretchPeakAlong = 1.0; // 최대 늘림 추적 리셋
     // primary가 굴리기/쓰다듬기 중이었으면 그 상태를 중립으로 끊는다 — 잔여 roll
     // 상태로 떼는 순간 엉뚱한 fling이 나가거나 grabbed로 물리가 얼지 않도록.
     // (누르기 함몰 _curDepth는 건드리지 않아 함몰은 유지된다 — 결정 ①.)
@@ -717,6 +728,8 @@ class _HomeScreenState extends State<HomeScreen>
     final pb = _activePointers[b];
     if (pa == null || pb == null) return;
     ball.stretchUpdate(pa, pb);
+    // 분석용: 제스처 중 도달한 최대 늘림(along) 추적.
+    if (ball.stretchAlong > _stretchPeakAlong) _stretchPeakAlong = ball.stretchAlong;
     if ((ball.stretchAlong - _lastStretchSoundAlong).abs() > 0.06) {
       _lastStretchSoundAlong = ball.stretchAlong;
       RitualAudio.instance.objetStretch(gain: 0.45);
