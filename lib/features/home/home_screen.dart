@@ -103,6 +103,19 @@ class _HomeScreenState extends State<HomeScreen>
   double _dragSpeed = 0; // 평활된 손가락 속도(px/s)
   bool _dragSpeedSeeded = false; // 첫 유효샘플 채택 플래그
 
+  // ── 두 손가락 늘리기(stretch, GST-05) 라우팅 상태 ───────────────────
+  // 단일 포인터 상태머신(_dragMode)은 주 포인터 1개만 구동하고, 둘째 손가락은
+  // 함몰점(extraPress)만 만든다. 스트레치는 "두 손가락이 모두 공 위"일 때만 켜져
+  // 두 손가락의 거리·각도로 ball.stretch*를 구동한다. 활성 중엔 주 포인터의
+  // stroke/roll 판별을 건너뛰어(공이 굴러가지 않게) 늘리기에만 반응한다. 함몰점은
+  // 그대로 유지되므로 함몰 골 + 전체 늘림이 동시에 보인다(사용자 결정 ①).
+  final Map<int, Offset> _activePointers = {}; // 모든 활성 포인터의 현재 좌표
+  bool _stretchActive = false; // 두 손가락 스트레치 진행 중
+  int? _stretchA; // 스트레치 중인 주 포인터 id
+  int? _stretchB; // 스트레치 중인 둘째 포인터 id
+  // 늘리는 중 쫀득 사운드 폭주 방지 — along 스케일이 일정량 변할 때만 1발씩.
+  double _lastStretchSoundAlong = 1.0;
+
   // ── 멘트(§2/§3) / 터치→카운트(§1) ───────────────────────────
   // 멘트는 타이머 순환 폐기(v2 §3). 홈에 있는 동안 고정이며, 표시 멘트는
   // homeMessages[_releaseCount % 9]. 의식을 한 번 완료(releaseCount+1)할 때마다
@@ -392,6 +405,7 @@ class _HomeScreenState extends State<HomeScreen>
     final ball = _ball;
     if (ball == null) return;
     final pos = e.localPosition;
+    _activePointers[e.pointer] = pos; // 두 손가락 늘리기(GST-05) 추적용
     // 멀티터치(v14): 주 포인터가 이미 있으면, 추가 손가락은 본체 위일 때 독립
     // 함몰점으로만 동작한다(양 엄지로 두 군데 동시 누르기). 굴리기/쓰다듬기·fling
     // 상태머신은 주 포인터 1개만 구동하므로 추가 손가락은 건드리지 않는다.
@@ -401,6 +415,8 @@ class _HomeScreenState extends State<HomeScreen>
         Haptics.instance.pressDown();
         _bumpInteraction();
         _onTouched();
+        // 주 포인터도 공 위면 두 손가락 늘리기(GST-05)로 진입(함몰점은 유지).
+        _maybeStartStretch(e.pointer);
       }
       return;
     }
@@ -451,9 +467,20 @@ class _HomeScreenState extends State<HomeScreen>
     // 멀티터치(v14): 추가 손가락 이동 → 그 함몰점이 손가락을 따라간다(없으면 무시).
     if (e.pointer != _pointerId) {
       ball.extraPressMove(e.pointer, e.localPosition);
+      _activePointers[e.pointer] = e.localPosition;
+      if (_stretchActive) _updateStretch(); // 둘째 손가락 이동도 늘림에 반영
       return;
     }
     final pos = e.localPosition;
+    _activePointers[e.pointer] = pos;
+    // 두 손가락 늘리기(GST-05) 중이면 주 포인터 이동은 늘림에만 반영하고,
+    // 단일 포인터 stroke/roll 판별은 건너뛴다(공이 굴러가거나 stroke되지 않게).
+    if (_stretchActive) {
+      _updateStretch();
+      _lastPos = pos;
+      _lastMoveTime = e.timeStamp;
+      return;
+    }
     final step = pos - _lastPos;
     final stepLen = step.distance;
 
@@ -572,6 +599,12 @@ class _HomeScreenState extends State<HomeScreen>
   void _onPointerUp(PointerUpEvent e) {
     final ball = _ball;
     if (ball == null) return;
+    _activePointers.remove(e.pointer);
+    // 두 손가락 늘리기(GST-05): 쌍 중 하나라도 떨어지면 스프링백으로 종료한다.
+    // 떼는 손가락의 함몰 복원(아래 기존 경로)은 그대로 이어 수행한다.
+    if (_stretchActive && (e.pointer == _stretchA || e.pointer == _stretchB)) {
+      _endStretch();
+    }
     // 멀티터치(v14): 추가 손가락을 떼면 그 함몰점만 복원(주 포인터 상태는 불변).
     if (e.pointer != _pointerId) {
       ball.extraPressEnd(e.pointer);
@@ -626,6 +659,11 @@ class _HomeScreenState extends State<HomeScreen>
   void _onPointerCancel(PointerCancelEvent e) {
     final ball = _ball;
     if (ball == null) return;
+    _activePointers.remove(e.pointer);
+    // 두 손가락 늘리기(GST-05): 쌍 중 하나가 취소되면 스프링백으로 종료.
+    if (_stretchActive && (e.pointer == _stretchA || e.pointer == _stretchB)) {
+      _endStretch();
+    }
     if (e.pointer == _pointerId) {
       _pointerId = null;
       ball.pressCancel();
@@ -635,6 +673,64 @@ class _HomeScreenState extends State<HomeScreen>
     } else {
       ball.extraPressCancel(e.pointer);
     }
+  }
+
+  // ── 두 손가락 늘리기(GST-05) 헬퍼 ───────────────────────────────────
+  /// 둘째 손가락([secondId])이 공 위에 내려왔을 때, 주 포인터도 공 위면 스트레치
+  /// 진입. 두 손가락의 현재 좌표로 ball.stretchStart를 호출한다. 함몰점(주 포인터
+  /// 누르기 + 둘째 extraPress)은 건드리지 않아 함몰 + 늘림이 동시에 보인다(결정 ①).
+  void _maybeStartStretch(int secondId) {
+    final ball = _ball;
+    if (ball == null || _stretchActive) return;
+    final primaryId = _pointerId;
+    if (primaryId == null) return;
+    final pa = _activePointers[primaryId];
+    final pb = _activePointers[secondId];
+    if (pa == null || pb == null) return;
+    // 두 손가락이 모두 공 위일 때만 늘리기 진입(단일 포인터 제스처와 비간섭).
+    if (!ball.hitTest(pa) || !ball.hitTest(pb)) return;
+    _stretchA = primaryId;
+    _stretchB = secondId;
+    _stretchActive = true;
+    _lastStretchSoundAlong = 1.0;
+    // primary가 굴리기/쓰다듬기 중이었으면 그 상태를 중립으로 끊는다 — 잔여 roll
+    // 상태로 떼는 순간 엉뚱한 fling이 나가거나 grabbed로 물리가 얼지 않도록.
+    // (누르기 함몰 _curDepth는 건드리지 않아 함몰은 유지된다 — 결정 ①.)
+    _moved = false;
+    _dragMode = _DragMode.none;
+    _rollCatchup = 0;
+    ball.release();
+    RitualAudio.instance.stopRub();
+    ball.stretchStart(pa, pb);
+    Haptics.instance.fire(HapticLevel.light);
+    RitualAudio.instance.objetStretch(gain: 0.6); // 떡 늘어나는 쫀득 레이어
+  }
+
+  /// 스트레치 중 두 손가락의 현재 좌표로 늘림 세기·축을 갱신한다.
+  /// along 스케일이 일정량 변할 때만 쫀득 사운드를 1발씩 깐다(내장 throttle + 델타 게이트).
+  void _updateStretch() {
+    final ball = _ball;
+    if (ball == null || !_stretchActive) return;
+    final a = _stretchA, b = _stretchB;
+    if (a == null || b == null) return;
+    final pa = _activePointers[a];
+    final pb = _activePointers[b];
+    if (pa == null || pb == null) return;
+    ball.stretchUpdate(pa, pb);
+    if ((ball.stretchAlong - _lastStretchSoundAlong).abs() > 0.06) {
+      _lastStretchSoundAlong = ball.stretchAlong;
+      RitualAudio.instance.objetStretch(gain: 0.45);
+    }
+  }
+
+  /// 스트레치 종료 — ball.stretchEnd로 쫀득 통통 스프링백을 시작하고 라우팅 상태를 리셋.
+  void _endStretch() {
+    _ball?.stretchEnd();
+    _stretchActive = false;
+    _stretchA = null;
+    _stretchB = null;
+    Haptics.instance.pressRelease();
+    RitualAudio.instance.objetSquelch();
   }
 
   void _goToWriting() {

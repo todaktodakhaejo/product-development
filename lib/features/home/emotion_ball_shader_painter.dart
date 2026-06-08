@@ -107,6 +107,13 @@ class EmotionBallShaderPainter extends CustomPainter {
     // (rollShift는 rad 단위 누적 변위라 그대로 표면 경도 회전에 쓴다.)
     shader.setFloat(23, ball.rollShift.dx);
 
+    // 두 손가락 늘리기(24,25,26): 늘림 축각/축·직교 스케일. 기본 1.0이면 항등.
+    // 함몰(uTouch)과 독립 채널이라 함몰 골 + 전체 늘림이 동시에 렌더된다(GST-05).
+    shader
+      ..setFloat(24, ball.stretchAngle)
+      ..setFloat(25, ball.stretchAlong)
+      ..setFloat(26, ball.stretchCross);
+
     canvas.drawRect(Offset.zero & size, Paint()..shader = shader);
 
     // v17: 손가락 따라다니던 화이트 bloom은 제거했다 — 문지르기는 이제 셰이더의 이동

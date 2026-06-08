@@ -141,6 +141,20 @@ class EmotionBall {
   bool _tick85Armed = false;
   bool _tickPending = false;
 
+  // ── 두 손가락 늘리기(stretch, GST-05) 상태 ─────────────────────────
+  // 공 위에 두 손가락이 동시에 올라오면(home_screen이 감지) 두 손가락 사이의
+  // (a) 거리 변화 → 늘림 세기, (b) 연결선 각도 → 늘림 축으로 공을 임의 축으로
+  // 비등방(anisotropic) 늘인다. 멀티터치 함몰(_extraPresses)과 **독립**이라 함몰
+  // 골과 전체 늘림이 동시에 보인다(v19, 사용자 결정 ①). 손을 떼면 _springBack과
+  // 같은 결로 통통 튀며 원형 복귀(결정 ②). painter/셰이더는 stretchAlong/Cross/
+  // Angle getter만 읽으며, amount=0이면 along=cross=1·angle=0이라 렌더링 항등.
+  bool _stretching = false; // 두 손가락 입력 활성 중
+  double _stretchAmount = 0; // 늘림 세기(0=원형, +벌림/늘림, -오므림/납작)
+  double _stretchAngle = 0; // 늘림 축각(rad, 두 손가락 연결선)
+  double _stretchBaseDist = 0; // stretchStart 시 두 손가락 기준 거리(배율 분모)
+  double _stretchReleaseAmount = 0; // 뗀 순간 amount(스프링백 시작점)
+  double _stretchReleaseT = -1; // 스프링백 진행 시간(s), <0이면 비활성
+
   // 침몰 1.4s(꾸준히 깊어짐), 복원 0.62s 슬라임 오버슈트. (v3 §2 / v11 §A-4 / v18)
   // v18: "길게 누를수록 골이 더 깊어지게" — 0.45s에 최대로 꽉 차던 것을 1.4s로 늘려
   // 오래 누르고 있을수록 점점 깊이 파이게 한다(곡선도 _holdDepthFor에서 꾸준히 깊어지는
@@ -316,6 +330,60 @@ class EmotionBall {
     return cd > maxContact ? contact / cd * maxContact : contact;
   }
 
+  // ── 두 손가락 늘리기(stretch, GST-05) API ─────────────────────────
+  // painter/셰이더가 읽는 변형 채널. amount>0(벌림)이면 축 방향으로 늘고 직교축은
+  // 살짝 눌리며, amount<0(오므림)이면 반대로 납작·옆으로 부푼다. amount=0이면
+  // along=cross=1·angle=0이라 항등(스트레치 비활성 시 기존 렌더링 무변경).
+
+  /// 늘림 축 방향 스케일(기본 1.0). 벌릴수록 >1, 오므리면 <1.
+  double get stretchAlong => 1 + _stretchAmount * 0.6;
+
+  /// 늘림 직교축 스케일(기본 1.0). 벌릴수록 <1(가늘어짐), 오므리면 >1(부픔).
+  double get stretchCross => 1 - _stretchAmount * 0.3;
+
+  /// 늘림 축각(rad, 두 손가락 연결선). amount=0이면 0으로 리셋되어 잔상 없음.
+  double get stretchAngle => _stretchAngle;
+
+  /// 두 손가락 스트레치 입력 활성 여부(분석/디버그용).
+  bool get stretching => _stretching;
+
+  /// 두 손가락 스트레치 시작. [p1],[p2]는 두 손가락의 현재 화면 좌표.
+  /// 시작 시점의 거리를 기준(분모)으로 잡아 이후 거리 비율로 늘림 세기를 낸다.
+  void stretchStart(Offset p1, Offset p2) {
+    final v = p2 - p1;
+    _stretchBaseDist = v.distance;
+    _stretchAngle = v.distance > 0.001 ? atan2(v.dy, v.dx) : 0;
+    _stretchAmount = 0;
+    _stretchReleaseT = -1;
+    _stretching = true;
+    // 늘리는 동안 공이 굴러가거나 날아가지 않게 잔여 속도를 잡는다(누르기와 동일 결).
+    vel = Offset.zero;
+  }
+
+  /// 두 손가락 스트레치 갱신. 손가락이 움직일 때마다 거리·각도를 다시 읽어
+  /// 늘림 세기([_stretchAmount])와 축각을 부드럽게(EMA) 따라간다.
+  void stretchUpdate(Offset p1, Offset p2) {
+    if (!_stretching || _stretchBaseDist <= 0.001) return;
+    final v = p2 - p1;
+    final dist = v.distance;
+    final ratio = dist / _stretchBaseDist;
+    // 벌리면 +, 오므리면 -. 과늘림/과압축 방지로 clamp.
+    final raw = (ratio - 1.0).clamp(-0.5, 1.2);
+    // 손떨림 완화: 목표값으로 천천히 수렴(EMA).
+    _stretchAmount += (raw - _stretchAmount) * 0.35;
+    if (dist > 0.001) _stretchAngle = atan2(v.dy, v.dx);
+    _stretchReleaseT = -1; // 늘리는 중엔 스프링백 비활성
+  }
+
+  /// 두 손가락 스트레치 종료(한 손가락이 떨어짐). 현재 늘림에서 _springBack으로
+  /// 통통 튀며 원형 복귀를 시작한다(시간 적분은 [update]가 담당).
+  void stretchEnd() {
+    if (!_stretching && _stretchReleaseT < 0) return;
+    _stretchReleaseAmount = _stretchAmount;
+    _stretchReleaseT = 0;
+    _stretching = false;
+  }
+
   /// 침몰 중 깊이가 0.5·0.85 정점을 통과한 프레임에 true를 1회 반환하고 소비.
   ///
   /// home_screen `_onTick`이 읽어 미세 틱 햅틱([pressHoldTick])을 발사한다 —
@@ -426,6 +494,11 @@ class EmotionBall {
     // 굴림 회전 잔상도 리셋(중앙 복귀는 "초기화"이므로 결을 평상으로).
     _roll = Offset.zero;
     _angle = 0;
+    // 두 손가락 늘리기 상태도 항등으로 리셋(GST-05).
+    _stretching = false;
+    _stretchAmount = 0;
+    _stretchAngle = 0;
+    _stretchReleaseT = -1;
   }
 
   /// 제자리 쓰다듬기(GST-04). [step]은 직전 프레임 대비 손가락 이동량,
@@ -524,6 +597,21 @@ class EmotionBall {
       });
       for (final id in done) {
         _extraPresses.remove(id);
+      }
+    }
+
+    // ── 두 손가락 늘리기 스프링백(GST-05) ──
+    // 손을 떼면(_stretchReleaseT>=0) 뗀 순간의 amount에서 _springBack(낮은 damping
+    // 감쇠 정현파)을 따라 0으로 통통 튀며 복귀한다. 누르기 복원과 동일 곡선(_releaseDur).
+    // 늘리는 중(_stretching)엔 amount를 stretchUpdate가 직접 몰므로 여기선 건드리지 않는다.
+    if (_stretchReleaseT >= 0) {
+      _stretchReleaseT += dt;
+      final t = (_stretchReleaseT / _releaseDur).clamp(0.0, 1.0);
+      _stretchAmount = _stretchReleaseAmount * (1 - _springBack(t));
+      if (t >= 1.0) {
+        _stretchAmount = 0;
+        _stretchAngle = 0; // 항등 복귀(셰이더 회전 잔상 방지)
+        _stretchReleaseT = -1;
       }
     }
 

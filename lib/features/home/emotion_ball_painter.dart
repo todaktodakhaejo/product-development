@@ -69,6 +69,18 @@ class EmotionBallPainter extends CustomPainter {
     final swell = 1 + 0.05 * ball.strokeAmp.clamp(0.0, 1.0);
     canvas.scale(scale.dx * swell, scale.dy * swell);
 
+    // ── 두 손가락 늘리기(GST-05): 임의 축 비등방 스케일 ──
+    // 늘림 축으로 회전→비등방 스케일→역회전(쓰다듬기 흐름과 같은 패턴). 이후의 blob·
+    // clip·함몰 음영이 모두 이 변형 안에 들어가 일관되게 늘어난다. 기본 1.0이면 건너뜀.
+    final sAlong = ball.stretchAlong;
+    final sCross = ball.stretchCross;
+    if ((sAlong - 1).abs() > 0.001 || (sCross - 1).abs() > 0.001) {
+      final sa = ball.stretchAngle;
+      canvas.rotate(sa);
+      canvas.scale(sAlong, sCross);
+      canvas.rotate(-sa);
+    }
+
     // ── 쓰다듬기 흐름 stretch+skew(§A-5: 액체가 쓸리는 결) ──
     // 공은 제자리(이동 없음)이되 표면만 손가락 속도 방향으로 늘어나고 비틀린다.
     // v12 §1: strokeFlow는 ball에서 강한 EMA로 부드럽게 누적되므로 여기 강도를 낮춰

@@ -22,12 +22,36 @@ uniform float uStroke;
 // 23: 굴림 회전각(rad). 표면 얼룩(은은한 결)이 이 각도만큼 공 표면을 돌아
 // "미끄러지지 않고 구르는" 단서를 준다. 조명/스페큘러는 월드 고정이라 영향 없음.
 uniform float uRoll;
+// 24,25,26: 두 손가락 늘리기(GST-05). uStretchAng=늘림 축각(rad),
+// uStretchAlong/Cross=축 방향/직교 스케일(기본 1.0=원형). 샘플 좌표를 이 변환의
+// 역으로 보내(아래 unstretch) 실루엣을 임의 축 타원으로 늘린다. 멀티터치 함몰
+// (uTouch)과 독립이라 함몰 골 + 전체 늘림이 동시에 보인다. 1.0이면 항등.
+uniform float uStretchAng;   // 24
+uniform float uStretchAlong; // 25
+uniform float uStretchCross; // 26
 
 out vec4 fragColor;
+
+// 화면 좌표 v(중심 기준)를 늘림 "역변환"해 원형 공간으로 되돌린다.
+// 축각으로 회전(-ang)시켜 늘림 축을 x로 맞춘 뒤 along/cross로 나눠 원으로 환원 →
+// 본체 SDF·법선·함몰점을 이 공간에서 평가하면 화면엔 타원으로 늘어나 보인다.
+vec2 unstretch(vec2 v) {
+  float ca = cos(uStretchAng), sa = sin(uStretchAng);
+  vec2 vr = vec2(ca * v.x + sa * v.y, -sa * v.x + ca * v.y);
+  return vec2(vr.x / uStretchAlong, vr.y / uStretchCross);
+}
 
 void main() {
   vec2 fragCoord = FlutterFragCoord().xy;
   vec2 p = fragCoord - uCenter;
+
+  // 두 손가락 늘리기(GST-05): 늘리는 중(스케일≠1)이면 샘플 좌표를 원형 공간으로
+  // 역변환해 이후 모든 기하(본체·법선·그래디언트·함몰점)를 그 공간에서 평가한다.
+  // along=cross=1이면 건너뛰어 기존 동작과 완전 동일(항등).
+  bool bStretch = abs(uStretchAlong - 1.0) > 0.001 || abs(uStretchCross - 1.0) > 0.001;
+  if (bStretch) {
+    p = unstretch(p);
+  }
 
   // 두근거림(균일 펄스) + 미세 일렁임(각도·시간 기반 유기적 wobble).
   // (전역 swell/일렁임 강화는 제거 — 공 전체가 삼각형처럼 퍼지던 원인. 문지름 표현은
@@ -56,6 +80,8 @@ void main() {
   float gsh = 0.0;                     // 함몰 안쪽 그늘용(가장 깊은 곳 기준)
   for (int i = 0; i < 5; i++) {
     vec2 tp = vec2(uTouch[i * 3], uTouch[i * 3 + 1]) - uCenter;
+    // 함몰점도 같은 늘림 공간으로 보내 손가락 자리에 정렬 유지(늘려도 골이 안 어긋남).
+    if (bStretch) tp = unstretch(tp);
     float dpt = clamp(uTouch[i * 3 + 2], 0.0, 1.0);
     float di = length(p - tp);
     float gi = exp(-(di * di) / (2.0 * sigma * sigma)) * dpt;
