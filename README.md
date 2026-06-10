@@ -113,3 +113,4 @@ Haptics.instance.playTimeline(controller, const [
 - 센서 부호(굴리기 방향)는 기기/OS에 따라 튜닝 필요 (`home_screen.dart` 주석 참고).
 - `flutter analyze`로 정적 점검 후 실기기 테스트 권장 (작성 환경에 Flutter 미설치로 컴파일 미검증).
 - 종이 디졸브/태우기 질감은 향후 `FragmentShader` 또는 Rive로 고도화 가능.
+
