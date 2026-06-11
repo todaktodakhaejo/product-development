@@ -8,6 +8,13 @@ pubspec.lock
 # flutter 툴 크래시 덤프(분석 서버 크래시 등)
 flutter_*.log
 
+# Android 서명 키(절대 커밋 금지 — CI는 GitHub Secrets로 주입)
+*.jks
+*.keystore
+*.p12
+android/key.properties
+android/app/upload-keystore.p12
+
 # IDE
 .idea/
 .vscode/
