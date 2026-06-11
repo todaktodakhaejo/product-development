@@ -24,6 +24,13 @@ class RitualAudio {
 
   // 루프 채널(fire/shred — 의식 간 동시 재생 없음) + 원샷 2채널.
   final AudioPlayer _loop = AudioPlayer(playerId: 'ritual_loop');
+  // _loop 수동 반복 상태: 이 기기에서 mp3를 ReleaseMode.loop로 재생하면 첫 재생부터
+  // 무음이 되는 버그(2026-06-12 실기기, fire/shred 무음)를 회피한다. release 모드로
+  // 재생하고 onPlayerComplete에서 손수 다시 이어 "수동 루프"를 만든다(폭죽이 release
+  // mp3로 정상 재생되는 검증된 경로와 동일 — loop 모드만 피하면 소리가 난다).
+  String? _loopAsset; // 현재 반복 중인 에셋 경로(null이면 정지)
+  double _loopVol = 1.0;
+  StreamSubscription<void>? _loopCompleteSub;
   final AudioPlayer _shotA = AudioPlayer(playerId: 'ritual_shot_a');
   final AudioPlayer _shotB = AudioPlayer(playerId: 'ritual_shot_b');
   // 잔불 타닥타닥(단순 루프 — crackle은 경계가 조용해 갭이 안 들림).
@@ -32,8 +39,9 @@ class RitualAudio {
   final AudioPlayer _skyA = AudioPlayer(playerId: 'ritual_sky_a');
   final AudioPlayer _skyB = AudioPlayer(playerId: 'ritual_sky_b');
   // 폭죽 원샷 보이스 풀(채널 스틸링 방지) — 피날레는 3초간 폭죽음을 빠르게 여러 번
-  // 호출하는데 2보이스로는 앞 소리가 잘렸다(사용자 피드백 2026-06-09) → 6보이스
-  // 라운드로빈으로 동시 폭죽이 서로 안 끊기게 한다(게임엔진 멀티채널과 동일 효과).
+  // 호출하는데(가장 빽빽한 1.4초 창에 7발) 보이스가 부족하면 앞 소리가 잘렸다(사용자
+  // 피드백) → 8보이스 라운드로빈으로 동시 폭죽이 서로 안 끊기고 모두 끝까지 울리게 한다
+  // (게임엔진 멀티채널과 동일 효과). firework.mp3(~1.4s) × 최대 7중첩 < 8보이스라 안전.
   final List<AudioPlayer> _fireworkPool = [
     AudioPlayer(playerId: 'firework_0'),
     AudioPlayer(playerId: 'firework_1'),
@@ -41,6 +49,8 @@ class RitualAudio {
     AudioPlayer(playerId: 'firework_3'),
     AudioPlayer(playerId: 'firework_4'),
     AudioPlayer(playerId: 'firework_5'),
+    AudioPlayer(playerId: 'firework_6'),
+    AudioPlayer(playerId: 'firework_7'),
   ];
   int _fwIdx = 0;
   // 오브제(공) 스퀴시·릴리스 round-robin 풀(빠른 연속 터치가 서로 안 끊기게).
@@ -124,17 +134,35 @@ class RitualAudio {
     }
   }
 
-  // ── 태우기 ───────────────────────────────────────────────────────────────
-  /// 연소 시작 — fire.mp3 루프(volume 1.0, 강하게). 점화 확정 시 호출.
-  Future<void> startFire() => _safe(() async {
+  // _loop을 release 모드로 재생하고 클립이 끝나면 손수 다시 이어 "수동 루프"를 만든다.
+  // ReleaseMode.loop가 일부 기기에서 mp3를 무음 처리하는 문제 회피(fire/shred 무음 수정).
+  Future<void> _startLoopManual(String asset, double volume) => _safe(() async {
+        _loopAsset = asset;
+        _loopVol = volume;
         await _loop.stop();
-        await _loop.setReleaseMode(ReleaseMode.loop);
-        await _loop.setVolume(1.0);
-        await _loop.play(AssetSource('audio/fire.mp3'), volume: 1.0);
+        await _loop.setReleaseMode(ReleaseMode.release); // loop 모드 미사용(무음 버그 회피)
+        await _loop.setVolume(volume);
+        await _loop.play(AssetSource(asset), volume: volume);
+        _loopCompleteSub?.cancel();
+        _loopCompleteSub = _loop.onPlayerComplete.listen((_) {
+          final a = _loopAsset;
+          if (a != null) _loop.play(AssetSource(a), volume: _loopVol);
+        });
       });
 
+  Future<void> _stopLoopManual() => _safe(() async {
+        _loopAsset = null;
+        _loopCompleteSub?.cancel();
+        _loopCompleteSub = null;
+        await _loop.stop();
+      });
+
+  // ── 태우기 ───────────────────────────────────────────────────────────────
+  /// 연소 시작 — fire.mp3 루프(volume 1.0). release+수동 반복(loop 모드 무음 버그 회피).
+  Future<void> startFire() => _startLoopManual('audio/fire.mp3', 1.0);
+
   /// 연소 종료(전소) — fire 루프 정지.
-  Future<void> stopFire() => _safe(() => _loop.stop());
+  Future<void> stopFire() => _stopLoopManual();
 
   /// 전소 후 잔불 타닥타닥 여운 — crackle.wav 루프(volume 0.7).
   Future<void> startEmberCrackle() => _safe(() async {
@@ -148,16 +176,11 @@ class RitualAudio {
   Future<void> stopEmberCrackle() => _safe(() => _emberLoop.stop());
 
   // ── 파쇄기 ───────────────────────────────────────────────────────────────
-  /// 분쇄 시작 — shred.mp3 루프(volume 1.0, 강하게). 종이 투입 순간 호출.
-  Future<void> startShred() => _safe(() async {
-        await _loop.stop();
-        await _loop.setReleaseMode(ReleaseMode.loop);
-        await _loop.setVolume(1.0);
-        await _loop.play(AssetSource('audio/shred.mp3'), volume: 1.0);
-      });
+  /// 분쇄 시작 — shred.mp3 루프(volume 1.0). release+수동 반복(loop 모드 무음 버그 회피).
+  Future<void> startShred() => _startLoopManual('audio/shred.mp3', 1.0);
 
   /// 분쇄 종료 — shred 루프 정지.
-  Future<void> stopShred() => _safe(() => _loop.stop());
+  Future<void> stopShred() => _stopLoopManual();
 
   /// 폭죽 — firework.mp3 원샷(volume 0.85). 폭죽이 터지는 매 타이밍마다 호출.
   /// 6보이스 풀 라운드로빈으로 빠른 연속('팡팡')이 서로 끊기지 않게 한다(채널 스틸링 방지).
@@ -412,6 +435,9 @@ class RitualAudio {
         _skySwap?.cancel();
         _skyXfade?.cancel();
         _skyFadeIn?.cancel();
+        _loopAsset = null; // 수동 루프 정지(재이음 방지)
+        _loopCompleteSub?.cancel();
+        _loopCompleteSub = null;
         await _loop.stop();
         await _shotA.stop();
         await _shotB.stop();
