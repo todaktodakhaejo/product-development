@@ -2,7 +2,9 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/animation.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:vibration/vibration.dart';
 
 /// 햅틱 세기 단계. Flutter 내장 HapticFeedback은 고정 단계만 제공하므로
 /// 충격 세기(impact strength)를 이 단계로 매핑해서 사용한다.
@@ -20,6 +22,52 @@ class Haptics {
   final Duration _minGap = const Duration(milliseconds: 28);
   DateTime _last = DateTime.fromMillisecondsSinceEpoch(0);
 
+  // ── Android 실기기 진동 보강 ──────────────────────────────────────
+  // 내장 HapticFeedback(performHapticFeedback)은 안드로이드에서 시스템 '터치
+  // 피드백' 설정에 묶여 약하거나 아예 안 울리는 기기가 많다(실기기 피드백 2026-06-09).
+  // 그래서 안드로이드에선 실제 Vibrator를 세기(amplitude) 지정해 직접 울려 또렷한
+  // 햅틱을 보장한다. iOS는 HapticFeedback(Core Haptics)이 충분하므로 이 경로를 안 탄다.
+  // (capability는 첫 호출 때 한 번만 비동기 확인 후 캐시. best-effort — 예외 무시.)
+  bool _vibChecked = false;
+  bool _hasVibrator = false;
+  bool _hasAmplitude = false;
+
+  Future<void> _ensureVibCaps() async {
+    if (_vibChecked) return;
+    _vibChecked = true;
+    try {
+      _hasVibrator = await Vibration.hasVibrator() == true;
+      _hasAmplitude = await Vibration.hasAmplitudeControl() == true;
+    } catch (_) {}
+  }
+
+  /// 안드로이드에서 실제 진동기를 [durationMs]·[amplitude](1~255)로 울린다.
+  /// iOS·미지원 기기에선 무동작(HapticFeedback가 대신 처리). best-effort.
+  void _androidBuzz(int durationMs, int amplitude) {
+    // 웹/비안드로이드 제외(dart:io 미사용 — 웹 빌드 호환). iOS는 HapticFeedback 사용.
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
+    unawaited(() async {
+      await _ensureVibCaps();
+      if (!_hasVibrator) return;
+      try {
+        if (_hasAmplitude) {
+          await Vibration.vibrate(duration: durationMs, amplitude: amplitude);
+        } else {
+          await Vibration.vibrate(duration: durationMs);
+        }
+      } catch (_) {}
+    }());
+  }
+
+  /// 햅틱 단계 → (진동 길이 ms, 세기 amplitude 1~255). 약→강 점진.
+  static ({int ms, int amp}) _vibFor(HapticLevel level) => switch (level) {
+        HapticLevel.selection => (ms: 12, amp: 70),
+        HapticLevel.light => (ms: 18, amp: 120),
+        HapticLevel.medium => (ms: 28, amp: 185),
+        HapticLevel.heavy => (ms: 45, amp: 255),
+        HapticLevel.success => (ms: 60, amp: 255),
+      };
+
   /// 너무 잦은 진동 방지용 throttle. 직전 발사 후 [_minGap] 이내면 무시.
   bool _allow() {
     final now = DateTime.now();
@@ -30,6 +78,9 @@ class Haptics {
 
   void fire(HapticLevel level, {bool throttle = true}) {
     if (throttle && !_allow()) return;
+    // 안드로이드 실기기 진동 보강(세기 지정). iOS는 아래 HapticFeedback만.
+    final v = _vibFor(level);
+    _androidBuzz(v.ms, v.amp);
     switch (level) {
       case HapticLevel.selection:
         HapticFeedback.selectionClick();
@@ -90,7 +141,8 @@ class Haptics {
     if (now.difference(_strokeLast) < _strokeGap) return;
     _strokeLast = now;
     // selectionClick: lightImpact보다 가볍고 결이 고와 "쓸리는" 느낌에 가깝다.
-    // (Core Haptics 연속 진동이 이상적 — 실기기/네이티브 작업 필요.)
+    // 안드로이드는 아주 약하게(10ms/55) 실제 진동을 깔아 "쓸리는 결"이 또렷하게.
+    _androidBuzz(10, 55);
     HapticFeedback.selectionClick();
   }
 
@@ -106,17 +158,24 @@ class Haptics {
     _rollLast = now;
     final s = speed01.clamp(0.0, 1.0);
     // 빠를수록 굵은 자글거림. 느릴 땐 가볍게 톡톡.
+    _androidBuzz(14, s >= 0.6 ? 200 : 130); // 안드로이드 실제 진동(속도 비례 세기)
     HapticFeedback.lightImpact();
     if (s >= 0.6) HapticFeedback.mediumImpact();
   }
 
   /// 누르기(GST-03) 침몰 순간. 쑥 들어가는 묵직함 — medium 1회.
   /// 탭의 결정적 순간이므로 throttle 무시(§12.1).
-  void pressDown() => HapticFeedback.mediumImpact();
+  void pressDown() {
+    _androidBuzz(28, 185);
+    HapticFeedback.mediumImpact();
+  }
 
   /// 누르기(GST-03) 복원 정점. 차오르며 톡 올라오는 느낌 — light 1회.
   /// 복원 정점 프레임의 단발이므로 throttle 무시(§12.1).
-  void pressRelease() => HapticFeedback.lightImpact();
+  void pressRelease() {
+    _androidBuzz(18, 120);
+    HapticFeedback.lightImpact();
+  }
 
   DateTime _holdTickLast = DateTime.fromMillisecondsSinceEpoch(0);
   // pressDown/pressRelease와 달리 침몰 도중 여러 번 불릴 수 있으므로(깊이 정점
@@ -136,6 +195,7 @@ class Haptics {
     final now = DateTime.now();
     if (now.difference(_holdTickLast) < _holdTickGap) return;
     _holdTickLast = now;
+    _androidBuzz(12, 75);
     HapticFeedback.selectionClick();
   }
 
