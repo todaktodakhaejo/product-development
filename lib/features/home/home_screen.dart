@@ -80,8 +80,14 @@ class _HomeScreenState extends State<HomeScreen>
   Duration _pressDownTime = Duration.zero;
   Duration _rollStartTime = Duration.zero;
   Duration _strokeStartTime = Duration.zero;
-  // 흔들기 분석 throttle — 연속 임펄스(70ms)마다 보내면 과다하므로 1초에 1건.
-  DateTime _lastShakeEvent = DateTime.fromMillisecondsSinceEpoch(0);
+  // 흔들기 분석은 "한 사이클(흔들기 시작→멈춤)당 1회"로 집계한다(사용자 요청 2026-06-09).
+  // 흔드는 동안 임펄스가 연속으로 들어오므로, 마지막 임펄스 후 _shakeCycleGap 동안
+  // 추가 임펄스가 없으면 사이클이 끝난 것으로 보고 그때 1회 발사(지속시간 = 마지막-시작).
+  bool _shakeCycleActive = false; // 흔들기 사이클 진행 중
+  DateTime _shakeCycleStart = DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime _lastShakeImpulse = DateTime.fromMillisecondsSinceEpoch(0);
+  Timer? _shakeEndTimer; // 사이클 종료(디바운스) 감지
+  static const Duration _shakeCycleGap = Duration(milliseconds: 600);
 
   // 포인터 상태 (누르기 / 굴리기 / 쓰다듬기 통합)
   int? _pointerId;
@@ -348,14 +354,23 @@ class _HomeScreenState extends State<HomeScreen>
           level = HapticLevel.heavy;
         }
         Haptics.instance.fire(level, throttle: false);
-        _bumpInteraction(); // 흔들기 임펄스 발사 1회 = 공 놀이 +1(§1-B)
-        // 분석: 연속 임펄스(70ms)마다 보내면 과다 → 1초에 1건으로 throttle.
-        // 흔들기는 순간 동작이라 duration_ms=0.
+        // 흔들기는 공 놀이 횟수(interaction)·PostHog 둘 다 "한 사이클(시작→멈춤)당 1회"로
+        // 집계한다(사용자 요청). 흔드는 동안 임펄스가 연속으로 들어오지만, 사이클 시작에
+        // interaction을 1회만 올리고(임펄스마다 X), 마지막 임펄스 후 _shakeCycleGap 동안
+        // 추가 임펄스가 없으면(디바운스 타이머) 그때 PostHog로 1회 발사(지속시간=마지막-시작).
         final nowT = DateTime.now();
-        if (nowT.difference(_lastShakeEvent).inMilliseconds >= 1000) {
-          _lastShakeEvent = nowT;
-          _analytics?.gesturePerformed('shake', 0);
+        if (!_shakeCycleActive) {
+          _shakeCycleActive = true;
+          _shakeCycleStart = nowT;
+          _bumpInteraction(); // 사이클 시작 1회만(임펄스마다 올리지 않음)
         }
+        _lastShakeImpulse = nowT;
+        _shakeEndTimer?.cancel();
+        _shakeEndTimer = Timer(_shakeCycleGap, () {
+          _analytics?.gesturePerformed('shake',
+              _lastShakeImpulse.difference(_shakeCycleStart).inMilliseconds);
+          _shakeCycleActive = false;
+        });
         _onTouched();
       },
       onError: (_) {}, // 센서 미지원 기기에서도 터치는 동작
@@ -769,6 +784,7 @@ class _HomeScreenState extends State<HomeScreen>
     _session?.removeListener(_onSessionChanged);
     _ticker.dispose();
     _accelSub?.cancel();
+    _shakeEndTimer?.cancel(); // 흔들기 사이클 디바운스 타이머 정리
     _frame.dispose();
     super.dispose();
   }
