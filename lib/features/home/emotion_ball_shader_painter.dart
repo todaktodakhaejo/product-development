@@ -112,7 +112,8 @@ class EmotionBallShaderPainter extends CustomPainter {
     shader
       ..setFloat(24, ball.stretchAngle)
       ..setFloat(25, ball.stretchAlong)
-      ..setFloat(26, ball.stretchCross);
+      ..setFloat(26, ball.stretchCross)
+      ..setFloat(27, ball.pressPop); // 떼는 순간 "뽁" 전역 팝
 
     canvas.drawRect(Offset.zero & size, Paint()..shader = shader);
 

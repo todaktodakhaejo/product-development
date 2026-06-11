@@ -316,6 +316,10 @@ class _HomeScreenState extends State<HomeScreen>
       samplingPeriod: SensorInterval.gameInterval,
     ).listen(
       (e) {
+        // 손가락이 화면에 닿아 있는 동안엔 흔들기를 무시한다(사용자 피드백 2026-06-09).
+        // 쓰다듬기/굴리기 중 폰이 미세하게 흔들려 센서가 흔들기로 오인 → 공이 튕기던
+        // 문제 차단. 터치를 떼면(_activePointers 비면) 다시 흔들기 활성.
+        if (_activePointers.isNotEmpty) return;
         final mag = sqrt(e.x * e.x + e.y * e.y + e.z * e.z); // 가속도 크기(m/s²)
         // 발동 조건(§1): 임계 이상 + 쿨다운 경과. armed 게이트를 없애 연속으로
         // 흔들면 90ms마다 계속 임펄스가 쌓여 공이 통통 튀고 벽에 부딪힌다.
@@ -532,6 +536,16 @@ class _HomeScreenState extends State<HomeScreen>
     }
 
     if (_moved) {
+      // v20 §2: 빈 공간에서 시작한 드래그는 공을 굴리거나(순간이동) 문지르지 않고,
+      // 손가락 지점으로 공을 탄성으로 "쭈욱 당겨온다"(glide). 매 move마다 목표만 갱신하면
+      // ball.update가 부드럽게 따라온다. (공 위에서 시작한 제스처는 아래 기존 판별로.)
+      if (!_downOnBall) {
+        ball.glideTo(pos);
+        _lastPos = pos;
+        _lastMoveTime = e.timeStamp;
+        return;
+      }
+
       final net = (pos - _downPos).distance;
       final r = ball.radius;
 
@@ -658,9 +672,16 @@ class _HomeScreenState extends State<HomeScreen>
       if (ball.hitTest(_downPos)) {
         ball.pressEnd();
         Haptics.instance.pressRelease();
-        RitualAudio.instance.objetSquelch(); // 손 뗄 때 squelch
+        // 떼는 순간 "뽁" 팝: squelch + 쫀득 mochi 레이어를 겹쳐 통통 튀는 손맛(ⓔ).
+        RitualAudio.instance.objetSquelch();
+        RitualAudio.instance.objetStretch(gain: 0.7);
         _analytics?.gesturePerformed(
             'press', (e.timeStamp - _pressDownTime).inMilliseconds);
+      } else {
+        // v20 §2: 빈 공간을 탭하면 그 지점으로 공을 탄성으로 당겨온다(순간이동 대신).
+        ball.glideTo(pos);
+        Haptics.instance.fire(HapticLevel.light);
+        RitualAudio.instance.objetStretch(gain: 0.5); // 쭈욱 당겨오는 쫀득 레이어
       }
     } else if (_dragMode == _DragMode.roll) {
       // fling(v8 §4): 방향은 EMA(_flingVel) 방향을 유지하되, 크기는 EMA 크기와

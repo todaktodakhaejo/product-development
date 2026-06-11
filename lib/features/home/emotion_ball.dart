@@ -69,6 +69,15 @@ class EmotionBall {
 
   bool grabbed = false;
 
+  // ── 빈 공간 당김(glide-to, v20 §2) ─────────────────────────────────
+  // 빈 공간을 터치/드래그하면 그 지점으로 공이 탄성으로 당겨와 멈춘다(순간이동 대신,
+  // 사용자 피드백). update()가 매 프레임 목표로 ease하며 진행 방향으로 살짝 늘어난다
+  // (찹쌀떡). 목표에 닿으면 비활성. 공을 직접 잡으면(grab/pressStart) 즉시 취소된다.
+  Offset? _glideTarget;
+
+  /// painter 디버그/표시용: 현재 빈 공간 당김 진행 중인지.
+  bool get gliding => _glideTarget != null;
+
   // ── 굴림 회전(roll, GST-02) 상태 ──────────────────────────────
   // "미끄러짐 없는 구름": 이동 거리 d만큼 표면이 d/radius 라디안 회전한다.
   // 화면은 2D이므로 회전을 두 갈래로 들고 painter/셰이더가 표면 단서를 돈다:
@@ -159,7 +168,7 @@ class EmotionBall {
   // v18: "길게 누를수록 골이 더 깊어지게" — 0.45s에 최대로 꽉 차던 것을 1.4s로 늘려
   // 오래 누르고 있을수록 점점 깊이 파이게 한다(곡선도 _holdDepthFor에서 꾸준히 깊어지는
   // x^0.7로 교체). 복원은 기존처럼 0.62s 쫀득 통통.
-  static const double _holdInDur = 0.6;
+  static const double _holdInDur = 0.5; // v20: 0.6→0.5, 누르면 더 빠릿하게 침몰(반응성↑)
   static const double _releaseDur = 0.62;
 
   static double _radiusFor(Rect b) => (b.shortestSide * 0.22).clamp(64.0, 150.0);
@@ -190,6 +199,7 @@ class EmotionBall {
   /// `Offset(0, -1)`). 이후 떼기 전까지 [update]가 깊이를 0.45s에 걸쳐 0→1로
   /// 차올린다. painter는 [pressDepth]/[pressDir]만 읽어 본체 변형으로 표현한다.
   void pressStart(Offset localPos) {
+    _glideTarget = null; // 공을 누르면 빈 공간 당김 취소
     final toCenter = pos - localPos;
     final d = toCenter.distance;
     // 정중앙이면 영벡터 회피 — 위에서 누른 느낌으로 위쪽(-y)을 기본 축.
@@ -263,6 +273,10 @@ class EmotionBall {
 
   /// painter가 읽는 현재 침몰 깊이(0~1). 0=평소, 1=최대 침몰.
   double get pressDepth => _curDepth;
+
+  /// 떼는 순간 "뽁" 팝의 부풂 세기(0~1). 복원 오버슈트로 _curDepth가 음수가 된 구간의
+  /// 크기. painter/셰이더가 전역 swell(공이 통통 부풀었다 돌아옴)로 그린다(v20 §3, ⓐ).
+  double get pressPop => (-_curDepth).clamp(0.0, 1.0);
 
   /// 덴트 축(누른 지점 → 중심 정규화). painter 본체 변형 방향.
   Offset get pressDir => _pressDir;
@@ -440,6 +454,7 @@ class EmotionBall {
   ///   builder는 pending에서 `grab(pos, ease:0.3)`, roll 커밋 후 `grab(pos)`를 부른다.
   void grab(Offset target, {double ease = 1.0}) {
     grabbed = true;
+    _glideTarget = null; // 공을 직접 잡으면 빈 공간 당김 취소
     final e = ease.clamp(0.0, 1.0);
     final clamped = Offset(
       target.dx.clamp(bounds.left + radius, bounds.right - radius),
@@ -483,6 +498,17 @@ class EmotionBall {
     grabbed = false;
   }
 
+  /// 빈 공간을 터치/드래그한 [target]으로 공을 탄성으로 당겨온다(순간이동 대신, v20 §2).
+  /// [update]가 매 프레임 목표로 ease하며 진행 방향으로 늘어나고, 닿으면 멈춘다.
+  /// 목표는 본체가 화면 안에 머물도록 clamp한다.
+  void glideTo(Offset target) {
+    _glideTarget = Offset(
+      target.dx.clamp(bounds.left + radius, bounds.right - radius),
+      target.dy.clamp(bounds.top + radius, bounds.bottom - radius),
+    );
+    grabbed = false; // glide가 위치를 몰므로 물리 적분/grab과 배타
+  }
+
   /// 의식 완료 후 홈 복귀 시 공을 화면 중앙·정지 상태로 되돌린다.
   /// (굴리다 만 위치/속도를 리셋. 잔여 변형(squash 등)은 update에서 자연 감쇠.)
   void recenter() {
@@ -499,6 +525,7 @@ class EmotionBall {
     _stretchAmount = 0;
     _stretchAngle = 0;
     _stretchReleaseT = -1;
+    _glideTarget = null; // 빈 공간 당김도 취소
   }
 
   /// 제자리 쓰다듬기(GST-04). [step]은 직전 프레임 대비 손가락 이동량,
@@ -573,6 +600,10 @@ class EmotionBall {
       // 오버슈트(_curDepth가 0 아래로) → 본체가 평상보다 더 부풀었다 돌아오는
       // "쫀득 통통". painter가 음수 pressDepth를 부풂(역방향 squash)으로 해석한다.
       _curDepth = _releaseDepth * (1 - _springBack(t));
+      // v20 §3(ⓐ): 떼는 순간 "뽁" 팝 강화 — 오버슈트(음수=부풂) 구간을 1.7배 증폭해
+      // 본체가 더 통통 튀어 오르게 한다(누르기 인터랙션 보강, 사용자 피드백). 침몰(양수)은
+      // 그대로 두고 부풂만 키운다. painter/셰이더는 pressPop으로 이 부풂을 전역 swell로 그린다.
+      if (_curDepth < 0) _curDepth *= 1.7;
       if (t >= 1.0) {
         _curDepth = 0;
         _releaseT = -1;
@@ -612,6 +643,30 @@ class EmotionBall {
         _stretchAmount = 0;
         _stretchAngle = 0; // 항등 복귀(셰이더 회전 잔상 방지)
         _stretchReleaseT = -1;
+      }
+    }
+
+    // ── 빈 공간 당김(glide-to, v20 §2) ──
+    // 목표가 있으면 매 프레임 ease로 당겨오며 진행 방향으로 늘어난다(찹쌀떡). 닿으면 멈춤.
+    // grab/누르기/일반 물리보다 우선해 위치를 직접 몬다(닿으면 _glideTarget=null로 해제).
+    if (_glideTarget != null) {
+      final tgt = _glideTarget!;
+      final to = tgt - pos;
+      final dist = to.distance;
+      if (dist < 1.5) {
+        pos = tgt;
+        vel = Offset.zero;
+        _glideTarget = null;
+      } else {
+        final k = (14.0 * dt).clamp(0.0, 0.9); // dt 보정 ease(빠르게 당겼다 부드럽게 안착)
+        final step = to * k;
+        squash = min(0.45, dist / radius * 0.6); // 진행 방향으로 늘어남
+        squashDir = to / dist;
+        _applyRoll(step); // 당겨오며 표면도 구르듯
+        _bumpWobble(min(0.3, dist / radius));
+        pos += step;
+        vel = Offset.zero;
+        return; // glide 중엔 일반 물리(중력/마찰/충돌) 스킵
       }
     }
 
