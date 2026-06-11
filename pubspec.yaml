@@ -1,7 +1,7 @@
 name: emotion_resolution_app
 description: "감정을 흘려보내며 해소하는 앱 (Emotion Resolution App)"
 publish_to: "none"
-version: 0.1.1+2
+version: 0.1.2+3
 
 environment:
   # Color.withValues / 최신 위젯 API 사용 → Flutter 3.27+ (Dart 3.6+)
@@ -22,9 +22,22 @@ dependencies:
   vibration: ^3.1.8
 
 dev_dependencies:
+  flutter_launcher_icons: ^0.14.4
   flutter_lints: ^4.0.0
   flutter_test:
     sdk: flutter
+
+# 앱 런처 아이콘 생성 설정(감정 말랑이 — 핑크 젤리 공 / sky 배경).
+# 소스 변경 후 `dart run flutter_launcher_icons`로 각 밀도·적응형 아이콘을 재생성한다.
+flutter_launcher_icons:
+  image_path: "assets/icon/app_icon.png" # 레거시/iOS(풀블리드)
+  android: true
+  ios: true
+  remove_alpha_ios: true
+  min_sdk_android: 23
+  # 적응형 아이콘(Android 8+): 배경 그라데이션 + 공(전경)
+  adaptive_icon_background: "assets/icon/app_icon_bg.png"
+  adaptive_icon_foreground: "assets/icon/app_icon_fg.png"
 
 flutter:
   uses-material-design: true
