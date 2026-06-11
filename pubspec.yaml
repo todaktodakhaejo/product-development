@@ -1,7 +1,7 @@
 name: emotion_resolution_app
 description: "감정을 흘려보내며 해소하는 앱 (Emotion Resolution App)"
 publish_to: "none"
-version: 0.1.0+1
+version: 0.1.1+2
 
 environment:
   # Color.withValues / 최신 위젯 API 사용 → Flutter 3.27+ (Dart 3.6+)
@@ -19,6 +19,7 @@ dependencies:
   audioplayers: ^6.1.0
   # 제품 분석 (PostHog). 감정 글 '내용'은 전송하지 않음 — docs/ANALYTICS.md 참고.
   posthog_flutter: ^5.24.0
+  vibration: ^3.1.8
 
 dev_dependencies:
   flutter_lints: ^4.0.0

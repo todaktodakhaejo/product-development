@@ -1,4 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 햅틱(진동) — 실제 Vibrator를 세기 지정해 구동(haptics.dart). 내장
+         HapticFeedback은 시스템 설정에 묶여 약하거나 안 울리는 기기가 많아 추가. -->
+    <uses-permission android:name="android.permission.VIBRATE"/>
     <application
         android:label="emotion_resolution_app"
         android:name="${applicationName}"
