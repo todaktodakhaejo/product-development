@@ -31,8 +31,18 @@ class RitualAudio {
   // 하늘 앰비언트 더블버퍼(끊김 없는 루프 — 두 플레이어를 크로스페이드).
   final AudioPlayer _skyA = AudioPlayer(playerId: 'ritual_sky_a');
   final AudioPlayer _skyB = AudioPlayer(playerId: 'ritual_sky_b');
-  // 폭죽 원샷 2보이스 라운드로빈(빠른 연속 팡팡이 서로 끊지 않도록).
-  bool _fwToggle = false;
+  // 폭죽 원샷 보이스 풀(채널 스틸링 방지) — 피날레는 3초간 폭죽음을 빠르게 여러 번
+  // 호출하는데 2보이스로는 앞 소리가 잘렸다(사용자 피드백 2026-06-09) → 6보이스
+  // 라운드로빈으로 동시 폭죽이 서로 안 끊기게 한다(게임엔진 멀티채널과 동일 효과).
+  final List<AudioPlayer> _fireworkPool = [
+    AudioPlayer(playerId: 'firework_0'),
+    AudioPlayer(playerId: 'firework_1'),
+    AudioPlayer(playerId: 'firework_2'),
+    AudioPlayer(playerId: 'firework_3'),
+    AudioPlayer(playerId: 'firework_4'),
+    AudioPlayer(playerId: 'firework_5'),
+  ];
+  int _fwIdx = 0;
   // 오브제(공) 스퀴시·릴리스 round-robin 풀(빠른 연속 터치가 서로 안 끊기게).
   final List<AudioPlayer> _objetPool = [
     AudioPlayer(playerId: 'objet_0'),
@@ -150,11 +160,11 @@ class RitualAudio {
   Future<void> stopShred() => _safe(() => _loop.stop());
 
   /// 폭죽 — firework.mp3 원샷(volume 0.85). 폭죽이 터지는 매 타이밍마다 호출.
-  /// 2보이스 라운드로빈으로 빠른 연속('팡팡')이 서로 끊기지 않게 한다.
+  /// 6보이스 풀 라운드로빈으로 빠른 연속('팡팡')이 서로 끊기지 않게 한다(채널 스틸링 방지).
+  /// 다음 보이스를 stop() 없이 그대로 재생해(직전 보이스의 잔향을 끊지 않음) 겹쳐 울린다.
   Future<void> firework() => _safe(() async {
-        _fwToggle = !_fwToggle;
-        final p = _fwToggle ? _shotA : _shotB;
-        await p.stop();
+        final p = _fireworkPool[_fwIdx];
+        _fwIdx = (_fwIdx + 1) % _fireworkPool.length;
         await p.setReleaseMode(ReleaseMode.release);
         await p.play(AssetSource('audio/firework.mp3'), volume: 0.85);
       });
@@ -415,6 +425,9 @@ class RitualAudio {
           await p.stop();
         }
         for (final p in _typePool) {
+          await p.stop();
+        }
+        for (final p in _fireworkPool) {
           await p.stop();
         }
         _rubOn = false;

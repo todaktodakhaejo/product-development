@@ -29,6 +29,8 @@ uniform float uRoll;
 uniform float uStretchAng;   // 24
 uniform float uStretchAlong; // 25
 uniform float uStretchCross; // 26
+// 27: 누르기 떼는 순간 "뽁" 팝(0~1). 본체 반지름을 잠깐 키워 통통 부풀었다 돌아온다.
+uniform float uPressPop;
 
 out vec4 fragColor;
 
@@ -58,7 +60,8 @@ void main() {
   //  아래 "손가락 자리 국소 함몰 + 둘레 rim"으로 국소화한다.)
   float ang = atan(p.y, p.x);
   float wob = 0.020 * sin(ang * 3.0 + uTime) + 0.012 * sin(ang * 2.0 - uTime * 0.7);
-  float r = uRadius * uBreathe * (1.0 + wob);
+  // uPressPop: 떼는 순간 전역으로 살짝 부풀어 "뽁" 통통(누르기 인터랙션 보강).
+  float r = uRadius * uBreathe * (1.0 + wob) * (1.0 + uPressPop * 0.6);
 
   float dist = length(p);
   float edge = smoothstep(r, r - 2.0, dist); // 1 안, 0 밖, 2px AA

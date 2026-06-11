@@ -74,7 +74,9 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
   late final Ticker _ticker;
   // 전소 후 화면 전체 눈 흩날림 + 화르륵 강화(불티/스파크 폭증)를 위해 cap 상향(420).
   // 합리적 상한으로 폭증해도 _cap()이 가장 오래된 입자부터 정리(프레임 예산 보호).
-  final _field = ParticleField(maxParticles: 420);
+  // v20 §4(perf): 420 → 300. 화면 전체 눈/불티 밀도는 유지하되 프레임당 파티클 그리기
+  // 부담을 낮춰 불꽃 blur와 겹치는 피크 프레임의 드롭을 완화한다.
+  final _field = ParticleField(maxParticles: 300);
   final _repaint = ValueNotifier(0);
   Duration _last = Duration.zero;
 
@@ -527,12 +529,15 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
                     Positioned.fromRect(
                       rect: _paperRect,
                       child: IgnorePointer(
-                        child: _BurningPaper(
-                          text: text,
-                          size: _paperSize,
-                          burn: _burn,
-                          burning: _phase == _Phase.burning,
-                          clock: _clock,
+                        // v20 §4(perf): 종이(마스크/char) 레이어 격리.
+                        child: RepaintBoundary(
+                          child: _BurningPaper(
+                            text: text,
+                            size: _paperSize,
+                            burn: _burn,
+                            burning: _phase == _Phase.burning,
+                            clock: _clock,
+                          ),
                         ),
                       ),
                     ),
@@ -540,8 +545,12 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
                   // ── 불티·흰재 파티클 ──
                   Positioned.fill(
                     child: IgnorePointer(
-                      child: CustomPaint(
-                          painter: ParticlePainter(_field, _repaint)),
+                      // v20 §4(perf): 파티클 레이어를 별도 레이어로 격리 — 불꽃/종이
+                      // 재빌드 시 함께 재래스터되지 않게(합성 비용↓).
+                      child: RepaintBoundary(
+                        child: CustomPaint(
+                            painter: ParticlePainter(_field, _repaint)),
+                      ),
                     ),
                   ),
 
@@ -573,13 +582,16 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
                         onVerticalDragUpdate: _onDrag,
                         onVerticalDragEnd: _onDragEnd,
                         behavior: HitTestBehavior.opaque,
-                        child: CustomPaint(
-                          painter: FlamePainter(
-                            clock: () => _clock,
-                            engulfOf: () => _flameEngulf,
-                            wallOf: () => wall,
-                            progressOf: () => _burn,
-                            repaint: _repaint,
+                        // v20 §4(perf): 불꽃(다수 blur) 레이어 격리.
+                        child: RepaintBoundary(
+                          child: CustomPaint(
+                            painter: FlamePainter(
+                              clock: () => _clock,
+                              engulfOf: () => _flameEngulf,
+                              wallOf: () => wall,
+                              progressOf: () => _burn,
+                              repaint: _repaint,
+                            ),
                           ),
                         ),
                       ),
@@ -872,7 +884,10 @@ class FlamePainter extends CustomPainter {
   // 혀 개수↑(10→16)로 빈틈 없이 빽빽한 불의 벽. 혀 키 대폭 상향(84~158 →
   // 90~240, 진행도 비례)으로 맹렬히 치솟는 화력. 진행도(burn)는 paint에서 받아
   // 혀 높이·flicker 속도·글로우를 정점까지 끌어올린다.
-  static const int _tongueCount = 19; // 가로로 배열되는 큰 혀 수(넓어진 폭에 밀도 유지).
+  // v20 §4(perf): 혀마다 MaskFilter.blur가 1회씩 들어가 19개는 프레임당 blur가 과해
+  // 드롭을 유발했다 → 13으로 줄여 GPU 비용을 ~30% 절감(밀도는 여전히 충분히 활활).
+  static const int _tongueCount = 13; // 가로로 배열되는 큰 혀 수
+
   static const double _tongueMinH = 120; // 혀 최소 높이(화력↑).
   static const double _tongueMaxH = 300; // 혀 최대 높이(활활·정점, 화력↑).
 
@@ -971,7 +986,7 @@ class FlamePainter extends CustomPainter {
     final heatH = 150 + 130 * p;
     final heatRect = Rect.fromLTWH(-30, bottom - heatH, w + 60, heatH);
     final heatPaint = Paint()
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 40)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 30) // v20 §4: 40→30(perf)
       ..blendMode = BlendMode.plus
       ..shader = RadialGradient(
         center: const Alignment(0, 0.85),
@@ -990,7 +1005,7 @@ class FlamePainter extends CustomPainter {
     final bandH = (110 + 26 * sin(t * 6.0 * fr)) * (0.8 + 0.2 * p);
     final bandRect = Rect.fromLTWH(-6, bottom - bandH, w + 12, bandH + 10);
     final bandPaint = Paint()
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 18)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 14) // v20 §4: 18→14(perf)
       ..blendMode = BlendMode.plus
       ..shader = const LinearGradient(
         begin: Alignment.bottomCenter,
