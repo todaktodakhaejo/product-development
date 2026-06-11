@@ -31,6 +31,16 @@ import 'sky_background.dart';
 /// 쓰는 상태머신(none→stroke|roll)으로 모드를 판별한다([_onPointerMove] 참고, v6).
 /// 느리면 stroke(공 제자리), 빠르거나(speed>kRollSpeed) 멀리(net>r*kRollNet) 끌면 roll.
 /// 커밋된 stroke는 net 탈출 없이 빠른 플릭(speed>kStrokeEscape)으로만 roll 전환(v8 §1-A).
+/// 한국어 멘트가 단어(어절) 중간에서 줄바꿈되는 걸 막는다(keep-all).
+///
+/// Flutter 기본 줄바꿈은 한글을 글자 단위로 끊을 수 있어 "오셨네요"가 "오셨/네요"로
+/// 쪼개진다. 각 어절(공백 구분) 내부 글자 사이에 WORD JOINER(U+2060, break 금지)를
+/// 넣어, 줄바꿈이 **어절 사이 공백에서만** 일어나게 한다(어절은 짧아 넘침 없음).
+String _keepAll(String s) {
+  const wj = '⁠'; // WORD JOINER — 이 위치 줄바꿈 금지
+  return s.split(' ').map((w) => w.split('').join(wj)).join(' ');
+}
+
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -896,7 +906,7 @@ class _HomeScreenState extends State<HomeScreen>
                             child: ConstrainedBox(
                               constraints: const BoxConstraints(maxWidth: 320),
                               child: Text(
-                                msgLine1,
+                                _keepAll(msgLine1), // 어절 단위 줄바꿈(단어 안 쪼개짐)
                                 textAlign: TextAlign.center,
                                 style: TextStyle(
                                   fontSize: 24,
@@ -921,7 +931,7 @@ class _HomeScreenState extends State<HomeScreen>
                                   constraints:
                                       const BoxConstraints(maxWidth: 300),
                                   child: Text(
-                                    secondLine,
+                                    _keepAll(secondLine), // 어절 단위 줄바꿈
                                     textAlign: TextAlign.center,
                                     style: TextStyle(
                                       fontSize: 14,
