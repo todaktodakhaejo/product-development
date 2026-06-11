@@ -22,13 +22,18 @@ class RitualAudio {
   RitualAudio._();
   static final RitualAudio instance = RitualAudio._();
 
-  // 루프 채널(fire/shred — 의식 간 동시 재생 없음) + 원샷 2채널.
-  final AudioPlayer _loop = AudioPlayer(playerId: 'ritual_loop');
-  // _loop 수동 반복 상태: 이 기기에서 mp3를 ReleaseMode.loop로 재생하면 첫 재생부터
-  // 무음이 되는 버그(2026-06-12 실기기, fire/shred 무음)를 회피한다. release 모드로
-  // 재생하고 onPlayerComplete에서 손수 다시 이어 "수동 루프"를 만든다(폭죽이 release
-  // mp3로 정상 재생되는 검증된 경로와 동일 — loop 모드만 피하면 소리가 난다).
-  String? _loopAsset; // 현재 반복 중인 에셋 경로(null이면 정지)
+  // 의식 루프(fire/shred) 전용 보이스 풀.
+  // 기존 단일 `_loop` 인스턴스(playerId 'ritual_loop')가 실기기에서 무음이었다
+  // (2026-06-12: release 모드로 바꿔도 `_loop`만 무음, 폭죽/ember는 정상 → 인스턴스
+  // 문제). → 폭죽이 정상 재생되는 것과 동일하게, 새 전용 보이스에 release 원샷으로
+  // 재생한다. fire.mp3(~2.5분)·shred.mp3(~4초)는 의식 길이를 한 번 재생으로 덮으며,
+  // 혹시 짧으면 onPlayerComplete에서 다른 보이스로 이어 끊김 없이 지속한다.
+  final List<AudioPlayer> _ritualLoopPool = [
+    AudioPlayer(playerId: 'ritual_loop_a'),
+    AudioPlayer(playerId: 'ritual_loop_b'),
+  ];
+  int _rlIdx = 0;
+  String? _loopAsset; // 현재 재생 중인 에셋 경로(null이면 정지)
   double _loopVol = 1.0;
   StreamSubscription<void>? _loopCompleteSub;
   final AudioPlayer _shotA = AudioPlayer(playerId: 'ritual_shot_a');
@@ -135,26 +140,35 @@ class RitualAudio {
   }
 
   // _loop을 release 모드로 재생하고 클립이 끝나면 손수 다시 이어 "수동 루프"를 만든다.
-  // ReleaseMode.loop가 일부 기기에서 mp3를 무음 처리하는 문제 회피(fire/shred 무음 수정).
+  // 폭죽이 정상 재생되는 것과 동일한 경로(새 전용 보이스 + release 원샷)로 fire/shred를
+  // 재생한다. 같은 보이스를 재생하면 무음이 될 수 있어, 클립이 끝나면(짧은 음원) 다음
+  // 보이스로 번갈아 이어 의식 동안 끊김 없이 지속한다.
   Future<void> _startLoopManual(String asset, double volume) => _safe(() async {
         _loopAsset = asset;
         _loopVol = volume;
-        await _loop.stop();
-        await _loop.setReleaseMode(ReleaseMode.release); // loop 모드 미사용(무음 버그 회피)
-        await _loop.setVolume(volume);
-        await _loop.play(AssetSource(asset), volume: volume);
-        _loopCompleteSub?.cancel();
-        _loopCompleteSub = _loop.onPlayerComplete.listen((_) {
-          final a = _loopAsset;
-          if (a != null) _loop.play(AssetSource(a), volume: _loopVol);
-        });
+        await _playRitualLoopVoice();
       });
+
+  Future<void> _playRitualLoopVoice() async {
+    final a = _loopAsset;
+    if (a == null) return;
+    final p = _ritualLoopPool[_rlIdx];
+    _rlIdx = (_rlIdx + 1) % _ritualLoopPool.length;
+    await p.setReleaseMode(ReleaseMode.release);
+    await p.play(AssetSource(a), volume: _loopVol);
+    _loopCompleteSub?.cancel();
+    _loopCompleteSub = p.onPlayerComplete.listen((_) {
+      if (_loopAsset != null) _playRitualLoopVoice(); // 다음 보이스로 이어붙임
+    });
+  }
 
   Future<void> _stopLoopManual() => _safe(() async {
         _loopAsset = null;
         _loopCompleteSub?.cancel();
         _loopCompleteSub = null;
-        await _loop.stop();
+        for (final p in _ritualLoopPool) {
+          await p.stop();
+        }
       });
 
   // ── 태우기 ───────────────────────────────────────────────────────────────
@@ -435,10 +449,12 @@ class RitualAudio {
         _skySwap?.cancel();
         _skyXfade?.cancel();
         _skyFadeIn?.cancel();
-        _loopAsset = null; // 수동 루프 정지(재이음 방지)
+        _loopAsset = null; // 의식 루프 정지(재이음 방지)
         _loopCompleteSub?.cancel();
         _loopCompleteSub = null;
-        await _loop.stop();
+        for (final p in _ritualLoopPool) {
+          await p.stop();
+        }
         await _shotA.stop();
         await _shotB.stop();
         await _emberLoop.stop();
