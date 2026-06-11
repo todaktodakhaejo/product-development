@@ -26,11 +26,33 @@ android {
         versionName = flutter.versionName
     }
 
+    // 릴리스 서명(테스터 사이드로딩 배포용). CI(GitHub Actions)가 환경변수로
+    // 키스토어(PKCS12)를 주입하면 그 키로 서명하고, 없으면 debug로 폴백한다 —
+    // 키 없는 로컬/기여자도 빌드 가능. 일정한 키로 서명해야 테스터가 재설치 없이
+    // 버전 업데이트를 덮어쓸 수 있다(키스토어/비밀번호는 절대 커밋 금지, Secrets로만).
+    val releaseKeystorePath: String? = System.getenv("ANDROID_KEYSTORE_PATH")
+    val hasReleaseSigning = releaseKeystorePath != null && file(releaseKeystorePath).exists()
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(releaseKeystorePath!!)
+                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("ANDROID_KEY_ALIAS")
+                keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+                storeType = "PKCS12"
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (hasReleaseSigning) {
+                signingConfigs.getByName("release")
+            } else {
+                // 키 미주입 시 debug 서명으로 폴백(`flutter run --release` 등 로컬).
+                signingConfigs.getByName("debug")
+            }
         }
     }
 }
