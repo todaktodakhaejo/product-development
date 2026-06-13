@@ -74,11 +74,9 @@ const double _kGlyphSize = 200; // 접힌 다트 표시 크기(종이와 시각 
 /// 약투 무시 임계(당긴 거리 px). 이하면 발사 안 함 → 스프링으로 제자리 복귀.
 const double _kDrawMin = 46;
 /// 세기 정규화 분모(이 거리만큼 당기면 최대 세기). drawDist - min 기준.
-/// 화면 끝까지 당길 수 있게 넓혀(230→400) 멀리 당길수록 세기·거리·효과음이 커진다.
-const double _kDrawSpan = 400;
-/// draw-back 시각 이동 상한(비행기가 손가락 따라 내려가는 최대 px).
-/// 사용자 요청: 화면 거의 끝까지 당길 수 있게 150→480으로 크게 확대.
-const double _kDrawVisualMax = 480;
+const double _kDrawSpan = 230;
+/// draw-back 시각 이동 상한(비행기가 손가락 따라 내려가는 최대 px). 화면 밖 방지.
+const double _kDrawVisualMax = 150;
 /// draw 벡터의 보조 혼합용 던지기 속도 정규화 분모(놓는 손짓 속도 가미).
 const double _kFlickSpan = 2600;
 /// 발사 기본 상향 바이어스(거의 수직으로 당겨도 위 하늘로 솟게). 0~1.
@@ -250,7 +248,6 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     _recoil.stop(); // 이전 약투 복귀 스프링이 돌고 있으면 중단(잡는 순간 재장전).
     _drawOffset = Offset.zero; // 새 장전 시작점.
     _pulling = true; // 조준 오버레이 게이트(떨림 없음).
-    RitualAudio.instance.planePullStart(); // 당김 지속음(드론) 시작.
     setState(() {});
     Haptics.instance.fire(HapticLevel.selection); // 잡는 순간 미세한 신호.
   }
@@ -280,19 +277,13 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
       Haptics.instance
           .fire(_pullTotal < 110 ? HapticLevel.selection : HapticLevel.light);
     }
-    // 당김 지속음(드론): 끊김 없이 이어지는 "우웅~"의 음정·볼륨을 당김 세기에 맞춰
-    //  매 프레임 연속 조절(세게↗ / 덜 세게↓). 톡톡 끊김 없음.
-    final power =
-        ((_drawOffset.distance - _kDrawMin) / _kDrawSpan).clamp(0.0, 1.0);
-    RitualAudio.instance.planePullUpdate(power);
     setState(() {}); // draw-back 이동 갱신.
   }
 
-  // 당김 종료(놓음/취소): 당기는 중 플래그 해제 + 당김 지속음(드론) 페이드아웃 정지.
+  // 당김 종료(놓음/취소): 당기는 중 플래그 해제(떨림 제거됨).
   void _stopPulling() {
     if (!_pulling) return;
     _pulling = false;
-    RitualAudio.instance.planePullStop();
   }
 
   // 드래그 취소(시스템이 제스처를 가로챔 등) — 흔들림 정리 + 제자리로 복귀.
@@ -1605,7 +1596,7 @@ class _StarBurstPainter extends CustomPainter {
 // ════════════════════════════════════════════════════════════════════════
 // 슬링샷 조준 미리보기(프로토타입 Plane.tsx의 aim 화살표 + Gauge 이식).
 //   - [origin]에서 [dir](발사 방향)으로 뻗는 화살표(세기 비례 길이 + 화살촉).
-//   - 화면 우측 가장자리에 '세로' 파워 게이지(아래→위 차오름, 프로토타입 Gauge 톤).
+//   - 하단 중앙에 파워 게이지(당긴 세기 0~1).
 //   색: 프로토타입 슬링샷 톤(#5b8fd6 → #aee0e8)으로 세기에 따라 보간.
 // ════════════════════════════════════════════════════════════════════════
 class _AimPainter extends CustomPainter {
@@ -1652,45 +1643,18 @@ class _AimPainter extends CustomPainter {
       );
     }
 
-    // ── 오른쪽 세로 파워 게이지(프로토타입 Gauge: 우측 가장자리, 아래→위 차오름) ──
-    const barW = 10.0;
-    final x = size.width - 22 - barW;
-    final trackTop = size.height * 0.20;
-    final trackBottom = size.height * 0.82;
-    final trackH = trackBottom - trackTop;
-    final trackRR = RRect.fromRectAndRadius(
-        Rect.fromLTWH(x, trackTop, barW, trackH), const Radius.circular(barW / 2));
-    // 트랙: 어두운 반투명 + 흰 인셋 테두리(프로토타입 톤).
-    canvas.drawRRect(trackRR, Paint()..color = const Color(0x59141017));
-    canvas.drawRRect(
-      trackRR,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.2
-        ..color = Colors.white.withValues(alpha: 0.45),
-    );
-    // 채움(아래→위, 세기 비례) + 글로우. 그라데이션 아래(_lo)→위(_hi).
-    final fillH = trackH * p;
-    if (fillH > 0.6) {
-      final fillRect = Rect.fromLTWH(x, trackBottom - fillH, barW, fillH);
-      final fillRR =
-          RRect.fromRectAndRadius(fillRect, const Radius.circular(barW / 2));
-      canvas.drawRRect(
-        fillRR,
-        Paint()
-          ..color = _hi.withValues(alpha: 0.5)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8),
-      ); // 글로우.
-      canvas.drawRRect(
-        fillRR,
-        Paint()
-          ..shader = const LinearGradient(
-            begin: Alignment.bottomCenter,
-            end: Alignment.topCenter,
-            colors: [_lo, _hi],
-          ).createShader(fillRect),
-      );
-    }
+    // ── 하단 파워 게이지(당긴 세기 0~1) ──
+    const barW = 168.0;
+    const barH = 7.0;
+    final left = (size.width - barW) / 2;
+    final top = size.height - 96;
+    final bg = RRect.fromRectAndRadius(
+        Rect.fromLTWH(left, top, barW, barH), const Radius.circular(barH / 2));
+    canvas.drawRRect(bg, Paint()..color = Colors.white.withValues(alpha: 0.18));
+    final fill = RRect.fromRectAndRadius(
+        Rect.fromLTWH(left, top, barW * p, barH),
+        const Radius.circular(barH / 2));
+    canvas.drawRRect(fill, Paint()..color = color.withValues(alpha: 0.95));
   }
 
   @override

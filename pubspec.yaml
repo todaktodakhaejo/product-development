@@ -1,7 +1,7 @@
 name: emotion_resolution_app
 description: "감정을 흘려보내며 해소하는 앱 (Emotion Resolution App)"
 publish_to: "none"
-version: 0.1.7+8
+version: 0.1.8+9
 
 environment:
   # Color.withValues / 최신 위젯 API 사용 → Flutter 3.27+ (Dart 3.6+)
@@ -75,8 +75,6 @@ flutter:
     - assets/audio/mochi_3.wav
     # 문지르기 연속 루프(부드러운 soft rub, 끊김 없음).
     - assets/audio/rub.wav
-    # 종이비행기 당김(슬링샷) 지속음(드론) — 끊김 없는 "우웅~", 재생 중 음정 실시간 변조.
-    - assets/audio/pull_drone.wav
     # 글쓰기 — 타이핑 5슬라이스.
     - assets/audio/type_0.wav
     - assets/audio/type_1.wav
