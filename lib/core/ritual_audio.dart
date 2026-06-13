@@ -238,9 +238,10 @@ class RitualAudio {
         final player = _pullPool[_pullIdx];
         _pullIdx = (_pullIdx + 1) % _pullPool.length;
         await player.setReleaseMode(ReleaseMode.release);
+        // 더 크게(0.8~1.0) + 음정 변화 폭을 넓혀(0.78~1.95) 게이지 따라 또렷이 상승.
         await player.play(AssetSource('audio/pull_tension.wav'),
-            volume: 0.42 + v * 0.5);
-        await player.setPlaybackRate(0.9 + v * 0.75); // 세게 당길수록 음↑
+            volume: 0.8 + v * 0.2);
+        await player.setPlaybackRate(0.78 + v * 1.17); // 세게 당길수록 음↑(체감 ↑)
       });
 
   /// '하늘 두둥실' 포근한 앰비언트 — 두 플레이어 크로스페이드 더블버퍼로 끊김 없이

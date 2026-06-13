@@ -74,10 +74,11 @@ const double _kGlyphSize = 200; // 접힌 다트 표시 크기(종이와 시각 
 /// 약투 무시 임계(당긴 거리 px). 이하면 발사 안 함 → 스프링으로 제자리 복귀.
 const double _kDrawMin = 46;
 /// 세기 정규화 분모(이 거리만큼 당기면 최대 세기). drawDist - min 기준.
-/// 시각 상한(480)보다 작게 둬서 끝까지 당기기 전에 게이지·화살표·소리가 100%에 도달한다.
-const double _kDrawSpan = 400;
-/// draw-back 시각 이동 상한(비행기가 손가락 따라 내려가는 최대 px). 화면 바깥쪽까지 당김.
-const double _kDrawVisualMax = 480;
+/// 시각 상한보다 작게 둬서, 비행기가 화면 아래쯤 닿을 즈음 게이지·화살표·소리가 100%에 도달.
+const double _kDrawSpan = 280;
+/// draw-back 시각 이동 상한(비행기가 손가락 따라 내려가는 최대 px). 화면 바깥으로 완전히
+/// 빠지지 않게 바닥 부근에서 멈춘다(게이지는 그 전에 이미 꽉 참).
+const double _kDrawVisualMax = 370;
 /// draw 벡터의 보조 혼합용 던지기 속도 정규화 분모(놓는 손짓 속도 가미).
 const double _kFlickSpan = 2600;
 /// 발사 기본 상향 바이어스(거의 수직으로 당겨도 위 하늘로 솟게). 0~1.
