@@ -1,7 +1,7 @@
 name: emotion_resolution_app
 description: "감정을 흘려보내며 해소하는 앱 (Emotion Resolution App)"
 publish_to: "none"
-version: 0.1.8+9
+version: 0.1.9+10
 
 environment:
   # Color.withValues / 최신 위젯 API 사용 → Flutter 3.27+ (Dart 3.6+)
@@ -52,6 +52,8 @@ flutter:
     - assets/audio/paper.mp3
     - assets/audio/jewel_intake.wav
     - assets/audio/jewel_keep.wav
+    # 종이비행기 당김 — '도도도' 긴장 틱(상승 글라이드 톤, 합성 생성).
+    - assets/audio/pull_tension.wav
     # 종이비행기 발사 — 바람 가로지르는 whoosh(합성 생성).
     - assets/audio/whoosh.wav
     # 종이비행기 done — '하늘 두둥실' 포근한 앰비언트 루프(합성 생성).

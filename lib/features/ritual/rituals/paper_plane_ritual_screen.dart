@@ -147,6 +147,7 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
   // 당기는 동안 '긴장감' 피드백 누적(folded에서 드래그 시). 끌수록 틱이 촘촘·세짐.
   double _pullAccum = 0; // 마지막 틱 이후 끈 거리(틱 간격 판정).
   double _pullTotal = 0; // 총 끈 거리(긴장 강도 판정).
+  double _pullSoundAccum = 0; // 마지막 '도도도' 틱 이후 끈 거리(소리 간격 판정).
   // 당기는 중 플래그(folded 드래그 동안 true). 흔들림 Transform 게이트.
   bool _pulling = false;
 
@@ -245,6 +246,7 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     if (_phase != _Phase.folded) return;
     _pullAccum = 0;
     _pullTotal = 0;
+    _pullSoundAccum = 0;
     _recoil.stop(); // 이전 약투 복귀 스프링이 돌고 있으면 중단(잡는 순간 재장전).
     _drawOffset = Offset.zero; // 새 장전 시작점.
     _pulling = true; // 조준 오버레이 게이트(떨림 없음).
@@ -276,6 +278,14 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
       // 약한 긴장감: 초반 selection(아주 미세) → 더 당기면 light로 살짝 세짐.
       Haptics.instance
           .fire(_pullTotal < 110 ? HapticLevel.selection : HapticLevel.light);
+    }
+    // '도도도' 긴장 틱: ~30px마다 한 번, 당김 세기(0~1)에 따라 음정·음량 상승.
+    _pullSoundAccum += step;
+    if (_pullSoundAccum >= 30) {
+      _pullSoundAccum = 0;
+      final pw =
+          ((_drawOffset.distance - _kDrawMin) / _kDrawSpan).clamp(0.0, 1.0);
+      RitualAudio.instance.planePullTension(pw);
     }
     setState(() {}); // draw-back 이동 갱신.
   }
@@ -1596,7 +1606,7 @@ class _StarBurstPainter extends CustomPainter {
 // ════════════════════════════════════════════════════════════════════════
 // 슬링샷 조준 미리보기(프로토타입 Plane.tsx의 aim 화살표 + Gauge 이식).
 //   - [origin]에서 [dir](발사 방향)으로 뻗는 화살표(세기 비례 길이 + 화살촉).
-//   - 하단 중앙에 파워 게이지(당긴 세기 0~1).
+//   - 오른쪽에 세로 파워 게이지(당긴 세기 0~1, 아래→위로 차오름).
 //   색: 프로토타입 슬링샷 톤(#5b8fd6 → #aee0e8)으로 세기에 따라 보간.
 // ════════════════════════════════════════════════════════════════════════
 class _AimPainter extends CustomPainter {
@@ -1643,18 +1653,44 @@ class _AimPainter extends CustomPainter {
       );
     }
 
-    // ── 하단 파워 게이지(당긴 세기 0~1) ──
-    const barW = 168.0;
-    const barH = 7.0;
-    final left = (size.width - barW) / 2;
-    final top = size.height - 96;
-    final bg = RRect.fromRectAndRadius(
-        Rect.fromLTWH(left, top, barW, barH), const Radius.circular(barH / 2));
-    canvas.drawRRect(bg, Paint()..color = Colors.white.withValues(alpha: 0.18));
-    final fill = RRect.fromRectAndRadius(
-        Rect.fromLTWH(left, top, barW * p, barH),
-        const Radius.circular(barH / 2));
-    canvas.drawRRect(fill, Paint()..color = color.withValues(alpha: 0.95));
+    // ── 오른쪽 세로 파워 게이지(당긴 세기 0~1) — 프로토타입 Gauge.tsx 톤 ──
+    //   아래→위로 차오르고, 강할수록 색이 밝아지며 글로우가 번진다.
+    const gw = 10.0;
+    final gRight = size.width - 22;
+    final gLeft = gRight - gw;
+    const gTop = 92.0;
+    final gBottom = size.height - 116;
+    final gh = gBottom - gTop;
+    final track = RRect.fromRectAndRadius(
+        Rect.fromLTWH(gLeft, gTop, gw, gh), const Radius.circular(gw / 2));
+    canvas.drawRRect(track, Paint()..color = Colors.black.withValues(alpha: 0.32));
+    canvas.drawRRect(
+        track,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1
+          ..color = Colors.white.withValues(alpha: 0.45));
+    if (p > 0.01) {
+      final fh = gh * p;
+      final fillRect = Rect.fromLTWH(gLeft, gBottom - fh, gw, fh);
+      final fill =
+          RRect.fromRectAndRadius(fillRect, const Radius.circular(gw / 2));
+      // 글로우(번짐).
+      canvas.drawRRect(
+          fill,
+          Paint()
+            ..color = color.withValues(alpha: 0.55)
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6));
+      // 차오르는 채움(아래 약색 → 위 강색).
+      canvas.drawRRect(
+          fill,
+          Paint()
+            ..shader = LinearGradient(
+              begin: Alignment.bottomCenter,
+              end: Alignment.topCenter,
+              colors: [_lo, color],
+            ).createShader(fillRect));
+    }
   }
 
   @override

@@ -38,6 +38,13 @@ class RitualAudio {
   StreamSubscription<void>? _loopCompleteSub;
   final AudioPlayer _shotA = AudioPlayer(playerId: 'ritual_shot_a');
   final AudioPlayer _shotB = AudioPlayer(playerId: 'ritual_shot_b');
+  // 종이비행기 당김 '도도도' 긴장 틱 — 당김 거리마다 짧은 톤. 세게 당길수록 음↑·소리↑.
+  // 빠른 연속 틱이 서로 안 끊기게 2보이스 라운드로빈 + playbackRate로 음정 변조.
+  final List<AudioPlayer> _pullPool = [
+    AudioPlayer(playerId: 'plane_pull_0'),
+    AudioPlayer(playerId: 'plane_pull_1'),
+  ];
+  int _pullIdx = 0;
   // 잔불 타닥타닥(단순 루프 — crackle은 경계가 조용해 갭이 안 들림).
   final AudioPlayer _emberLoop = AudioPlayer(playerId: 'ritual_ember');
   // 하늘 앰비언트 더블버퍼(끊김 없는 루프 — 두 플레이어를 크로스페이드).
@@ -223,6 +230,18 @@ class RitualAudio {
 
   /// 일회성 채널(접기·발사음) 즉시 정지. 접기 완료~발사 전 무음 구간 보장에 사용.
   Future<void> stopShot() => _safe(() => _shotA.stop());
+
+  /// 당김 '도도도' 긴장 틱 — 비행기를 당기는 동안 일정 거리마다 호출(슬링샷 장전 긴장감).
+  /// 당김 세기 p(0~1)가 클수록 음정(playbackRate)·음량을 올려 "도→도↗→도↗" 빌드업.
+  Future<void> planePullTension(double p) => _safe(() async {
+        final v = p.clamp(0.0, 1.0);
+        final player = _pullPool[_pullIdx];
+        _pullIdx = (_pullIdx + 1) % _pullPool.length;
+        await player.setReleaseMode(ReleaseMode.release);
+        await player.play(AssetSource('audio/pull_tension.wav'),
+            volume: 0.42 + v * 0.5);
+        await player.setPlaybackRate(0.9 + v * 0.75); // 세게 당길수록 음↑
+      });
 
   /// '하늘 두둥실' 포근한 앰비언트 — 두 플레이어 크로스페이드 더블버퍼로 끊김 없이
   /// 무한 루프. 비행음(whoosh)이 끝나는 즈음 호출하면 볼륨 0→0.5 페이드인(그라데이션)
@@ -457,6 +476,9 @@ class RitualAudio {
         }
         await _shotA.stop();
         await _shotB.stop();
+        for (final p in _pullPool) {
+          await p.stop();
+        }
         await _emberLoop.stop();
         await _skyA.stop();
         await _skyB.stop();
