@@ -66,6 +66,9 @@ class _HomeScreenState extends State<HomeScreen>
 
   // 센서: 흔들기(GST-01)용 선형 가속도(중력 제거) 1개만 구독.
   StreamSubscription? _accelSub;
+  // 의식/글쓰기 화면이 홈 위에 떠 있는 동안 true — 그 사이 홈 흔들기를 끈다
+  // (의식 중 폰을 흔들어도 홈 말랑이가 움직이지 않게, 화면 독립 — #1 후속).
+  bool _navAway = false;
   // armed 게이트 제거(§1): 연속 흔들기에서 가속도가 임계 아래로 안 떨어져
   // 재발동이 막히던 문제 → 쿨다운(90ms)만으로 게이팅한다.
   DateTime _lastShake = DateTime.fromMillisecondsSinceEpoch(0);
@@ -811,11 +814,21 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   void _goToWriting() {
+    // 의식/글쓰기 동안 홈 흔들기 비활성화(#1 후속): 의식 중 폰을 흔들어도 홈
+    // 말랑이가 움직이지 않게 한다. 복귀 시 다시 구독한다(아래 .then).
+    _navAway = true;
+    _accelSub?.cancel();
+    _accelSub = null;
     // 복귀 시(글쓰기 취소/뒤로) 홈을 멘트 화면으로 복원(§6 보강). 카운트 증가는
     // 의식 완료 감지(_onSessionChanged)에서만 일어나므로 여기선 UI만 초기화.
     Navigator.of(context)
         .push(MaterialPageRoute(builder: (_) => const WritingScreen()))
-        .then((_) => _restoreHomeInitial());
+        .then((_) {
+      if (!mounted) return;
+      _navAway = false;
+      _restoreHomeInitial();
+      if (_accelSub == null) _listenSensors(); // 홈 복귀 → 흔들기 재구독
+    });
   }
 
   /// #1 백그라운드 진입 시 흔들기 가속도 센서 구독을 끊어, 앱을 꺼도 폰을 흔들면
@@ -832,7 +845,8 @@ class _HomeScreenState extends State<HomeScreen>
       _shakeEndTimer?.cancel();
       RitualAudio.instance.stopRub(); // 문지르기 루프가 떠 있으면 정지
     } else if (state == AppLifecycleState.resumed) {
-      if (_accelSub == null) _listenSensors(); // 흔들기 센서 재구독
+      // 홈이 최상위일 때만 재구독(의식/글쓰기 중 복귀면 _navAway=true라 건너뜀 — #1 후속).
+      if (_accelSub == null && !_navAway) _listenSensors();
     }
   }
 

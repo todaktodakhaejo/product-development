@@ -46,14 +46,13 @@ class _EmotionResolutionAppState extends State<EmotionResolutionApp>
         state == AppLifecycleState.hidden ||
         state == AppLifecycleState.detached) {
       widget.analytics.endSession();
-      // 정지를 먼저 수행한 뒤(stopAll은 내부 suspend 게이트에 걸리기 전에 실행),
-      // 이후 새 재생을 막도록 suspend 플래그를 세운다.
-      RitualAudio.instance.stopAll();
-      RitualAudio.instance.setSuspended(true);
+      // 돌던 지속 루프(잔불·하늘 등)를 기억해 두고 모든 소리를 멈춘 뒤 재생을 막는다.
+      RitualAudio.instance.suspendForBackground();
       Haptics.instance.setSuspended(true);
     } else if (state == AppLifecycleState.resumed) {
-      RitualAudio.instance.setSuspended(false);
       Haptics.instance.setSuspended(false);
+      // 백그라운드 직전 돌던 지속 사운드(잔불 타닥·하늘 두둥실)를 다시 재생한다(#1 후속).
+      RitualAudio.instance.resumeFromBackground();
       widget.analytics.sessionStarted();
     }
   }

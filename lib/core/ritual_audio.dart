@@ -114,12 +114,28 @@ class RitualAudio {
   bool _booted = false;
 
   // 앱이 백그라운드면 true — 새 재생을 막는다(앱 종료 후 소리 잔존 방지 — #1).
-  // 생명주기 훅에서 stopAll() 직후 true로 세팅하므로 정지 자체는 먼저 수행된다.
   bool _suspended = false;
 
-  /// 앱 생명주기 훅에서 호출. true면 이후 모든 재생을 무시(백그라운드 무음),
-  /// false면 다시 재생 허용. 정지는 호출측이 stopAll()로 먼저 수행한다.
-  void setSuspended(bool value) => _suspended = value;
+  // 현재 돌고 있는 '지속 루프'를 다시 시작하는 함수(백그라운드 복귀 시 복원용 — #1 후속).
+  // 잔불 타닥(ember)·하늘 두둥실(sky)·연소(fire)·분쇄(shred)가 시작될 때 세팅되고,
+  // 각 정지/stopAll에서 비워진다. 복귀하면 이 함수를 다시 호출해 끊긴 소리를 되살린다.
+  Future<void> Function()? _activeLoopStarter;
+  Future<void> Function()? _pendingResume; // 백그라운드 진입 시점에 기억한 복원 함수
+
+  /// 백그라운드 진입: 지속 루프를 기억해 두고 모든 소리를 멈춘 뒤 새 재생을 막는다(#1).
+  Future<void> suspendForBackground() async {
+    _pendingResume = _activeLoopStarter; // 복귀 시 되살릴 지속 루프 기억
+    await stopAll(); // 실제 정지(아직 _suspended=false라 정상 동작)
+    _suspended = true; // 이후 새 재생 차단
+  }
+
+  /// 포그라운드 복귀: 재생을 다시 허용하고, 백그라운드 직전 돌던 지속 루프를 복원한다(#1).
+  Future<void> resumeFromBackground() async {
+    _suspended = false;
+    final resume = _pendingResume;
+    _pendingResume = null;
+    if (resume != null) await resume();
+  }
 
   /// iOS 무음 스위치와 무관하게 효과음이 들리도록 playback 컨텍스트로 1회 설정.
   Future<void> _boot() async {
@@ -179,6 +195,7 @@ class RitualAudio {
   }
 
   Future<void> _stopLoopManual() => _safe(() async {
+        _activeLoopStarter = null; // 지속 루프 종료 — 복원 대상 해제(#1 후속)
         _loopAsset = null;
         _loopCompleteSub?.cancel();
         _loopCompleteSub = null;
@@ -189,25 +206,37 @@ class RitualAudio {
 
   // ── 태우기 ───────────────────────────────────────────────────────────────
   /// 연소 시작 — fire.mp3 루프(volume 1.0). release+수동 반복(loop 모드 무음 버그 회피).
-  Future<void> startFire() => _startLoopManual('audio/fire.mp3', 1.0);
+  Future<void> startFire() {
+    _activeLoopStarter = startFire; // 백그라운드 복귀 복원용(#1 후속)
+    return _startLoopManual('audio/fire.mp3', 1.0);
+  }
 
   /// 연소 종료(전소) — fire 루프 정지.
   Future<void> stopFire() => _stopLoopManual();
 
   /// 전소 후 잔불 타닥타닥 여운 — crackle.wav 루프(volume 0.7).
-  Future<void> startEmberCrackle() => _safe(() async {
-        await _emberLoop.stop();
-        await _emberLoop.setReleaseMode(ReleaseMode.loop);
-        await _emberLoop.setVolume(0.7);
-        await _emberLoop.play(AssetSource('audio/crackle.wav'), volume: 0.7);
-      });
+  Future<void> startEmberCrackle() {
+    _activeLoopStarter = startEmberCrackle; // 백그라운드 복귀 복원용(#1 후속)
+    return _safe(() async {
+      await _emberLoop.stop();
+      await _emberLoop.setReleaseMode(ReleaseMode.loop);
+      await _emberLoop.setVolume(0.7);
+      await _emberLoop.play(AssetSource('audio/crackle.wav'), volume: 0.7);
+    });
+  }
 
   /// 잔불 여운 정지.
-  Future<void> stopEmberCrackle() => _safe(() => _emberLoop.stop());
+  Future<void> stopEmberCrackle() {
+    _activeLoopStarter = null; // 지속 루프 종료 — 복원 대상 해제(#1 후속)
+    return _safe(() => _emberLoop.stop());
+  }
 
   // ── 파쇄기 ───────────────────────────────────────────────────────────────
   /// 분쇄 시작 — shred.mp3 루프(volume 1.0). release+수동 반복(loop 모드 무음 버그 회피).
-  Future<void> startShred() => _startLoopManual('audio/shred.mp3', 1.0);
+  Future<void> startShred() {
+    _activeLoopStarter = startShred; // 백그라운드 복귀 복원용(#1 후속)
+    return _startLoopManual('audio/shred.mp3', 1.0);
+  }
 
   /// 분쇄 종료 — shred 루프 정지.
   Future<void> stopShred() => _stopLoopManual();
@@ -256,7 +285,9 @@ class RitualAudio {
   /// '하늘 두둥실' 포근한 앰비언트 — 두 플레이어 크로스페이드 더블버퍼로 끊김 없이
   /// 무한 루프. 비행음(whoosh)이 끝나는 즈음 호출하면 볼륨 0→0.5 페이드인(그라데이션)
   /// 으로 자연스럽게 이어진다. 이미 돌고 있으면(중복 호출) 무시한다.
-  Future<void> startSky() => _safe(() async {
+  Future<void> startSky() {
+    _activeLoopStarter = startSky; // 백그라운드 복귀 복원용(#1 후속)
+    return _safe(() async {
         if (_skyRunning) return;
         _skyRunning = true;
         _skyUseA = true;
@@ -269,11 +300,15 @@ class RitualAudio {
             const Duration(milliseconds: 1400), (t) => _skyFadeIn = t);
         _scheduleSkySwap();
       });
+  }
 
   /// 하늘 앰비언트 정지('처음으로' 탭 등) — 타이머·두 플레이어 모두 정리.
   Future<void> stopSky() => _safe(_stopSkyInternal);
 
   Future<void> _stopSkyInternal() async {
+    if (identical(_activeLoopStarter, startSky)) {
+      _activeLoopStarter = null; // 하늘 루프 종료 — 복원 대상 해제(#1 후속)
+    }
     _skyRunning = false;
     _skySwap?.cancel();
     _skyXfade?.cancel();
@@ -474,6 +509,7 @@ class RitualAudio {
 
   /// 화면 dispose 시 호출 — 잔여 루프/원샷/앰비언트 모두 정지(다음 의식으로 안 샘).
   Future<void> stopAll() => _safe(() async {
+        _activeLoopStarter = null; // 모든 지속 루프 종료 — 복원 대상 해제(#1 후속)
         _skyRunning = false;
         _skySwap?.cancel();
         _skyXfade?.cancel();
