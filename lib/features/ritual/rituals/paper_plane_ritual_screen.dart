@@ -74,9 +74,10 @@ const double _kGlyphSize = 200; // 접힌 다트 표시 크기(종이와 시각 
 /// 약투 무시 임계(당긴 거리 px). 이하면 발사 안 함 → 스프링으로 제자리 복귀.
 const double _kDrawMin = 46;
 /// 세기 정규화 분모(이 거리만큼 당기면 최대 세기). drawDist - min 기준.
-const double _kDrawSpan = 230;
-/// draw-back 시각 이동 상한(비행기가 손가락 따라 내려가는 최대 px). 화면 밖 방지.
-const double _kDrawVisualMax = 150;
+/// 시각 상한(480)보다 작게 둬서 끝까지 당기기 전에 게이지·화살표·소리가 100%에 도달한다.
+const double _kDrawSpan = 400;
+/// draw-back 시각 이동 상한(비행기가 손가락 따라 내려가는 최대 px). 화면 바깥쪽까지 당김.
+const double _kDrawVisualMax = 480;
 /// draw 벡터의 보조 혼합용 던지기 속도 정규화 분모(놓는 손짓 속도 가미).
 const double _kFlickSpan = 2600;
 /// 발사 기본 상향 바이어스(거의 수직으로 당겨도 위 하늘로 솟게). 0~1.
@@ -279,12 +280,14 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
       Haptics.instance
           .fire(_pullTotal < 110 ? HapticLevel.selection : HapticLevel.light);
     }
-    // '도도도' 긴장 틱: ~30px마다 한 번, 당김 세기(0~1)에 따라 음정·음량 상승.
+    // '도도도' 긴장 틱: 당김 세기(0~1)에 따라 음정·음량이 오르고, 세게 당길수록
+    //  틱 간격이 좁아져(34→18px) 더 촘촘하게 — 게이지가 차오르는 것과 함께 빌드업.
     _pullSoundAccum += step;
-    if (_pullSoundAccum >= 30) {
+    final pw =
+        ((_drawOffset.distance - _kDrawMin) / _kDrawSpan).clamp(0.0, 1.0);
+    final soundGate = 34.0 - pw * 16.0;
+    if (_pullSoundAccum >= soundGate) {
       _pullSoundAccum = 0;
-      final pw =
-          ((_drawOffset.distance - _kDrawMin) / _kDrawSpan).clamp(0.0, 1.0);
       RitualAudio.instance.planePullTension(pw);
     }
     setState(() {}); // draw-back 이동 갱신.
@@ -1626,7 +1629,7 @@ class _AimPainter extends CustomPainter {
 
     // ── 조준 화살표(세기>0일 때) ──
     if (p > 0.02) {
-      final len = 44 + p * 130;
+      final len = 40 + p * 240; // 세게 당길수록 화살표가 시원하게 길어진다.
       final tip = origin + dir * len;
       canvas.drawLine(
         origin,
