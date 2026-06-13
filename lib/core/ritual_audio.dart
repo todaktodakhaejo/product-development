@@ -73,6 +73,14 @@ class RitualAudio {
   ];
   int _chewyIdx = 0;
   DateTime _chewyLast = DateTime.fromMillisecondsSinceEpoch(0);
+  // 종이비행기 당김(슬링샷) 지속음(드론) — 끊김 없는 "우웅~" 한 음. 재생 중
+  //  setPlaybackRate/setVolume을 당김 세기에 맞춰 연속 조절해 음정·크기가 실시간으로
+  //  오르내린다(우웅↗/우웅↓). start/update/stop 3메서드로 제어(톡톡 끊김 없음).
+  final AudioPlayer _pullDrone = AudioPlayer(playerId: 'pull_drone');
+  bool _pullDroneOn = false;
+  double _pullDroneVol = 0; // 직전 볼륨(정지 페이드 시작값).
+  DateTime _pullDroneParamLast = DateTime.fromMillisecondsSinceEpoch(0);
+  Timer? _pullDroneFade;
   // 문지르기 연속 루프(끊김 없는 부드러운 rub) — 별도 채널 + 페이드 인/아웃.
   final AudioPlayer _rub = AudioPlayer(playerId: 'objet_rub');
   bool _rubOn = false;
@@ -349,6 +357,58 @@ class RitualAudio {
     });
   }
 
+  /// 당김 시작 — 지속음(드론) 재생 시작(볼륨 0에서, planePullUpdate로 차오름).
+  Future<void> planePullStart() => _safe(() async {
+        _pullDroneFade?.cancel();
+        _pullDroneOn = true;
+        _pullDroneVol = 0;
+        await _pullDrone.stop();
+        await _pullDrone.setReleaseMode(ReleaseMode.release);
+        await _pullDrone.setVolume(0);
+        await _pullDrone.play(AssetSource('audio/pull_drone.wav'), volume: 0);
+      });
+
+  /// 당김 갱신 — 당김 세기 [power](0~1)에 맞춰 음정(피치)·볼륨을 **연속** 조절.
+  ///  세게 당길수록 음↑·크게, 덜 당기면 음↓·작게(우웅↗/우웅↓). ~30ms throttle.
+  Future<void> planePullUpdate(double power) {
+    if (!_pullDroneOn) return Future.value();
+    final now = DateTime.now();
+    if (now.difference(_pullDroneParamLast).inMilliseconds < 30) {
+      return Future.value();
+    }
+    _pullDroneParamLast = now;
+    final p = power.clamp(0.0, 1.0);
+    // 음정: 게이지가 차오를수록(당길수록) 점점 올라간다. 기본 300Hz × 0.85~2.1배
+    //  ≈ 255~630Hz로, 낮은 당김→높은 당김에서 음이 또렷이 상승한다.
+    final rate = 0.85 + p * 1.25;
+    _pullDroneVol = (0.34 + p * 0.5).clamp(0.0, 1.0); // 볼륨: 당길수록 ↑.
+    return _safe(() async {
+      await _pullDrone.setPlaybackRate(rate);
+      await _pullDrone.setVolume(_pullDroneVol);
+    });
+  }
+
+  /// 당김 종료(발사/취소) — 드론을 짧게(~90ms) 페이드아웃 후 정지(뚝 끊김 방지).
+  Future<void> planePullStop() => _safe(() async {
+        if (!_pullDroneOn) return;
+        _pullDroneOn = false;
+        _pullDroneFade?.cancel();
+        final start = _pullDroneVol;
+        const stepMs = 30;
+        const steps = 3;
+        var i = 0;
+        _pullDroneFade =
+            Timer.periodic(const Duration(milliseconds: stepMs), (t) {
+          i++;
+          final v = start * (1 - i / steps);
+          _pullDrone.setVolume(v < 0 ? 0 : v);
+          if (i >= steps) {
+            t.cancel();
+            _pullDrone.stop();
+          }
+        });
+      });
+
   /// 공에서 손 뗄 때 — squelch 슬라이스 random 재생(round-robin).
   Future<void> objetSquelch({double gain = 1.0}) => _safe(() async {
         final p = _objetPool[_objetIdx];
@@ -466,6 +526,9 @@ class RitualAudio {
         for (final p in _chewyPool) {
           await p.stop();
         }
+        _pullDroneOn = false;
+        _pullDroneFade?.cancel();
+        await _pullDrone.stop();
         for (final p in _typePool) {
           await p.stop();
         }

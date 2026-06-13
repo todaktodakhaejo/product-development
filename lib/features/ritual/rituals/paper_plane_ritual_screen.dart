@@ -21,9 +21,12 @@ enum _Phase { idle, folding, folded, flying, done }
 /// 살짝 길게 잡아 각 "탁" 눌림이 또렷이 읽히게 한다.
 const Duration _kFoldDuration = Duration(milliseconds: 1900);
 
-/// 비행 글라이드 길이(또렷한 궤적을 그리며 먼 하늘로 후퇴 — 최소 3.8초 보장).
-/// 길게 잡아 궤적이 충분히 펼쳐지고, 막판 원근 축소가 '머얼리' 사라지게 한다.
-const Duration _kFlyDuration = Duration(milliseconds: 4000);
+/// 비행 글라이드 길이(프로토타입 톤: 화면 안 한 점까지 '슝' 빠르게 날아가 별이 된다).
+/// 4초→1.05초로 단축(테스터 피드백: 느리면 늘어짐). 막판 원근 축소 없이 또렷이 착지.
+const Duration _kFlyDuration = Duration(milliseconds: 1050);
+
+/// 착지점에서 '별이 되어' 반짝이는 연출 길이(프로토타입 Star ≈ 1.8s).
+const Duration _kStarDuration = Duration(milliseconds: 1800);
 
 // (기하 모핑: 사각 종이 외곽 path가 progress로 레퍼런스 4단계 순서를 따라
 //  글라이더 외곽 path까지 연속 보간된다. crossfade 팝 제거 — progress=1에서
@@ -71,9 +74,11 @@ const double _kGlyphSize = 200; // 접힌 다트 표시 크기(종이와 시각 
 /// 약투 무시 임계(당긴 거리 px). 이하면 발사 안 함 → 스프링으로 제자리 복귀.
 const double _kDrawMin = 46;
 /// 세기 정규화 분모(이 거리만큼 당기면 최대 세기). drawDist - min 기준.
-const double _kDrawSpan = 230;
-/// draw-back 시각 이동 상한(비행기가 손가락 따라 내려가는 최대 px). 화면 밖 방지.
-const double _kDrawVisualMax = 150;
+/// 화면 끝까지 당길 수 있게 넓혀(230→400) 멀리 당길수록 세기·거리·효과음이 커진다.
+const double _kDrawSpan = 400;
+/// draw-back 시각 이동 상한(비행기가 손가락 따라 내려가는 최대 px).
+/// 사용자 요청: 화면 거의 끝까지 당길 수 있게 150→480으로 크게 확대.
+const double _kDrawVisualMax = 480;
 /// draw 벡터의 보조 혼합용 던지기 속도 정규화 분모(놓는 손짓 속도 가미).
 const double _kFlickSpan = 2600;
 /// 발사 기본 상향 바이어스(거의 수직으로 당겨도 위 하늘로 솟게). 0~1.
@@ -103,9 +108,7 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
   late final AnimationController _fly;
   // 구름 흩어짐 컨트롤러(done 진입 후 0→1, 잔향 구름이 옅어지며 흩어짐). bounded.
   late final AnimationController _cloudFade;
-  // 흔들림 위상 컨트롤러(0→1을 빠르게 반복 = sin 떨림 위상). bounded(repeat).
-  //  드래그(당기는) 동안에만 repeat, 놓으면 stop+reset. unbounded 미사용.
-  late final AnimationController _wobble;
+  // (떨림 컨트롤러 제거 — 사용자 요청으로 당김 중 덜덜 떨림 없앰.)
   // 약투(거의 안 당김) 시 draw-back 위치 → 제자리로 튕겨 돌아가는 스프링. bounded.
   //  0→1로 elasticOut 진행하며 _drawOffset를 시작값에서 0으로 보간(_recoilFrom).
   late final AnimationController _recoil;
@@ -114,14 +117,17 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
   // done 하늘 씬: 구름 패럴랙스 흐름 + 두둥실 드리프트 위상(0→1 느린 repeat reverse).
   //  bounded controller에 repeat(reverse:true) — unbounded()..repeat() 아님.
   late final AnimationController _skyDrift;
+  // 착지점 '별이 됨' 반짝(프로토타입 Star). done 진입 시 forward(0→1). bounded.
+  late final AnimationController _star;
   // 하늘 구름 결정적 시드(재현성). 비행 경로 구름과 다른 시드로 별도 배치.
   static const int _skyCloudSeed = 20260602;
   // 구름 퍼프 결정적 시드(재현성).
   static const int _cloudSeed = 20260601;
   // 천천히 멀어지는 느낌(easeInOutSine): 부드럽게 출발해 일정히 나아가며
   //  후반에 급정거 없이 먼 하늘로 빠져나간다(easeOutCubic처럼 막판 정지하지 않음).
+  // 프로토타입 톤: 발사 순간 '확' 솟구쳤다 착지점에서 부드럽게 멎는 빠른 cubic.
   late final Animation<double> _flyCurve =
-      CurvedAnimation(parent: _fly, curve: Curves.easeInOutSine);
+      CurvedAnimation(parent: _fly, curve: const Cubic(0.16, 0.85, 0.3, 1.0));
 
   // 접기 크리스 햅틱 fired-set 가드(playTimeline 대신 직접 fire).
   final Set<int> _firedCrease = {};
@@ -152,6 +158,8 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
   Offset _drawOffset = Offset.zero;
   // 약투 복귀 스프링이 시작될 때의 draw 위치(elasticOut으로 0까지 보간).
   Offset _recoilFrom = Offset.zero;
+  // 발사 시작점(= 당겨졌던 위치). 비행은 중앙이 아니라 여기서 그 방향으로 솟는다.
+  Offset _launchFrom = Offset.zero;
 
   // 인플레이스 완료 토글.
   bool _showMessage = false;
@@ -168,12 +176,6 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     // 잔향 구름 흩어짐: done 진입 후 천천히(완료 멘트와 겹치지 않게 은은히).
     _cloudFade =
         AnimationController(vsync: this, duration: const Duration(seconds: 3));
-    // 흔들림 위상: 짧은 주기(120ms)로 0→1 반복 = 빠른 떨림. 값은 sin 위상으로만 사용.
-    //  bounded controller에 repeat() — unbounded()..repeat() 아님.
-    _wobble = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 120),
-    );
     // 약투 복귀 스프링: 짧고 탄성있게 제자리로(elasticOut으로 살짝 오버슈트).
     _recoil = AnimationController(
       vsync: this,
@@ -184,6 +186,8 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     // 두둥실 드리프트: 아주 느린 0→1 왕복(상하 부유 + 구름 흐름 위상).
     //  done 진입 시 repeat(reverse:true) 시작 → dispose에서 정지.
     _skyDrift = AnimationController(vsync: this, duration: _kSkyDrift);
+    // 착지점 별 반짝: done 진입 시 forward(0→1).
+    _star = AnimationController(vsync: this, duration: _kStarDuration);
   }
 
   // 약투 복귀: _recoilFrom → 0으로 elasticOut 보간(살짝 튕기며 제자리).
@@ -245,10 +249,9 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     _pullTotal = 0;
     _recoil.stop(); // 이전 약투 복귀 스프링이 돌고 있으면 중단(잡는 순간 재장전).
     _drawOffset = Offset.zero; // 새 장전 시작점.
-    // 잡는 순간부터 다트가 흔들흔들(활시위 긴장). bounded controller repeat.
-    _pulling = true;
-    _wobble.repeat(); // 0→1 짧은 주기 반복 = sin 떨림 위상.
-    setState(() {}); // _buildObject folded 분기가 흔들림 Transform을 그리도록.
+    _pulling = true; // 조준 오버레이 게이트(떨림 없음).
+    RitualAudio.instance.planePullStart(); // 당김 지속음(드론) 시작.
+    setState(() {});
     Haptics.instance.fire(HapticLevel.selection); // 잡는 순간 미세한 신호.
   }
 
@@ -277,21 +280,25 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
       Haptics.instance
           .fire(_pullTotal < 110 ? HapticLevel.selection : HapticLevel.light);
     }
-    setState(() {}); // draw-back 이동 + 긴장 진폭을 매 프레임 갱신.
+    // 당김 지속음(드론): 끊김 없이 이어지는 "우웅~"의 음정·볼륨을 당김 세기에 맞춰
+    //  매 프레임 연속 조절(세게↗ / 덜 세게↓). 톡톡 끊김 없음.
+    final power =
+        ((_drawOffset.distance - _kDrawMin) / _kDrawSpan).clamp(0.0, 1.0);
+    RitualAudio.instance.planePullUpdate(power);
+    setState(() {}); // draw-back 이동 갱신.
   }
 
-  // 흔들림 종료(놓음/취소): repeat 정지 + 위상 리셋. 손을 떼면 더는 떨지 않음.
-  void _stopWobble() {
+  // 당김 종료(놓음/취소): 당기는 중 플래그 해제 + 당김 지속음(드론) 페이드아웃 정지.
+  void _stopPulling() {
     if (!_pulling) return;
     _pulling = false;
-    _wobble.stop();
-    _wobble.value = 0; // 다음 당김을 위해 위상 리셋(잔류 떨림 0).
+    RitualAudio.instance.planePullStop();
   }
 
   // 드래그 취소(시스템이 제스처를 가로챔 등) — 흔들림 정리 + 제자리로 복귀.
   void _onPullCancel() {
     if (_phase != _Phase.folded) return;
-    _stopWobble();
+    _stopPulling();
     _springBack(); // 장전된 위치에서 제자리로 튕겨 복귀.
   }
 
@@ -310,7 +317,7 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
   void _throw(DragEndDetails d) {
     if (_phase != _Phase.folded) return;
     // 놓는 순간 흔들림 종료(장전 긴장 해제).
-    _stopWobble();
+    _stopPulling();
 
     final draw = _drawOffset; // 당겨진 벡터(주로 +dy).
     final drawDist = draw.distance;
@@ -352,6 +359,7 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     });
     // 발사 직후: 비행 동안 내내 도는 '진공' 연속 햅틱 시작(완료에 stop).
     _flightHandle = Haptics.instance.startFlightHum();
+    _launchFrom = _drawOffset; // 발사 시작점 = 당겨졌던 위치(여기서 그 방향으로 솟음).
     _drawOffset = Offset.zero; // 발사했으니 장전 위치 해제(비행 Transform이 인계).
     setState(() => _phase = _Phase.flying);
     _fly.forward(from: 0);
@@ -364,6 +372,8 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     _flightHandle?.stop();
     _flightHandle = null;
     setState(() => _phase = _Phase.done);
+    // 착지점에서 '별이 됨' 반짝(프로토타입 톤) — 비행기가 사라진 그 자리에 별이 핀다.
+    _star.forward(from: 0);
     // 비행기는 먼 하늘로 사라짐 — 경로에 피어난 잔향 구름을 천천히 흩어지게.
     _cloudFade.forward(from: 0);
     // ── done 하늘 씬 ──
@@ -419,13 +429,29 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
       ..removeStatusListener(_onFlyStatus)
       ..dispose();
     _cloudFade.dispose();
-    _wobble.dispose();
     _recoil
       ..removeListener(_onRecoilTick)
       ..dispose();
     _skyFade.dispose();
     _skyDrift.dispose();
+    _star.dispose();
     super.dispose();
+  }
+
+  // 조준 미리보기(슬링샷): 현재 당김(_drawOffset)으로부터 발사 방향·세기를 계산.
+  //  발사 방향 = 당김 반대 + 상향 바이어스(_throw와 동일 규칙), 세기 = 당김 거리 정규화.
+  ({Offset dir, double power}) _aimPreview() {
+    final draw = _drawOffset;
+    final dd = draw.distance;
+    if (dd < _kDrawMin) return (dir: const Offset(0, -1), power: 0);
+    var l = -draw / dd;
+    l = Offset(
+        l.dx * (1 - _kUpwardBias), l.dy * (1 - _kUpwardBias) - _kUpwardBias);
+    final m = l.distance;
+    return (
+      dir: m > 0 ? l / m : const Offset(0, -1),
+      power: ((dd - _kDrawMin) / _kDrawSpan).clamp(0.0, 1.0),
+    );
   }
 
   @override
@@ -449,14 +475,38 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
                   onPanCancel: _phase == _Phase.folded ? _onPullCancel : null,
                   behavior: HitTestBehavior.opaque,
                   child: AnimatedBuilder(
-                    // _wobble: folded 당김 중 떨림. _recoil: 약투 복귀 스프링.
-                    //  (둘 다 setState로도 갱신되나, 컨트롤러 tick과 동기 보장.)
-                    animation:
-                        Listenable.merge([_fold, _flyCurve, _wobble, _recoil]),
+                    // _recoil: 약투 복귀 스프링. 당김 중 위치는 setState로 갱신.
+                    animation: Listenable.merge([_fold, _flyCurve, _recoil]),
                     builder: (context, _) => _buildObject(context, text),
                   ),
                 ),
               ),
+
+              // ── 조준 미리보기(슬링샷): 당기는 동안 발사 방향 화살표 + 파워 게이지 ──
+              // 프로토타입처럼 당긴 반대(위 하늘)로 향하는 화살표가 세기만큼 길어지고,
+              // 하단에 파워 게이지가 차오른다. 어디로·얼마나 날아갈지 직관적으로 보인다.
+              if (_phase == _Phase.folded &&
+                  _pulling &&
+                  _drawOffset.distance >= _kDrawMin)
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: Builder(
+                      builder: (context) {
+                        final s = MediaQuery.of(context).size;
+                        final aim = _aimPreview();
+                        return CustomPaint(
+                          size: s,
+                          painter: _AimPainter(
+                            origin: Offset(s.width / 2, s.height / 2) +
+                                _drawOffset,
+                            dir: aim.dir,
+                            power: aim.power,
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ),
 
               // ── 구름 레이어(비행 경로 따라 그림책 뭉게구름이 점점이 피어남) ──
               // 비행기를 가리지 않고 경로 주변에 피어나며, 비행기는 그 사이를
@@ -477,6 +527,7 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
                             flySpeed: _flySpeed,
                             dissipate: _cloudFade.value, // done 후 흩어짐(0→1).
                             seed: _cloudSeed,
+                            launchFrom: _launchFrom,
                           ),
                         );
                       },
@@ -543,6 +594,32 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
                   ),
                 ),
               ),
+
+              // ── 착지점 '별이 됨' 반짝(프로토타입 Star: 12갈래 빛줄기 + 글로우 + 코어) ──
+              // 비행기가 화면 안 한 점에 착지하면 그 자리에서 별로 변신해 찬란히 반짝인다.
+              if (_phase == _Phase.done)
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: AnimatedBuilder(
+                      animation: _star,
+                      builder: (context, _) {
+                        final size = MediaQuery.of(context).size;
+                        final landing = Offset(
+                                size.width / 2, size.height / 2) +
+                            _flightOffset(size, _flyDir, _flySpeed, 1.0,
+                                from: _launchFrom);
+                        return CustomPaint(
+                          size: size,
+                          painter: _StarBurstPainter(
+                            t: _star.value,
+                            center: landing,
+                            glow: const Color(0xFFFFF3D6), // 따뜻한 백색 별빛.
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ),
 
               // ── 완료 멘트(인플레이스 페이드인) ──
               if (_phase == _Phase.done)
@@ -635,17 +712,17 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
   Widget _buildObject(BuildContext context, String text) {
     // 비행 변환(flying/done): 던진 방향으로 부드러운 곡선 궤적을 그리며 멀어지고,
     //  원근으로 작아져 먼 점이 되어 사라진다(중반 소멸 금지 — 또렷이 날아간다).
-    if (_phase == _Phase.flying || _phase == _Phase.done) {
+    // flying: 화면 안 한 점까지 또렷이 날아가 멎는다(프로토타입 톤). 멀리 후퇴/소멸
+    //  없이 착지점에서 살짝만 작아지고(원근 약하게), 막판에 별로 핸드오프되며 사라진다.
+    if (_phase == _Phase.flying) {
       final t = _flyCurve.value;
       final size = MediaQuery.of(context).size;
-      final offset = _flightOffset(size, _flyDir, _flySpeed, t);
-      // 원근 후퇴: 1→0.10까지, 후반 가속 축소(t²의 가중)로 '먼 하늘로' 빨려든다.
-      //  ease가 후반부에 더 깊이 줄어 멀어질수록 급격히 작아지는 원근감.
-      final shrink = t * (0.55 + t * 0.45); // 0→1, 후반 가속.
-      final scale = (1.0 - shrink * 0.90).clamp(0.10, 1.0);
-      // opacity는 막판(t>0.85)에만 서서히 0으로 — 중반엔 또렷이 보이며 날아간다.
-      final planeOpacity = (1.0 - ((t - 0.85) / 0.15).clamp(0.0, 1.0))
-          .clamp(0.0, 1.0);
+      final offset = _flightOffset(size, _flyDir, _flySpeed, t, from: _launchFrom);
+      // 착지점에서 1.0→0.72로만 살짝 작아짐(먼 점 소멸 아님 — 또렷이 착지).
+      final scale = 1.0 - t * 0.28;
+      // 거의 끝(t>0.9)에 빠르게 페이드 → 별이 그 자리에서 '뽁' 피어나며 인계.
+      final planeOpacity =
+          (1.0 - ((t - 0.9) / 0.1).clamp(0.0, 1.0)).clamp(0.0, 1.0);
       return Transform.translate(
         offset: offset,
         child: Transform.rotate(
@@ -660,6 +737,8 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
         ),
       );
     }
+    // done: 비행기는 사라지고 착지점에 별이 뜬다(아래 _StarBurst 오버레이가 그림).
+    if (_phase == _Phase.done) return const SizedBox.shrink();
 
     // idle: 흩날리는 텍스트 종이.
     if (_phase == _Phase.idle) {
@@ -674,25 +753,8 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
       // 당긴 거리(0~1, 시각 상한 기준). 장전 scale/tilt 강도.
       final loaded = (_drawOffset.distance / _kDrawVisualMax).clamp(0.0, 1.0);
 
-      // ── 떨림(활시위 긴장): 당기는 동안에만 ──
-      double wdx = 0, wdy = 0, wAngle = 0;
-      if (_pulling) {
-        // 위상: _wobble(0→1)을 2π로. 회전·translate는 살짝 다른 주파수/위상의
-        //  sin을 겹쳐 '단조롭지 않게 부르르' 떨리게 한다(paint-only, 레이아웃 무관).
-        final phase = _wobble.value * 2 * pi;
-        // 당긴 정도에 따라 진폭 증가(0→1, 더 당길수록 긴장 ↑). 상한 클램프.
-        final tension = (_pullTotal / 160).clamp(0.0, 1.0);
-        // 회전 ±2°~±4°(라디안). 기본 2° + 긴장 2°.
-        final angAmp = (2.0 + tension * 2.0) * pi / 180;
-        wAngle = sin(phase) * angAmp;
-        // 미세 translate ±2~3px(회전과 다른 위상/주파수로 떨림이 섞이게).
-        final tAmp = 2.0 + tension * 1.0; // 2~3px.
-        wdx = sin(phase * 1.7 + 0.6) * tAmp;
-        wdy = cos(phase * 1.3) * tAmp;
-      }
-
-      // 장전 위치 이동(_drawOffset) + 떨림 + 미세 scale(눌리는 장전감) + 뒤로 눕기.
-      //  뒤로 눕기: 당긴 반대(발사) 방향을 코가 살짝 향하도록 미세 회전(±5°).
+      // v2(사용자 요청): 당기는 동안 '덜덜 떨림' 제거 — 손가락 따라 깔끔하게 당겨졌다
+      //  놓으면 날아간다. 장전감은 미세 scale(압축) + 발사 방향으로 코 살짝 기울임만.
       final loadScale = 1.0 - loaded * 0.06; // 당길수록 살짝 작아짐(장전 압축).
       // 발사 방향(=당김 반대)으로 코를 살짝 기울임. 거의 수직 당김이면 0에 수렴.
       final tiltSign = _drawOffset.dx == 0 ? 0.0 : -_drawOffset.dx.sign;
@@ -700,9 +762,9 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
 
       if (_drawOffset == Offset.zero && !_pulling) return glyph;
       return Transform.translate(
-        offset: _drawOffset + Offset(wdx, wdy),
+        offset: _drawOffset,
         child: Transform.rotate(
-          angle: wAngle + loadTilt,
+          angle: loadTilt,
           child: Transform.scale(
             scale: loadScale,
             child: glyph,
@@ -1029,18 +1091,17 @@ class _FoldMorphPainter extends CustomPainter {
 //     동일 공식을 호출 → 화면 좌표(중앙+offset)가 두 레이어에서 일치.
 //   - dir: 진행 단위벡터, speed: 0~1(거리), t: 비행 진행(곡선 적용 후).
 // ════════════════════════════════════════════════════════════════════════
-Offset _flightOffset(Size size, Offset dir, double speed, double t) {
-  // 거리 상향: 화면을 가로질러 '멀리'(화면 밖) 후퇴 — 먼 점이 되어 사라지게.
-  final dist = size.longestSide * (1.0 + speed * 0.8);
-  final base = dir * dist * t;
-  // 고도감: 던진 직후 살짝 위로 솟았다(상승) 멀리 날아가는 완만한 포물선.
-  //  -sin(t·π)은 중반에 최고로 솟았다 가라앉는 대칭형이라 '솟구쳐 멀어짐'이
-  //  덜 보인다. 대신 초반에 빨리 솟고(상승) 천천히 잦아드는 비대칭 lift를 쓴다.
-  //  진행 방향에 수직(위쪽 성분이 큰)으로 살짝 띄워 부드러운 S 곡선 궤적을 만든다.
-  final lift = -sin(t * pi * 0.82) * (70 + speed * 30) * (1 - t * 0.35);
-  // 가로 일렁임(고도와 합쳐져 완만한 S): 느린 비행 동안 부드럽게, 말미로 잦아듦.
-  final sway = sin(t * pi * 1.3) * 26 * (1 - t);
-  // perp: 진행 방향에 수직(화면상 '위쪽' 쪽으로 lift를 얹기 위한 기준).
+Offset _flightOffset(Size size, Offset dir, double speed, double t,
+    {Offset from = Offset.zero}) {
+  // 프로토타입 톤: 화면 '밖'으로 후퇴가 아니라 화면 '안' 한 점까지 날아가 멎는다
+  //  (그 자리에서 별이 됨). 거리는 화면 안에 머물도록 짧게(세게 던질수록 조금 더).
+  final dist = size.shortestSide * (0.42 + speed * 0.20); // ≈ 화면폭의 0.42~0.62.
+  // 발사 시작점([from] = 당겨졌던 위치)에서 착지점(dir*dist)으로 보간 → 중앙이 아니라
+  //  당겼던 그 자리에서 그 방향으로 솟는다(사용자 요청).
+  final base = Offset.lerp(from, dir * dist, t)!;
+  // 비행이 짧아진 만큼 lift/sway도 작게 — 발사 직후 살짝 솟는 완만한 호.
+  final lift = -sin(t * pi * 0.82) * (34 + speed * 18) * (1 - t * 0.35);
+  final sway = sin(t * pi * 1.3) * 14 * (1 - t);
   final perp = Offset(-dir.dy, dir.dx);
   return base + Offset(sway, lift) + perp * (lift * 0.18);
 }
@@ -1066,6 +1127,7 @@ class _CloudFieldPainter extends CustomPainter {
     required this.flySpeed,
     required this.dissipate,
     required this.seed,
+    required this.launchFrom,
   });
 
   final double flyT; // 비행 진행(곡선 후).
@@ -1075,6 +1137,7 @@ class _CloudFieldPainter extends CustomPainter {
   final double flySpeed; // 0~1.
   final double dissipate; // done 후 흩어짐 0→1.
   final int seed;
+  final Offset launchFrom; // 발사 시작점(당겨졌던 위치) — 경로가 여기서 시작.
 
   // 경로 따라 피어나는 뭉게구름 덩이 수(occlusion 뱅크 제거 — 가리지 않음).
   //  슬링샷은 위 하늘로 일관되게 솟으므로 경로(위쪽)에 구름을 촘촘히 깔아
@@ -1090,7 +1153,7 @@ class _CloudFieldPainter extends CustomPainter {
 
   // 경로 위 한 점의 화면 좌표(비행기와 동일 공식).
   Offset _pathPoint(double t) =>
-      center + _flightOffset(screenSize, dir, flySpeed, t);
+      center + _flightOffset(screenSize, dir, flySpeed, t, from: launchFrom);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1430,4 +1493,207 @@ class _SkyLayer {
   final double opacity; // 기본 불투명도.
   final double bandY; // 세로 배치 비율(0=상단, 1=하단).
   final double bobAmp; // 두둥실 상하 부유 진폭(px).
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// 착지점 '별이 됨' 반짝(프로토타입 Plane.tsx의 Star 이식).
+//   - 12갈래 빛줄기(긴/짧은 교차) + 부드러운 글로우 + 밝은 코어.
+//   - t(0→1)에 프로토타입 키프레임을 보간: scale [0.2,1.15,1,1.04,0.9] /
+//     opacity [0,1,1,1,0] / rotate [-8,0,2,3,6]° (times [0,.18,.45,.75,1]).
+// ════════════════════════════════════════════════════════════════════════
+class _StarBurstPainter extends CustomPainter {
+  _StarBurstPainter({required this.t, required this.center, required this.glow});
+
+  final double t; // 0→1.
+  final Offset center; // 착지점(화면 좌표).
+  final Color glow; // 별빛 톤.
+
+  static const List<double> _times = [0.0, 0.18, 0.45, 0.75, 1.0];
+
+  // 키프레임 선형 보간(times 구간별).
+  static double _kf(double t, List<double> vals) {
+    if (t <= _times.first) return vals.first;
+    if (t >= _times.last) return vals.last;
+    for (var i = 0; i < _times.length - 1; i++) {
+      if (t <= _times[i + 1]) {
+        final lt = (t - _times[i]) / (_times[i + 1] - _times[i]);
+        return vals[i] + (vals[i + 1] - vals[i]) * lt;
+      }
+    }
+    return vals.last;
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final scale = _kf(t, const [0.2, 1.15, 1.0, 1.04, 0.9]);
+    final opacity = _kf(t, const [0.0, 1.0, 1.0, 1.0, 0.0]);
+    final rot = _kf(t, const [-8, 0, 2, 3, 6]) * pi / 180;
+    if (opacity <= 0.001) return;
+
+    canvas.save();
+    canvas.translate(center.dx, center.dy);
+    canvas.scale(scale);
+    canvas.rotate(rot);
+
+    final base = size.shortestSide; // 별 크기 기준(화면폭).
+
+    // ① 부드러운 글로우(별 둘레로 번지는 따뜻한 빛무리).
+    final glowR = base * 0.13;
+    canvas.drawCircle(
+      Offset.zero,
+      glowR,
+      Paint()
+        ..shader = RadialGradient(
+          colors: [
+            glow.withValues(alpha: 0.85 * opacity),
+            glow.withValues(alpha: 0.12 * opacity),
+            glow.withValues(alpha: 0.0),
+          ],
+          stops: const [0.0, 0.28, 0.7],
+        ).createShader(Rect.fromCircle(center: Offset.zero, radius: glowR))
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, base * 0.02),
+    );
+
+    // ② 12갈래 빛줄기(긴/짧은 교차) — 중심에서 바깥으로 뻗고 끝으로 갈수록 페이드.
+    const rays = 12;
+    final longLen = base * 0.16;
+    final shortLen = base * 0.085;
+    for (var i = 0; i < rays; i++) {
+      final long = i.isEven;
+      final len = long ? longLen : shortLen;
+      final w = long ? 2.6 : 1.6;
+      canvas.save();
+      canvas.rotate((2 * pi / rays) * i);
+      // 중심(밝음)→끝(투명) 선형 그라데이션의 가는 막대(원점에서 위로 -len).
+      final rect = Rect.fromLTWH(-w / 2, -len, w, len);
+      canvas.drawRect(
+        rect,
+        Paint()
+          ..shader = LinearGradient(
+            begin: Alignment.bottomCenter, // 원점(중심) 쪽이 밝음.
+            end: Alignment.topCenter, // 끝(바깥)은 투명.
+            colors: [
+              Colors.white.withValues(alpha: (long ? 0.95 : 0.6) * opacity),
+              glow.withValues(alpha: (long ? 0.7 : 0.4) * opacity),
+              glow.withValues(alpha: 0.0),
+            ],
+            stops: const [0.0, 0.45, 1.0],
+          ).createShader(rect)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 0.6),
+      );
+      canvas.restore();
+    }
+
+    // ③ 밝은 코어(가운데 흰 점).
+    final coreR = base * 0.02;
+    canvas.drawCircle(
+      Offset.zero,
+      coreR,
+      Paint()
+        ..color = Colors.white.withValues(alpha: opacity)
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, coreR * 0.6),
+    );
+
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(covariant _StarBurstPainter old) =>
+      old.t != t || old.center != center || old.glow != glow;
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// 슬링샷 조준 미리보기(프로토타입 Plane.tsx의 aim 화살표 + Gauge 이식).
+//   - [origin]에서 [dir](발사 방향)으로 뻗는 화살표(세기 비례 길이 + 화살촉).
+//   - 화면 우측 가장자리에 '세로' 파워 게이지(아래→위 차오름, 프로토타입 Gauge 톤).
+//   색: 프로토타입 슬링샷 톤(#5b8fd6 → #aee0e8)으로 세기에 따라 보간.
+// ════════════════════════════════════════════════════════════════════════
+class _AimPainter extends CustomPainter {
+  _AimPainter({required this.origin, required this.dir, required this.power});
+
+  final Offset origin; // 비행기(장전) 위치(화면 좌표).
+  final Offset dir; // 발사 방향 단위벡터.
+  final double power; // 0~1.
+
+  static const Color _lo = Color(0xFF5B8FD6); // 약한 세기.
+  static const Color _hi = Color(0xFFAEE0E8); // 강한 세기.
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final p = power.clamp(0.0, 1.0);
+    final color = Color.lerp(_lo, _hi, p)!;
+
+    // ── 조준 화살표(세기>0일 때) ──
+    if (p > 0.02) {
+      final len = 44 + p * 130;
+      final tip = origin + dir * len;
+      canvas.drawLine(
+        origin,
+        tip,
+        Paint()
+          ..strokeWidth = 6
+          ..strokeCap = StrokeCap.round
+          ..shader = LinearGradient(colors: [
+            color.withValues(alpha: 0.12),
+            color.withValues(alpha: 0.95),
+          ]).createShader(Rect.fromPoints(origin, tip)),
+      );
+      final ang = atan2(dir.dy, dir.dx);
+      const ah = 17.0;
+      final a2 = tip - Offset(cos(ang - 0.5) * ah, sin(ang - 0.5) * ah);
+      final a3 = tip - Offset(cos(ang + 0.5) * ah, sin(ang + 0.5) * ah);
+      canvas.drawPath(
+        Path()
+          ..moveTo(tip.dx, tip.dy)
+          ..lineTo(a2.dx, a2.dy)
+          ..lineTo(a3.dx, a3.dy)
+          ..close(),
+        Paint()..color = color.withValues(alpha: 0.95),
+      );
+    }
+
+    // ── 오른쪽 세로 파워 게이지(프로토타입 Gauge: 우측 가장자리, 아래→위 차오름) ──
+    const barW = 10.0;
+    final x = size.width - 22 - barW;
+    final trackTop = size.height * 0.20;
+    final trackBottom = size.height * 0.82;
+    final trackH = trackBottom - trackTop;
+    final trackRR = RRect.fromRectAndRadius(
+        Rect.fromLTWH(x, trackTop, barW, trackH), const Radius.circular(barW / 2));
+    // 트랙: 어두운 반투명 + 흰 인셋 테두리(프로토타입 톤).
+    canvas.drawRRect(trackRR, Paint()..color = const Color(0x59141017));
+    canvas.drawRRect(
+      trackRR,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.2
+        ..color = Colors.white.withValues(alpha: 0.45),
+    );
+    // 채움(아래→위, 세기 비례) + 글로우. 그라데이션 아래(_lo)→위(_hi).
+    final fillH = trackH * p;
+    if (fillH > 0.6) {
+      final fillRect = Rect.fromLTWH(x, trackBottom - fillH, barW, fillH);
+      final fillRR =
+          RRect.fromRectAndRadius(fillRect, const Radius.circular(barW / 2));
+      canvas.drawRRect(
+        fillRR,
+        Paint()
+          ..color = _hi.withValues(alpha: 0.5)
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8),
+      ); // 글로우.
+      canvas.drawRRect(
+        fillRR,
+        Paint()
+          ..shader = const LinearGradient(
+            begin: Alignment.bottomCenter,
+            end: Alignment.topCenter,
+            colors: [_lo, _hi],
+          ).createShader(fillRect),
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _AimPainter old) =>
+      old.origin != origin || old.dir != dir || old.power != power;
 }
