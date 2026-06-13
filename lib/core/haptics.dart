@@ -22,6 +22,15 @@ class Haptics {
   final Duration _minGap = const Duration(milliseconds: 28);
   DateTime _last = DateTime.fromMillisecondsSinceEpoch(0);
 
+  // 앱이 백그라운드로 가면 true — 모든 진동/햅틱을 즉시 무동작 처리한다.
+  // 의식 연속 진동(grind/blaze/flight…)의 Timer나 흔들기 핸들러는 백그라운드에서도
+  // 계속 돌 수 있어, 이 게이트로 실제 진동 발사(fire/_androidBuzz)를 막는다.
+  bool _suspended = false;
+
+  /// 앱 생명주기 훅에서 호출: 백그라운드 진입 시 true로 모든 햅틱을 멈추고,
+  /// 포그라운드 복귀 시 false로 되살린다(앱 종료 시 진동이 남지 않게 — #1).
+  void setSuspended(bool value) => _suspended = value;
+
   // ── Android 실기기 진동 보강 ──────────────────────────────────────
   // 내장 HapticFeedback(performHapticFeedback)은 안드로이드에서 시스템 '터치
   // 피드백' 설정에 묶여 약하거나 아예 안 울리는 기기가 많다(실기기 피드백 2026-06-09).
@@ -44,6 +53,7 @@ class Haptics {
   /// 안드로이드에서 실제 진동기를 [durationMs]·[amplitude](1~255)로 울린다.
   /// iOS·미지원 기기에선 무동작(HapticFeedback가 대신 처리). best-effort.
   void _androidBuzz(int durationMs, int amplitude) {
+    if (_suspended) return; // 백그라운드면 진동 차단(#1).
     // 웹/비안드로이드 제외(dart:io 미사용 — 웹 빌드 호환). iOS는 HapticFeedback 사용.
     if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
     unawaited(() async {
@@ -77,6 +87,7 @@ class Haptics {
   }
 
   void fire(HapticLevel level, {bool throttle = true}) {
+    if (_suspended) return; // 백그라운드면 진동·햅틱 차단(#1).
     if (throttle && !_allow()) return;
     // 안드로이드 실기기 진동 보강(세기 지정). iOS는 아래 HapticFeedback만.
     final v = _vibFor(level);

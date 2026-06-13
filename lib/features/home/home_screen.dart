@@ -54,7 +54,7 @@ class HomeScreen extends StatefulWidget {
 enum _DragMode { none, stroke, roll }
 
 class _HomeScreenState extends State<HomeScreen>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late final Ticker _ticker;
   final ValueNotifier<int> _frame = ValueNotifier(0);
 
@@ -209,6 +209,7 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this); // 생명주기 관찰(#1 백그라운드 정지)
     _ticker = createTicker(_onTick)..start();
     _listenSensors();
     // 흘려보냄 횟수(releaseCount)·공 놀이 횟수(interactionCount) **둘 다 세션 한정** —
@@ -800,8 +801,27 @@ class _HomeScreenState extends State<HomeScreen>
         .then((_) => _restoreHomeInitial());
   }
 
+  /// #1 백그라운드 진입 시 흔들기 가속도 센서 구독을 끊어, 앱을 꺼도 폰을 흔들면
+  /// 공이 반응하거나 진동이 나지 않게 한다(오디오·진동 정지는 app.dart가 전역 처리).
+  /// 포그라운드 복귀 시 다시 구독한다. 손 떨림 누적도 함께 정리한다.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached) {
+      _accelSub?.cancel();
+      _accelSub = null;
+      _shakeEndTimer?.cancel();
+      RitualAudio.instance.stopRub(); // 문지르기 루프가 떠 있으면 정지
+    } else if (state == AppLifecycleState.resumed) {
+      if (_accelSub == null) _listenSensors(); // 흔들기 센서 재구독
+    }
+  }
+
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _session?.removeListener(_onSessionChanged);
     _ticker.dispose();
     _accelSub?.cancel();

@@ -113,6 +113,14 @@ class RitualAudio {
 
   bool _booted = false;
 
+  // 앱이 백그라운드면 true — 새 재생을 막는다(앱 종료 후 소리 잔존 방지 — #1).
+  // 생명주기 훅에서 stopAll() 직후 true로 세팅하므로 정지 자체는 먼저 수행된다.
+  bool _suspended = false;
+
+  /// 앱 생명주기 훅에서 호출. true면 이후 모든 재생을 무시(백그라운드 무음),
+  /// false면 다시 재생 허용. 정지는 호출측이 stopAll()로 먼저 수행한다.
+  void setSuspended(bool value) => _suspended = value;
+
   /// iOS 무음 스위치와 무관하게 효과음이 들리도록 playback 컨텍스트로 1회 설정.
   Future<void> _boot() async {
     if (_booted) return;
@@ -138,6 +146,7 @@ class RitualAudio {
   }
 
   Future<void> _safe(Future<void> Function() body) async {
+    if (_suspended) return; // 백그라운드면 새 재생 무시(#1).
     try {
       await _boot();
       await body();
