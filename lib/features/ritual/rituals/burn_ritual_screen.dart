@@ -885,9 +885,10 @@ class FlamePainter extends CustomPainter {
   // 혀 개수↑(10→16)로 빈틈 없이 빽빽한 불의 벽. 혀 키 대폭 상향(84~158 →
   // 90~240, 진행도 비례)으로 맹렬히 치솟는 화력. 진행도(burn)는 paint에서 받아
   // 혀 높이·flicker 속도·글로우를 정점까지 끌어올린다.
-  // v20 §4(perf): 혀마다 MaskFilter.blur가 1회씩 들어가 19개는 프레임당 blur가 과해
-  // 드롭을 유발했다 → 13으로 줄여 GPU 비용을 ~30% 절감(밀도는 여전히 충분히 활활).
-  static const int _tongueCount = 13; // 가로로 배열되는 큰 혀 수
+  // perf(#2): 혀마다 MaskFilter.blur+BlendMode.plus가 1회씩 들어가 프레임당 blur가
+  // 과해 드롭을 유발했다 → 19→13→10으로 더 줄여 GPU 비용 추가 절감(폭 1.7배 겹침이라
+  // 10개로도 빈틈 없는 불의 벽 밀도 유지).
+  static const int _tongueCount = 10; // 가로로 배열되는 큰 혀 수
 
   static const double _tongueMinH = 120; // 혀 최소 높이(화력↑).
   static const double _tongueMaxH = 300; // 혀 최대 높이(활활·정점, 화력↑).
@@ -987,7 +988,7 @@ class FlamePainter extends CustomPainter {
     final heatH = 150 + 130 * p;
     final heatRect = Rect.fromLTWH(-30, bottom - heatH, w + 60, heatH);
     final heatPaint = Paint()
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 30) // v20 §4: 40→30(perf)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 22) // perf(#2): 40→30→22
       ..blendMode = BlendMode.plus
       ..shader = RadialGradient(
         center: const Alignment(0, 0.85),
@@ -1006,7 +1007,7 @@ class FlamePainter extends CustomPainter {
     final bandH = (110 + 26 * sin(t * 6.0 * fr)) * (0.8 + 0.2 * p);
     final bandRect = Rect.fromLTWH(-6, bottom - bandH, w + 12, bandH + 10);
     final bandPaint = Paint()
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 14) // v20 §4: 18→14(perf)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 11) // perf(#2): 18→14→11
       ..blendMode = BlendMode.plus
       ..shader = const LinearGradient(
         begin: Alignment.bottomCenter,

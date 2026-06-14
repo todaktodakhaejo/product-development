@@ -1147,7 +1147,9 @@ class _CloudFieldPainter extends CustomPainter {
   // 경로 따라 피어나는 뭉게구름 덩이 수(occlusion 뱅크 제거 — 가리지 않음).
   //  슬링샷은 위 하늘로 일관되게 솟으므로 경로(위쪽)에 구름을 촘촘히 깔아
   //  '구름 사이를 가르며' 지나가는 느낌을 강화(11→14).
-  static const int _trailCount = 14;
+  // perf(#2): 구름 한 덩이마다 Path.combine(union) 3~4회 + blur 4~5회가 들어가
+  // 14덩이면 프레임당 부하가 커 비행 모션이 버벅였다 → 10으로 줄여 ~30% 절감.
+  static const int _trailCount = 10;
 
   // 구름 톤(흰색~연한 라벤더). 어둡지 않게, 은은히.
   static const Color _cloudWhite = Color(0xFFFFFFFF);
@@ -1299,7 +1301,9 @@ class _CloudFieldPainter extends CustomPainter {
         hc,
         lr * 0.7,
         Paint()
-          ..maskFilter = MaskFilter.blur(BlurStyle.normal, lr * 0.22)
+          // perf(#2): 하이라이트 blur 반경 축소(0.22→0.14) — 봉우리마다 들어가는
+          // blur 비용을 낮춘다. RadialGradient 자체가 부드러워 체감 차이는 작다.
+          ..maskFilter = MaskFilter.blur(BlurStyle.normal, lr * 0.14)
           ..shader = RadialGradient(
             colors: [
               _cloudHighlight.withValues(alpha: opacity * 0.5),
