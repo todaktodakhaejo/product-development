@@ -155,6 +155,7 @@ class _FadeInState extends State<_FadeIn> {
   @override
   void initState() {
     super.initState();
+    RitualAudio.instance.preloadTyping(); // 첫 키부터 지연 없게 미리 로드(#3)
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) setState(() => _opacity = 1);
     });

@@ -103,6 +103,7 @@ class _ShredderRitualScreenState extends State<ShredderRitualScreen>
   @override
   void initState() {
     super.initState();
+    RitualAudio.instance.preloadShred(); // 점화 지연 없게 shred.mp3 미리 로드(#3)
     _ticker = createTicker(_tick)..start();
     _grindCtrl = AnimationController(vsync: this, duration: _kGrindDuration)
       ..addListener(_onGrindTick)
