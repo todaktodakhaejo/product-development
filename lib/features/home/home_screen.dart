@@ -557,11 +557,9 @@ class _HomeScreenState extends State<HomeScreen>
     }
 
     if (_moved) {
-      // v20 §2: 빈 공간에서 시작한 드래그는 공을 굴리거나(순간이동) 문지르지 않고,
-      // 손가락 지점으로 공을 탄성으로 "쭈욱 당겨온다"(glide). 매 move마다 목표만 갱신하면
-      // ball.update가 부드럽게 따라온다. (공 위에서 시작한 제스처는 아래 기존 판별로.)
+      // 빈 공간에서 시작한 드래그는 공에 아무 영향도 주지 않는다(빈 공간 당김 제거,
+      // 사용자 피드백 2026-06-14 — 빈 곳을 눌러 공이 끌려오는 게 부자연스러움).
       if (!_downOnBall) {
-        ball.glideTo(pos);
         _lastPos = pos;
         _lastMoveTime = e.timeStamp;
         return;
@@ -703,12 +701,8 @@ class _HomeScreenState extends State<HomeScreen>
         RitualAudio.instance.objetStretch(gain: 0.7);
         _analytics?.gesturePerformed(
             'press', (e.timeStamp - _pressDownTime).inMilliseconds);
-      } else {
-        // v20 §2: 빈 공간을 탭하면 그 지점으로 공을 탄성으로 당겨온다(순간이동 대신).
-        ball.glideTo(pos);
-        Haptics.instance.fire(HapticLevel.light);
-        RitualAudio.instance.objetStretch(gain: 0.5); // 쭈욱 당겨오는 쫀득 레이어
       }
+      // 빈 공간 탭은 물결만 남기고 공은 움직이지 않는다(빈 공간 당김 제거, 2026-06-14).
     } else if (_dragMode == _DragMode.roll) {
       // fling(v8 §4): 방향은 EMA(_flingVel) 방향을 유지하되, 크기는 EMA 크기와
       // peak*0.8 중 큰 쪽을 채택해 떼기 직전 감속에 묻힌 빠른 손맛을 살린다.

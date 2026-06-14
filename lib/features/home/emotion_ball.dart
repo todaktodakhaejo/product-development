@@ -69,15 +69,6 @@ class EmotionBall {
 
   bool grabbed = false;
 
-  // ── 빈 공간 당김(glide-to, v20 §2) ─────────────────────────────────
-  // 빈 공간을 터치/드래그하면 그 지점으로 공이 탄성으로 당겨와 멈춘다(순간이동 대신,
-  // 사용자 피드백). update()가 매 프레임 목표로 ease하며 진행 방향으로 살짝 늘어난다
-  // (찹쌀떡). 목표에 닿으면 비활성. 공을 직접 잡으면(grab/pressStart) 즉시 취소된다.
-  Offset? _glideTarget;
-
-  /// painter 디버그/표시용: 현재 빈 공간 당김 진행 중인지.
-  bool get gliding => _glideTarget != null;
-
   // ── 굴림 회전(roll, GST-02) 상태 ──────────────────────────────
   // "미끄러짐 없는 구름": 이동 거리 d만큼 표면이 d/radius 라디안 회전한다.
   // 화면은 2D이므로 회전을 두 갈래로 들고 painter/셰이더가 표면 단서를 돈다:
@@ -199,7 +190,6 @@ class EmotionBall {
   /// `Offset(0, -1)`). 이후 떼기 전까지 [update]가 깊이를 0.45s에 걸쳐 0→1로
   /// 차올린다. painter는 [pressDepth]/[pressDir]만 읽어 본체 변형으로 표현한다.
   void pressStart(Offset localPos) {
-    _glideTarget = null; // 공을 누르면 빈 공간 당김 취소
     final toCenter = pos - localPos;
     final d = toCenter.distance;
     // 정중앙이면 영벡터 회피 — 위에서 누른 느낌으로 위쪽(-y)을 기본 축.
@@ -454,7 +444,6 @@ class EmotionBall {
   ///   builder는 pending에서 `grab(pos, ease:0.3)`, roll 커밋 후 `grab(pos)`를 부른다.
   void grab(Offset target, {double ease = 1.0}) {
     grabbed = true;
-    _glideTarget = null; // 공을 직접 잡으면 빈 공간 당김 취소
     final e = ease.clamp(0.0, 1.0);
     final clamped = Offset(
       target.dx.clamp(bounds.left + radius, bounds.right - radius),
@@ -498,17 +487,6 @@ class EmotionBall {
     grabbed = false;
   }
 
-  /// 빈 공간을 터치/드래그한 [target]으로 공을 탄성으로 당겨온다(순간이동 대신, v20 §2).
-  /// [update]가 매 프레임 목표로 ease하며 진행 방향으로 늘어나고, 닿으면 멈춘다.
-  /// 목표는 본체가 화면 안에 머물도록 clamp한다.
-  void glideTo(Offset target) {
-    _glideTarget = Offset(
-      target.dx.clamp(bounds.left + radius, bounds.right - radius),
-      target.dy.clamp(bounds.top + radius, bounds.bottom - radius),
-    );
-    grabbed = false; // glide가 위치를 몰므로 물리 적분/grab과 배타
-  }
-
   /// 의식 완료 후 홈 복귀 시 공을 화면 중앙·정지 상태로 되돌린다.
   /// (굴리다 만 위치/속도를 리셋. 잔여 변형(squash 등)은 update에서 자연 감쇠.)
   void recenter() {
@@ -525,7 +503,6 @@ class EmotionBall {
     _stretchAmount = 0;
     _stretchAngle = 0;
     _stretchReleaseT = -1;
-    _glideTarget = null; // 빈 공간 당김도 취소
   }
 
   /// 제자리 쓰다듬기(GST-04). [step]은 직전 프레임 대비 손가락 이동량,
@@ -643,30 +620,6 @@ class EmotionBall {
         _stretchAmount = 0;
         _stretchAngle = 0; // 항등 복귀(셰이더 회전 잔상 방지)
         _stretchReleaseT = -1;
-      }
-    }
-
-    // ── 빈 공간 당김(glide-to, v20 §2) ──
-    // 목표가 있으면 매 프레임 ease로 당겨오며 진행 방향으로 늘어난다(찹쌀떡). 닿으면 멈춤.
-    // grab/누르기/일반 물리보다 우선해 위치를 직접 몬다(닿으면 _glideTarget=null로 해제).
-    if (_glideTarget != null) {
-      final tgt = _glideTarget!;
-      final to = tgt - pos;
-      final dist = to.distance;
-      if (dist < 1.5) {
-        pos = tgt;
-        vel = Offset.zero;
-        _glideTarget = null;
-      } else {
-        final k = (14.0 * dt).clamp(0.0, 0.9); // dt 보정 ease(빠르게 당겼다 부드럽게 안착)
-        final step = to * k;
-        squash = min(0.45, dist / radius * 0.6); // 진행 방향으로 늘어남
-        squashDir = to / dist;
-        _applyRoll(step); // 당겨오며 표면도 구르듯
-        _bumpWobble(min(0.3, dist / radius));
-        pos += step;
-        vel = Offset.zero;
-        return; // glide 중엔 일반 물리(중력/마찰/충돌) 스킵
       }
     }
 
