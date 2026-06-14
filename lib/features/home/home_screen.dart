@@ -435,7 +435,8 @@ class _HomeScreenState extends State<HomeScreen>
     // 시각 침몰과 햅틱이 desync 없이 동기. (시작 pressDown·뗄 때 pressRelease는 포인터에서.)
     if (ball.consumePressHoldTick()) {
       Haptics.instance.pressHoldTick();
-      RitualAudio.instance.objetStretch(gain: 0.5); // 깊게 눌러 늘어나는 쫀득
+      // (누르고 있을 때 나던 쫀득 stretch 사운드는 제거 — 새 누르기음과 겹쳐 들려서.
+      //  진동 틱은 유지. 사용자 요청 2026-06-15.)
     }
 
     for (final r in _ripples) {
