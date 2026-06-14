@@ -151,29 +151,53 @@ class RitualAudio {
     if (_booted) return;
     _booted = true;
     try {
-      await AudioPlayer.global.setAudioContext(
-        AudioContext(
-          iOS: AudioContextIOS(
-            category: AVAudioSessionCategory.playback,
-            options: const {AVAudioSessionOptions.mixWithOthers},
-          ),
-          // #6: 폭죽처럼 빠르게 겹치는 SFX가 서로 끊기지 않게 '미디어' 컨텍스트로.
-          // 기존 sonification(알림음류)+gainTransientMayDuck은 안드로이드가 소리를
-          // 알림처럼 한 번에 하나만 내보내거나, 새 재생이 오디오 포커스를 가져가며 앞
-          // 소리를 덕킹/중단시켜 폭죽이 끊겼다(보이스를 늘려도 동일). media+music+
-          // focus 없음으로 바꿔 여러 스트림이 게임 SFX처럼 자유롭게 동시에 섞이게 한다.
-          android: const AudioContextAndroid(
-            isSpeakerphoneOn: false,
-            contentType: AndroidContentType.music,
-            usageType: AndroidUsageType.media,
-            audioFocus: AndroidAudioFocus.none,
-          ),
+      // #6: 폭죽처럼 빠르게 겹치는 SFX가 서로 끊기지 않게 '미디어' 컨텍스트로.
+      // 기존 sonification+gainTransientMayDuck(기본값 gain)은 새 재생이 오디오 포커스를
+      // 독점해 앞 소리를 덕킹/중단시켰다. media+music+focus 없음으로 바꿔 여러 스트림이
+      // 게임 SFX처럼 자유롭게 동시에 섞이게 한다.
+      final ctx = AudioContext(
+        iOS: AudioContextIOS(
+          category: AVAudioSessionCategory.playback,
+          options: const {AVAudioSessionOptions.mixWithOthers},
+        ),
+        android: const AudioContextAndroid(
+          isSpeakerphoneOn: false,
+          contentType: AndroidContentType.music,
+          usageType: AndroidUsageType.media,
+          audioFocus: AndroidAudioFocus.none,
         ),
       );
+      await AudioPlayer.global.setAudioContext(ctx);
+      // ★ #6 진짜 원인: 전역 setAudioContext는 '이미 생성된' 플레이어에는 적용되지
+      //   않는다(audioplayers_android가 생성 시점 컨텍스트를 복사·보관). 우리 플레이어는
+      //   전부 필드 초기화로 부팅 전에 만들어져 기본값(audioFocus: gain = 독점 포커스)을
+      //   그대로 갖고 있어, 새 재생마다 포커스를 가로채 앞 소리를 끊었다(폭죽 끊김).
+      //   → 각 플레이어에 컨텍스트를 직접 적용해야 비로소 동시 재생이 된다.
+      for (final p in _allPlayers) {
+        try {
+          await p.setAudioContext(ctx);
+        } catch (_) {}
+      }
     } catch (e) {
       debugPrint('RitualAudio boot 실패(무시): $e');
     }
   }
+
+  /// 컨텍스트(audioFocus 등)를 일괄 적용하기 위한 전체 플레이어 목록.
+  List<AudioPlayer> get _allPlayers => [
+        ..._ritualLoopPool,
+        _shotA,
+        _shotB,
+        ..._pullPool,
+        _emberLoop,
+        _skyA,
+        _skyB,
+        ..._fireworkPool,
+        ..._objetPool,
+        ..._chewyPool,
+        _rub,
+        ..._typePool,
+      ];
 
   Future<void> _safe(Future<void> Function() body) async {
     if (_suspended) return; // 백그라운드면 새 재생 무시(#1).
