@@ -129,6 +129,7 @@ class _BurnRitualScreenState extends State<BurnRitualScreen>
   @override
   void initState() {
     super.initState();
+    RitualAudio.instance.preloadFire(); // 점화 지연 없게 fire.mp3 미리 로드(#3)
     _ticker = createTicker(_tick)..start();
     _burnCtrl = AnimationController(vsync: this, duration: _kBurnDuration)
       ..addListener(_onBurnTick)

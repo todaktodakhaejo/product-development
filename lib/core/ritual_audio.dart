@@ -99,11 +99,14 @@ class RitualAudio {
   // 문지르기 rub 루프 볼륨. 0.34는 폰에서 거의 안 들린다는 피드백(2026-06-08)으로
   // 0.62로 상향 — 다른 효과음(slime 0.5~0.9)에 묻히지 않고 또렷이 들리게.
   static const double _kRubVolume = 0.62;
-  // 글쓰기 타이핑 round-robin 풀.
-  final List<AudioPlayer> _typePool = [
-    AudioPlayer(playerId: 'type_0'),
-    AudioPlayer(playerId: 'type_1'),
+  // 글쓰기 타이핑 — 슬라이스별 전용 플레이어(5개)를 미리 로드해 지연 최소화(#3).
+  // 기존엔 2보이스에 매번 release+play(AssetSource)라 키마다 네이티브 재준비→지연.
+  // ReleaseMode.stop + setSource 프리로드 후 키 입력마다 seek(0)+resume만(재준비 없음).
+  // 라운드로빈으로 키마다 다른 슬라이스를 써서 변주 + 같은 보이스 재시작 충돌 회피.
+  final List<AudioPlayer> _typeVoices = [
+    for (var i = 0; i < 5; i++) AudioPlayer(playerId: 'type_$i'),
   ];
+  bool _typeWarmed = false;
   int _typeIdx = 0;
   DateTime _typeLast = DateTime.fromMillisecondsSinceEpoch(0);
   final Random _rng = Random();
@@ -196,7 +199,7 @@ class RitualAudio {
         ..._objetPool,
         ..._chewyPool,
         _rub,
-        ..._typePool,
+        ..._typeVoices,
       ];
 
   Future<void> _safe(Future<void> Function() body) async {
@@ -242,12 +245,27 @@ class RitualAudio {
         }
       });
 
+  /// 의식 루프(fire/shred) 점화 지연 제거(#3): 화면 진입 시 두 보이스에 미리 로드한다.
+  /// setSource로 디코드까지 끝내 두면, 점화 시 _playRitualLoopVoice의 play()가 같은
+  /// 소스라 재준비 없이(short-circuit) 즉시 시작된다(첫 prepare 지연 제거).
+  Future<void> _preloadRitualLoop(String asset) => _safe(() async {
+        for (final p in _ritualLoopPool) {
+          try {
+            await p.setReleaseMode(ReleaseMode.stop);
+            await p.setSource(AssetSource(asset));
+          } catch (_) {}
+        }
+      });
+
   // ── 태우기 ───────────────────────────────────────────────────────────────
   /// 연소 시작 — fire.mp3 루프(volume 1.0). release+수동 반복(loop 모드 무음 버그 회피).
   Future<void> startFire() {
     _activeLoopStarter = startFire; // 백그라운드 복귀 복원용(#1 후속)
     return _startLoopManual('audio/fire.mp3', 1.0);
   }
+
+  /// 태우기 화면 진입 시 호출 — fire.mp3를 미리 로드해 점화 지연 제거(#3).
+  Future<void> preloadFire() => _preloadRitualLoop('audio/fire.mp3');
 
   /// 연소 종료(전소) — fire 루프 정지.
   Future<void> stopFire() => _stopLoopManual();
@@ -275,6 +293,9 @@ class RitualAudio {
     _activeLoopStarter = startShred; // 백그라운드 복귀 복원용(#1 후속)
     return _startLoopManual('audio/shred.mp3', 1.0);
   }
+
+  /// 파쇄기 화면 진입 시 호출 — shred.mp3를 미리 로드해 점화 지연 제거(#3).
+  Future<void> preloadShred() => _preloadRitualLoop('audio/shred.mp3');
 
   /// 분쇄 종료 — shred 루프 정지.
   Future<void> stopShred() => _stopLoopManual();
@@ -515,18 +536,35 @@ class RitualAudio {
       });
 
   // ── 글쓰기 ─────────────────────────────────────────────────────────────────
-  /// 키 입력 — type 슬라이스 random 재생(round-robin, ~40ms throttle).
+  /// 글쓰기 화면 진입 시 호출 — 타이핑 슬라이스를 미리 로드해 첫 키부터 지연 없이(#3).
+  Future<void> preloadTyping() => _safe(_warmTypeVoices);
+
+  /// 타이핑 슬라이스(type_0~4)를 각 전용 플레이어에 1회 프리로드(idempotent).
+  /// ReleaseMode.stop + setSource로 디코드까지 끝내 둬, 재생은 seek(0)+resume만 한다.
+  Future<void> _warmTypeVoices() async {
+    if (_typeWarmed) return;
+    _typeWarmed = true;
+    for (var i = 0; i < _typeVoices.length; i++) {
+      try {
+        await _typeVoices[i].setReleaseMode(ReleaseMode.stop);
+        await _typeVoices[i].setSource(AssetSource('audio/type_$i.wav'));
+      } catch (_) {}
+    }
+  }
+
+  /// 키 입력 — 미리 로드된 슬라이스 보이스를 round-robin으로 seek(0)+resume(저지연, #3).
+  /// (release+play(AssetSource)의 매회 네이티브 재준비 지연 제거.) ~40ms throttle.
   Future<void> typeKey({double gain = 0.9}) {
     final now = DateTime.now();
     if (now.difference(_typeLast).inMilliseconds < 40) return Future.value();
     _typeLast = now;
     return _safe(() async {
-      final p = _typePool[_typeIdx];
-      _typeIdx = (_typeIdx + 1) % _typePool.length;
-      await p.stop();
-      await p.setReleaseMode(ReleaseMode.release);
-      await p.play(AssetSource('audio/type_${_rng.nextInt(5)}.wav'),
-          volume: gain);
+      await _warmTypeVoices(); // 프리로드 누락 대비(이미 됐으면 즉시 반환)
+      final p = _typeVoices[_typeIdx];
+      _typeIdx = (_typeIdx + 1) % _typeVoices.length;
+      await p.setVolume(gain);
+      await p.seek(Duration.zero);
+      await p.resume();
     });
   }
 
@@ -572,7 +610,7 @@ class RitualAudio {
         for (final p in _chewyPool) {
           await p.stop();
         }
-        for (final p in _typePool) {
+        for (final p in _typeVoices) {
           await p.stop();
         }
         for (final p in _fireworkPool) {
