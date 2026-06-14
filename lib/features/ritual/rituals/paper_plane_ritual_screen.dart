@@ -170,6 +170,10 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
   @override
   void initState() {
     super.initState();
+    // perf(#2): 구름 실루엣 캐시를 미리 채워 비행·done 씬 첫 등장 시 콜드캐시 히치
+    // (멈췄다 움직임)를 막는다. 화면 진입 즉시 1회만 계산(이후 프레임은 캐시 재사용).
+    _CloudFieldPainter.warmCache(_cloudSeed);
+    _SkyScenePainter.warmCache(_skyCloudSeed);
     _fold = AnimationController(vsync: this, duration: _kFoldDuration)
       ..addListener(_onFoldTick)
       ..addStatusListener(_onFoldStatus);
@@ -1250,6 +1254,20 @@ class _CloudFieldPainter extends CustomPainter {
         return Path.combine(PathOperation.intersect, silhouette, clip);
       });
 
+  /// 콜드캐시 히치 방지(#2): 화면 진입 시 비행 경로 구름 실루엣을 모두 미리 계산·캐시.
+  /// paint()의 RNG 소비 순서를 그대로 복제해 같은 lobeSeed를 뽑아 _unitCloudPath를 채운다.
+  static void warmCache(int seed) {
+    final rnd = Random(seed);
+    for (var i = 0; i < _trailCount; i++) {
+      rnd.nextDouble(); // jitterT
+      rnd.nextDouble(); // lateral
+      rnd.nextDouble(); // along
+      rnd.nextDouble(); // wobbleR
+      rnd.nextDouble(); // tintPick
+      _unitCloudPath(rnd.nextInt(1 << 30)); // lobeSeed
+    }
+  }
+
   // ── 그림책 뭉게구름 한 덩이 ──
   // 아래는 평평, 위는 둥근 봉우리 여러 개. 여러 lobe(원호)를 겹쳐 실루엣을
   // 부드러운 흰색으로 채우고, 아랫면에 옅은 라벤더 그늘 + 윗면 하이라이트로
@@ -1321,27 +1339,31 @@ class _CloudFieldPainter extends CustomPainter {
         ..color = tint.withValues(alpha: opacity),
     );
 
-    // ③ 윗면 하이라이트: 각 봉우리 위쪽에 작은 흰 하이라이트(빛이 위에서).
+    // ③ 윗면 하이라이트(빛이 위에서). perf(#2): 봉우리마다 blur(3~4개)는 비싸 →
+    //    가장 큰 봉우리 1개에만 그려 구름당 하이라이트 blur를 1회로 줄인다.
     canvas.save();
     canvas.clipPath(body);
+    var mc = lobes.first.$1, mr = lobes.first.$2;
     for (final (lc, lr) in lobes) {
-      final hc = lc + Offset(-lr * 0.18, -lr * 0.30);
-      final hRect = Rect.fromCircle(center: hc, radius: lr * 0.7);
-      canvas.drawCircle(
-        hc,
-        lr * 0.7,
-        Paint()
-          // perf(#2): 하이라이트 blur 반경 축소(0.22→0.14) — 봉우리마다 들어가는
-          // blur 비용을 낮춘다. RadialGradient 자체가 부드러워 체감 차이는 작다.
-          ..maskFilter = MaskFilter.blur(BlurStyle.normal, lr * 0.14)
-          ..shader = RadialGradient(
-            colors: [
-              _cloudHighlight.withValues(alpha: opacity * 0.5),
-              _cloudHighlight.withValues(alpha: 0.0),
-            ],
-          ).createShader(hRect),
-      );
+      if (lr > mr) {
+        mc = lc;
+        mr = lr;
+      }
     }
+    final hc = mc + Offset(-mr * 0.18, -mr * 0.30);
+    final hRect = Rect.fromCircle(center: hc, radius: mr * 0.8);
+    canvas.drawCircle(
+      hc,
+      mr * 0.8,
+      Paint()
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, mr * 0.16)
+        ..shader = RadialGradient(
+          colors: [
+            _cloudHighlight.withValues(alpha: opacity * 0.5),
+            _cloudHighlight.withValues(alpha: 0.0),
+          ],
+        ).createShader(hRect),
+    );
     canvas.restore();
   }
 
@@ -1384,6 +1406,23 @@ class _SkyScenePainter extends CustomPainter {
     _SkyLayer(count: 4, speed: 0.034, scale: 0.92, opacity: 0.62, bandY: 0.50, bobAmp: 8),
     _SkyLayer(count: 3, speed: 0.058, scale: 1.30, opacity: 0.80, bandY: 0.74, bobAmp: 12),
   ];
+
+  /// 콜드캐시 히치 방지(#2): done 씬 진입 전(화면 진입 시) 하늘 구름 실루엣을 모두
+  /// 미리 계산·캐시한다. paint()의 RNG 소비 순서를 그대로 복제해 같은 lobeSeed를 뽑는다.
+  /// 실루엣 기법이 _cumulus와 동일하므로 _CloudFieldPainter의 공유 캐시를 채운다.
+  static void warmCache(int seed) {
+    final rnd = Random(seed);
+    for (final layer in _layers) {
+      for (var i = 0; i < layer.count; i++) {
+        rnd.nextDouble(); // baseX
+        rnd.nextDouble(); // yJit
+        rnd.nextDouble(); // sizeJit
+        rnd.nextDouble(); // phaseJit
+        rnd.nextDouble(); // tint
+        _CloudFieldPainter._unitCloudPath(rnd.nextInt(1 << 30)); // lobeSeed
+      }
+    }
+  }
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1447,17 +1486,17 @@ class _SkyScenePainter extends CustomPainter {
       lobes.add((Offset(cx, cy), lobeR));
     }
 
-    var silhouette = Path();
-    for (final (lc, lr) in lobes) {
-      silhouette = Path.combine(
-        PathOperation.union,
-        silhouette,
-        Path()..addOval(Rect.fromCircle(center: lc, radius: lr)),
-      );
-    }
-    final clip = Path()
-      ..addRect(Rect.fromLTRB(c.dx - r * 2, c.dy - r * 2, c.dx + r * 2, baseY));
-    final body = Path.combine(PathOperation.intersect, silhouette, clip);
+    // perf(#2): _cumulus와 동일 실루엣 기법이므로 같은 캐시(_CloudFieldPainter._unitCloudPath)
+    // 를 공유한다. done 씬 구름 11덩이가 매 프레임 Path.combine을 돌리던 비용 제거 +
+    // 첫 등장 콜드캐시 히치 방지(아래 사전 워밍과 함께).
+    final m = Float64List(16)
+      ..[0] = r
+      ..[5] = r
+      ..[10] = 1
+      ..[15] = 1
+      ..[12] = c.dx
+      ..[13] = c.dy;
+    final body = _CloudFieldPainter._unitCloudPath(lobeSeed).transform(m);
 
     final blur = MaskFilter.blur(BlurStyle.normal, r * 0.14);
 
@@ -1488,25 +1527,30 @@ class _SkyScenePainter extends CustomPainter {
         ..color = tint.withValues(alpha: opacity),
     );
 
-    // 윗면 하이라이트(빛이 위에서).
+    // perf(#2): 봉우리마다 blur 하이라이트(3~4개)는 비싸 → 가장 큰 봉우리 1개에만 그린다.
     canvas.save();
     canvas.clipPath(body);
+    var mc = lobes.first.$1, mr = lobes.first.$2;
     for (final (lc, lr) in lobes) {
-      final hc = lc + Offset(-lr * 0.18, -lr * 0.30);
-      final hRect = Rect.fromCircle(center: hc, radius: lr * 0.7);
-      canvas.drawCircle(
-        hc,
-        lr * 0.7,
-        Paint()
-          ..maskFilter = MaskFilter.blur(BlurStyle.normal, lr * 0.22)
-          ..shader = RadialGradient(
-            colors: [
-              _cloudWhite.withValues(alpha: opacity * 0.5),
-              _cloudWhite.withValues(alpha: 0.0),
-            ],
-          ).createShader(hRect),
-      );
+      if (lr > mr) {
+        mc = lc;
+        mr = lr;
+      }
     }
+    final hc = mc + Offset(-mr * 0.18, -mr * 0.30);
+    final hRect = Rect.fromCircle(center: hc, radius: mr * 0.8);
+    canvas.drawCircle(
+      hc,
+      mr * 0.8,
+      Paint()
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, mr * 0.16)
+        ..shader = RadialGradient(
+          colors: [
+            _cloudWhite.withValues(alpha: opacity * 0.5),
+            _cloudWhite.withValues(alpha: 0.0),
+          ],
+        ).createShader(hRect),
+    );
     canvas.restore();
   }
 
