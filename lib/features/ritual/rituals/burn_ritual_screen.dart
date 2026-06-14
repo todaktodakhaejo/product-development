@@ -885,10 +885,10 @@ class FlamePainter extends CustomPainter {
   // 혀 개수↑(10→16)로 빈틈 없이 빽빽한 불의 벽. 혀 키 대폭 상향(84~158 →
   // 90~240, 진행도 비례)으로 맹렬히 치솟는 화력. 진행도(burn)는 paint에서 받아
   // 혀 높이·flicker 속도·글로우를 정점까지 끌어올린다.
-  // perf(#2): 혀마다 MaskFilter.blur+BlendMode.plus가 1회씩 들어가 프레임당 blur가
-  // 과해 드롭을 유발했다 → 19→13→10으로 더 줄여 GPU 비용 추가 절감(폭 1.7배 겹침이라
-  // 10개로도 빈틈 없는 불의 벽 밀도 유지).
-  static const int _tongueCount = 10; // 가로로 배열되는 큰 혀 수
+  // perf(#2): 혀는 3겹(outer/mid/core)으로 그려져 혀 1개당 blur가 3회 → _tongueCount×3이
+  // 프레임당 혀 blur 총량. 19→13→10→8로 줄여 30→24회로 추가 절감(폭 1.7배 겹침이라
+  // 8개로도 빈틈 없는 불의 벽 밀도 유지). outer 겹 blur도 12→9로 낮춤(가장 큰 blur).
+  static const int _tongueCount = 8; // 가로로 배열되는 큰 혀 수(×3겹)
 
   static const double _tongueMinH = 120; // 혀 최소 높이(화력↑).
   static const double _tongueMaxH = 300; // 혀 최대 높이(활활·정점, 화력↑).
@@ -1034,7 +1034,7 @@ class FlamePainter extends CustomPainter {
       fr,
       widthScale: 1.0,
       heightScale: 1.0,
-      blur: 12,
+      blur: 9, // perf(#2): 12→9(가장 큰 outer 겹 blur 절감)
       colors: const [
         Color(0xE6FF5A1E),
         Color(0x99FF8C3C),
