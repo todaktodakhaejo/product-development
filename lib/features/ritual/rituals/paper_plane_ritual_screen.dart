@@ -1,4 +1,5 @@
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
@@ -169,6 +170,10 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
   @override
   void initState() {
     super.initState();
+    // perf(#2): 구름 실루엣 캐시를 미리 채워 비행·done 씬 첫 등장 시 콜드캐시 히치
+    // (멈췄다 움직임)를 막는다. 화면 진입 즉시 1회만 계산(이후 프레임은 캐시 재사용).
+    _CloudFieldPainter.warmCache(_cloudSeed);
+    _SkyScenePainter.warmCache(_skyCloudSeed);
     _fold = AnimationController(vsync: this, duration: _kFoldDuration)
       ..addListener(_onFoldTick)
       ..addStatusListener(_onFoldStatus);
@@ -1147,7 +1152,9 @@ class _CloudFieldPainter extends CustomPainter {
   // 경로 따라 피어나는 뭉게구름 덩이 수(occlusion 뱅크 제거 — 가리지 않음).
   //  슬링샷은 위 하늘로 일관되게 솟으므로 경로(위쪽)에 구름을 촘촘히 깔아
   //  '구름 사이를 가르며' 지나가는 느낌을 강화(11→14).
-  static const int _trailCount = 14;
+  // perf(#2): 구름 한 덩이마다 Path.combine(union) 3~4회 + blur 4~5회가 들어가
+  // 14덩이면 프레임당 부하가 커 비행 모션이 버벅였다 → 10으로 줄여 ~30% 절감.
+  static const int _trailCount = 10;
 
   // 구름 톤(흰색~연한 라벤더). 어둡지 않게, 은은히.
   static const Color _cloudWhite = Color(0xFFFFFFFF);
@@ -1217,6 +1224,50 @@ class _CloudFieldPainter extends CustomPainter {
     }
   }
 
+  // perf(#2): 단위공간(중심 원점·r=1) 구름 실루엣을 lobeSeed별로 1회만 계산해 캐시.
+  // _cumulus의 lobe 배치·rnd 소비 순서를 r=1·c=origin으로 그대로 복제해야 모양이 일치한다.
+  // 캐시된 path를 _cumulus가 매 프레임 translate(c)·scale(r)로 변환해 그려, 프레임당
+  // Path.combine(boolean 연산)을 0으로 만든다(결과 path 동일 → 시각 변화 없음).
+  static final Map<int, Path> _unitCloudPathCache = {};
+
+  static Path _unitCloudPath(int lobeSeed) =>
+      _unitCloudPathCache.putIfAbsent(lobeSeed, () {
+        final rnd = Random(lobeSeed);
+        final lobeCount = 3 + rnd.nextInt(2);
+        const baseY = 0.42; // 단위공간 평평한 밑면.
+        var silhouette = Path();
+        for (var i = 0; i < lobeCount; i++) {
+          final u = lobeCount == 1
+              ? 0.0
+              : (i / (lobeCount - 1)) * 2 - 1 + (rnd.nextDouble() - 0.5) * 0.18;
+          final centerness = 1 - u.abs();
+          final lobeR = 0.55 + centerness * 0.42 + rnd.nextDouble() * 0.08;
+          final cx = u * 0.92;
+          final cy = baseY - lobeR * (0.78 + centerness * 0.30);
+          silhouette = Path.combine(
+            PathOperation.union,
+            silhouette,
+            Path()..addOval(Rect.fromCircle(center: Offset(cx, cy), radius: lobeR)),
+          );
+        }
+        final clip = Path()..addRect(const Rect.fromLTRB(-2, -2, 2, baseY));
+        return Path.combine(PathOperation.intersect, silhouette, clip);
+      });
+
+  /// 콜드캐시 히치 방지(#2): 화면 진입 시 비행 경로 구름 실루엣을 모두 미리 계산·캐시.
+  /// paint()의 RNG 소비 순서를 그대로 복제해 같은 lobeSeed를 뽑아 _unitCloudPath를 채운다.
+  static void warmCache(int seed) {
+    final rnd = Random(seed);
+    for (var i = 0; i < _trailCount; i++) {
+      rnd.nextDouble(); // jitterT
+      rnd.nextDouble(); // lateral
+      rnd.nextDouble(); // along
+      rnd.nextDouble(); // wobbleR
+      rnd.nextDouble(); // tintPick
+      _unitCloudPath(rnd.nextInt(1 << 30)); // lobeSeed
+    }
+  }
+
   // ── 그림책 뭉게구름 한 덩이 ──
   // 아래는 평평, 위는 둥근 봉우리 여러 개. 여러 lobe(원호)를 겹쳐 실루엣을
   // 부드러운 흰색으로 채우고, 아랫면에 옅은 라벤더 그늘 + 윗면 하이라이트로
@@ -1244,20 +1295,19 @@ class _CloudFieldPainter extends CustomPainter {
       lobes.add((Offset(cx, cy), lobeR));
     }
 
-    // 실루엣 path: 각 lobe 원 + 밑변을 평평하게 자르는 사각형 결합(union).
-    var silhouette = Path();
-    for (final (lc, lr) in lobes) {
-      silhouette = Path.combine(
-        PathOperation.union,
-        silhouette,
-        Path()..addOval(Rect.fromCircle(center: lc, radius: lr)),
-      );
-    }
-    // 밑면 아래를 잘라 평평한 바닥(cumulus 특징).
-    final clip = Path()
-      ..addRect(Rect.fromLTRB(
-          c.dx - r * 2, c.dy - r * 2, c.dx + r * 2, baseY));
-    final body = Path.combine(PathOperation.intersect, silhouette, clip);
+    // perf(#2): 실루엣 union+intersect(Path.combine, 비싼 boolean 연산)는 모양이
+    // lobeSeed로 고정이라 매 프레임 재계산이 낭비였다(14덩이×~5회=프레임당 수십 회).
+    // → 단위공간(중심 원점·r=1) 실루엣을 시드별 1회만 계산해 캐시하고, 매 프레임
+    //   위치(c)·크기(r)로 transform만 한다(결과 path는 완전히 동일 — 룩 변화 없음).
+    // 열-우선 4x4: p' = c + r*p (scale r + translate c). Path.transform용.
+    final m = Float64List(16)
+      ..[0] = r
+      ..[5] = r
+      ..[10] = 1
+      ..[15] = 1
+      ..[12] = c.dx
+      ..[13] = c.dy;
+    final body = _unitCloudPath(lobeSeed).transform(m);
 
     // soft 외곽: 약한 blur(형태가 구름으로 읽히도록 r에 비례해 작게).
     final blur = MaskFilter.blur(BlurStyle.normal, r * 0.12);
@@ -1289,25 +1339,31 @@ class _CloudFieldPainter extends CustomPainter {
         ..color = tint.withValues(alpha: opacity),
     );
 
-    // ③ 윗면 하이라이트: 각 봉우리 위쪽에 작은 흰 하이라이트(빛이 위에서).
+    // ③ 윗면 하이라이트(빛이 위에서). perf(#2): 봉우리마다 blur(3~4개)는 비싸 →
+    //    가장 큰 봉우리 1개에만 그려 구름당 하이라이트 blur를 1회로 줄인다.
     canvas.save();
     canvas.clipPath(body);
+    var mc = lobes.first.$1, mr = lobes.first.$2;
     for (final (lc, lr) in lobes) {
-      final hc = lc + Offset(-lr * 0.18, -lr * 0.30);
-      final hRect = Rect.fromCircle(center: hc, radius: lr * 0.7);
-      canvas.drawCircle(
-        hc,
-        lr * 0.7,
-        Paint()
-          ..maskFilter = MaskFilter.blur(BlurStyle.normal, lr * 0.22)
-          ..shader = RadialGradient(
-            colors: [
-              _cloudHighlight.withValues(alpha: opacity * 0.5),
-              _cloudHighlight.withValues(alpha: 0.0),
-            ],
-          ).createShader(hRect),
-      );
+      if (lr > mr) {
+        mc = lc;
+        mr = lr;
+      }
     }
+    final hc = mc + Offset(-mr * 0.18, -mr * 0.30);
+    final hRect = Rect.fromCircle(center: hc, radius: mr * 0.8);
+    canvas.drawCircle(
+      hc,
+      mr * 0.8,
+      Paint()
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, mr * 0.16)
+        ..shader = RadialGradient(
+          colors: [
+            _cloudHighlight.withValues(alpha: opacity * 0.5),
+            _cloudHighlight.withValues(alpha: 0.0),
+          ],
+        ).createShader(hRect),
+    );
     canvas.restore();
   }
 
@@ -1350,6 +1406,23 @@ class _SkyScenePainter extends CustomPainter {
     _SkyLayer(count: 4, speed: 0.034, scale: 0.92, opacity: 0.62, bandY: 0.50, bobAmp: 8),
     _SkyLayer(count: 3, speed: 0.058, scale: 1.30, opacity: 0.80, bandY: 0.74, bobAmp: 12),
   ];
+
+  /// 콜드캐시 히치 방지(#2): done 씬 진입 전(화면 진입 시) 하늘 구름 실루엣을 모두
+  /// 미리 계산·캐시한다. paint()의 RNG 소비 순서를 그대로 복제해 같은 lobeSeed를 뽑는다.
+  /// 실루엣 기법이 _cumulus와 동일하므로 _CloudFieldPainter의 공유 캐시를 채운다.
+  static void warmCache(int seed) {
+    final rnd = Random(seed);
+    for (final layer in _layers) {
+      for (var i = 0; i < layer.count; i++) {
+        rnd.nextDouble(); // baseX
+        rnd.nextDouble(); // yJit
+        rnd.nextDouble(); // sizeJit
+        rnd.nextDouble(); // phaseJit
+        rnd.nextDouble(); // tint
+        _CloudFieldPainter._unitCloudPath(rnd.nextInt(1 << 30)); // lobeSeed
+      }
+    }
+  }
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1413,17 +1486,17 @@ class _SkyScenePainter extends CustomPainter {
       lobes.add((Offset(cx, cy), lobeR));
     }
 
-    var silhouette = Path();
-    for (final (lc, lr) in lobes) {
-      silhouette = Path.combine(
-        PathOperation.union,
-        silhouette,
-        Path()..addOval(Rect.fromCircle(center: lc, radius: lr)),
-      );
-    }
-    final clip = Path()
-      ..addRect(Rect.fromLTRB(c.dx - r * 2, c.dy - r * 2, c.dx + r * 2, baseY));
-    final body = Path.combine(PathOperation.intersect, silhouette, clip);
+    // perf(#2): _cumulus와 동일 실루엣 기법이므로 같은 캐시(_CloudFieldPainter._unitCloudPath)
+    // 를 공유한다. done 씬 구름 11덩이가 매 프레임 Path.combine을 돌리던 비용 제거 +
+    // 첫 등장 콜드캐시 히치 방지(아래 사전 워밍과 함께).
+    final m = Float64List(16)
+      ..[0] = r
+      ..[5] = r
+      ..[10] = 1
+      ..[15] = 1
+      ..[12] = c.dx
+      ..[13] = c.dy;
+    final body = _CloudFieldPainter._unitCloudPath(lobeSeed).transform(m);
 
     final blur = MaskFilter.blur(BlurStyle.normal, r * 0.14);
 
@@ -1454,25 +1527,30 @@ class _SkyScenePainter extends CustomPainter {
         ..color = tint.withValues(alpha: opacity),
     );
 
-    // 윗면 하이라이트(빛이 위에서).
+    // perf(#2): 봉우리마다 blur 하이라이트(3~4개)는 비싸 → 가장 큰 봉우리 1개에만 그린다.
     canvas.save();
     canvas.clipPath(body);
+    var mc = lobes.first.$1, mr = lobes.first.$2;
     for (final (lc, lr) in lobes) {
-      final hc = lc + Offset(-lr * 0.18, -lr * 0.30);
-      final hRect = Rect.fromCircle(center: hc, radius: lr * 0.7);
-      canvas.drawCircle(
-        hc,
-        lr * 0.7,
-        Paint()
-          ..maskFilter = MaskFilter.blur(BlurStyle.normal, lr * 0.22)
-          ..shader = RadialGradient(
-            colors: [
-              _cloudWhite.withValues(alpha: opacity * 0.5),
-              _cloudWhite.withValues(alpha: 0.0),
-            ],
-          ).createShader(hRect),
-      );
+      if (lr > mr) {
+        mc = lc;
+        mr = lr;
+      }
     }
+    final hc = mc + Offset(-mr * 0.18, -mr * 0.30);
+    final hRect = Rect.fromCircle(center: hc, radius: mr * 0.8);
+    canvas.drawCircle(
+      hc,
+      mr * 0.8,
+      Paint()
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, mr * 0.16)
+        ..shader = RadialGradient(
+          colors: [
+            _cloudWhite.withValues(alpha: opacity * 0.5),
+            _cloudWhite.withValues(alpha: 0.0),
+          ],
+        ).createShader(hRect),
+    );
     canvas.restore();
   }
 
