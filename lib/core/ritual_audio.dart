@@ -50,10 +50,11 @@ class RitualAudio {
   // 하늘 앰비언트 더블버퍼(끊김 없는 루프 — 두 플레이어를 크로스페이드).
   final AudioPlayer _skyA = AudioPlayer(playerId: 'ritual_sky_a');
   final AudioPlayer _skyB = AudioPlayer(playerId: 'ritual_sky_b');
-  // 폭죽 원샷 보이스 풀(채널 스틸링 방지) — 피날레는 3초간 폭죽음을 빠르게 여러 번
-  // 호출하는데(가장 빽빽한 1.4초 창에 7발) 보이스가 부족하면 앞 소리가 잘렸다(사용자
-  // 피드백) → 8보이스 라운드로빈으로 동시 폭죽이 서로 안 끊기고 모두 끝까지 울리게 한다
-  // (게임엔진 멀티채널과 동일 효과). firework.mp3(~1.4s) × 최대 7중첩 < 8보이스라 안전.
+  // 폭죽 원샷 보이스 풀(채널 스틸링 방지) — 파쇄기 피날레는 3초 동안 폭죽음을 11발
+  // 호출한다(0ms + 예약 10발). firework.mp3는 잔향 포함 길이가 길어(~2.5s+) 8보이스로는
+  // 후반 폭죽(2550·2700·2880ms)이 초반(0·550·720ms)에 쓴 보이스를 아직 재생 중인데
+  // 재사용 → 앞 소리가 끊겼다(#6 사용자 피드백). → 16보이스로 늘려 한 피날레의 11발이
+  // 라운드로빈에서 절대 서로 겹치지 않게(각자 채널) 해, 모두 자연스럽게 겹쳐 울린다.
   final List<AudioPlayer> _fireworkPool = [
     AudioPlayer(playerId: 'firework_0'),
     AudioPlayer(playerId: 'firework_1'),
@@ -63,6 +64,14 @@ class RitualAudio {
     AudioPlayer(playerId: 'firework_5'),
     AudioPlayer(playerId: 'firework_6'),
     AudioPlayer(playerId: 'firework_7'),
+    AudioPlayer(playerId: 'firework_8'),
+    AudioPlayer(playerId: 'firework_9'),
+    AudioPlayer(playerId: 'firework_10'),
+    AudioPlayer(playerId: 'firework_11'),
+    AudioPlayer(playerId: 'firework_12'),
+    AudioPlayer(playerId: 'firework_13'),
+    AudioPlayer(playerId: 'firework_14'),
+    AudioPlayer(playerId: 'firework_15'),
   ];
   int _fwIdx = 0;
   // 오브제(공) 스퀴시·릴리스 round-robin 풀(빠른 연속 터치가 서로 안 끊기게).
