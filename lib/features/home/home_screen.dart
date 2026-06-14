@@ -579,8 +579,13 @@ class _HomeScreenState extends State<HomeScreen>
       // 문지르기는 시작점 기준 변위가 작게 왕복하므로 이 임계를 넘지 않아 안 굴러간다.
       // (세게/빠르게 문질러도 속도 때문에 굴러가던 문제 해결.)
       // 공 밖에서 시작한 드래그는 함몰 대상이 아니므로 기존 속도/거리 판정을 유지한다.
+      // #4: 공 위에서 시작한 제스처도, 일단 '문지르기'로 커밋되면 net(이동거리)로는
+      // 굴리기로 전환하지 않는다 — 천천히 문질러 돌아다녀도 공이 손가락으로 튀지 않게.
+      // 오직 명백한 빠른 플릭(speed>kStrokeEscape)일 때만 굴리기로 전환(의도적 굴림 유지).
       final bool wantRoll = _downOnBall
-          ? net > r * kRollNetOnBall
+          ? (_dragMode == _DragMode.stroke
+              ? _dragSpeed > kStrokeEscape
+              : net > r * kRollNetOnBall)
           : (_dragMode == _DragMode.stroke
               ? _dragSpeed > kStrokeEscape
               : (_dragSpeed > kRollSpeed || net > r * kRollNet));
@@ -811,6 +816,23 @@ class _HomeScreenState extends State<HomeScreen>
     _stretchB = null;
     Haptics.instance.pressRelease();
     RitualAudio.instance.objetSquelch();
+    // #4: 한 손가락만 떨어지고 주 포인터가 아직 공 위에 남아 있으면, 그 손가락의 드래그
+    // 추적을 '현재 위치에서' 새로 시작한다. 늘리는 동안 주 손가락이 시작점에서 멀어져
+    // net이 커진 상태라, 리셋하지 않으면 곧바로 굴리기로 잡혀 공이 손가락으로 튄다.
+    // 현재 위치로 _downPos/_lastPos를 옮기고 모드·속도를 비우면 net=0에서 다시 시작 →
+    // 남은 손가락은 (의도적 플릭 전까진) 제자리 문지르기로 이어져 공이 고정된다.
+    final pid = _pointerId;
+    final p = pid != null ? _activePointers[pid] : null;
+    if (p != null) {
+      _downPos = _lastPos = p;
+      _moved = false;
+      _dragMode = _DragMode.none;
+      _dragSpeed = 0;
+      _dragSpeedSeeded = false;
+      _flingVel = Offset.zero;
+      _flingSeeded = false;
+      _flingPeak = 0;
+    }
   }
 
   void _goToWriting() {
