@@ -38,15 +38,23 @@ class RitualAudio {
   StreamSubscription<void>? _loopCompleteSub;
   final AudioPlayer _shotA = AudioPlayer(playerId: 'ritual_shot_a');
   final AudioPlayer _shotB = AudioPlayer(playerId: 'ritual_shot_b');
+  // 종이비행기 당김 '도도도' 긴장 틱 — 당김 거리마다 짧은 톤. 세게 당길수록 음↑·소리↑.
+  // 빠른 연속 틱이 서로 안 끊기게 2보이스 라운드로빈 + playbackRate로 음정 변조.
+  final List<AudioPlayer> _pullPool = [
+    AudioPlayer(playerId: 'plane_pull_0'),
+    AudioPlayer(playerId: 'plane_pull_1'),
+  ];
+  int _pullIdx = 0;
   // 잔불 타닥타닥(단순 루프 — crackle은 경계가 조용해 갭이 안 들림).
   final AudioPlayer _emberLoop = AudioPlayer(playerId: 'ritual_ember');
   // 하늘 앰비언트 더블버퍼(끊김 없는 루프 — 두 플레이어를 크로스페이드).
   final AudioPlayer _skyA = AudioPlayer(playerId: 'ritual_sky_a');
   final AudioPlayer _skyB = AudioPlayer(playerId: 'ritual_sky_b');
-  // 폭죽 원샷 보이스 풀(채널 스틸링 방지) — 피날레는 3초간 폭죽음을 빠르게 여러 번
-  // 호출하는데(가장 빽빽한 1.4초 창에 7발) 보이스가 부족하면 앞 소리가 잘렸다(사용자
-  // 피드백) → 8보이스 라운드로빈으로 동시 폭죽이 서로 안 끊기고 모두 끝까지 울리게 한다
-  // (게임엔진 멀티채널과 동일 효과). firework.mp3(~1.4s) × 최대 7중첩 < 8보이스라 안전.
+  // 폭죽 원샷 보이스 풀(채널 스틸링 방지) — 파쇄기 피날레는 3초 동안 폭죽음을 11발
+  // 호출한다(0ms + 예약 10발). firework.mp3는 잔향 포함 길이가 길어(~2.5s+) 8보이스로는
+  // 후반 폭죽(2550·2700·2880ms)이 초반(0·550·720ms)에 쓴 보이스를 아직 재생 중인데
+  // 재사용 → 앞 소리가 끊겼다(#6 사용자 피드백). → 16보이스로 늘려 한 피날레의 11발이
+  // 라운드로빈에서 절대 서로 겹치지 않게(각자 채널) 해, 모두 자연스럽게 겹쳐 울린다.
   final List<AudioPlayer> _fireworkPool = [
     AudioPlayer(playerId: 'firework_0'),
     AudioPlayer(playerId: 'firework_1'),
@@ -56,6 +64,14 @@ class RitualAudio {
     AudioPlayer(playerId: 'firework_5'),
     AudioPlayer(playerId: 'firework_6'),
     AudioPlayer(playerId: 'firework_7'),
+    AudioPlayer(playerId: 'firework_8'),
+    AudioPlayer(playerId: 'firework_9'),
+    AudioPlayer(playerId: 'firework_10'),
+    AudioPlayer(playerId: 'firework_11'),
+    AudioPlayer(playerId: 'firework_12'),
+    AudioPlayer(playerId: 'firework_13'),
+    AudioPlayer(playerId: 'firework_14'),
+    AudioPlayer(playerId: 'firework_15'),
   ];
   int _fwIdx = 0;
   // 오브제(공) 스퀴시·릴리스 round-robin 풀(빠른 연속 터치가 서로 안 끊기게).
@@ -106,31 +122,85 @@ class RitualAudio {
 
   bool _booted = false;
 
+  // 앱이 백그라운드면 true — 새 재생을 막는다(앱 종료 후 소리 잔존 방지 — #1).
+  bool _suspended = false;
+
+  // 현재 돌고 있는 '지속 루프'를 다시 시작하는 함수(백그라운드 복귀 시 복원용 — #1 후속).
+  // 잔불 타닥(ember)·하늘 두둥실(sky)·연소(fire)·분쇄(shred)가 시작될 때 세팅되고,
+  // 각 정지/stopAll에서 비워진다. 복귀하면 이 함수를 다시 호출해 끊긴 소리를 되살린다.
+  Future<void> Function()? _activeLoopStarter;
+  Future<void> Function()? _pendingResume; // 백그라운드 진입 시점에 기억한 복원 함수
+
+  /// 백그라운드 진입: 지속 루프를 기억해 두고 모든 소리를 멈춘 뒤 새 재생을 막는다(#1).
+  Future<void> suspendForBackground() async {
+    _pendingResume = _activeLoopStarter; // 복귀 시 되살릴 지속 루프 기억
+    await stopAll(); // 실제 정지(아직 _suspended=false라 정상 동작)
+    _suspended = true; // 이후 새 재생 차단
+  }
+
+  /// 포그라운드 복귀: 재생을 다시 허용하고, 백그라운드 직전 돌던 지속 루프를 복원한다(#1).
+  Future<void> resumeFromBackground() async {
+    _suspended = false;
+    final resume = _pendingResume;
+    _pendingResume = null;
+    if (resume != null) await resume();
+  }
+
   /// iOS 무음 스위치와 무관하게 효과음이 들리도록 playback 컨텍스트로 1회 설정.
   Future<void> _boot() async {
     if (_booted) return;
     _booted = true;
     try {
-      await AudioPlayer.global.setAudioContext(
-        AudioContext(
-          iOS: AudioContextIOS(
-            category: AVAudioSessionCategory.playback,
-            options: const {AVAudioSessionOptions.mixWithOthers},
-          ),
-          android: const AudioContextAndroid(
-            isSpeakerphoneOn: false,
-            contentType: AndroidContentType.sonification,
-            usageType: AndroidUsageType.assistanceSonification,
-            audioFocus: AndroidAudioFocus.gainTransientMayDuck,
-          ),
+      // #6: 폭죽처럼 빠르게 겹치는 SFX가 서로 끊기지 않게 '미디어' 컨텍스트로.
+      // 기존 sonification+gainTransientMayDuck(기본값 gain)은 새 재생이 오디오 포커스를
+      // 독점해 앞 소리를 덕킹/중단시켰다. media+music+focus 없음으로 바꿔 여러 스트림이
+      // 게임 SFX처럼 자유롭게 동시에 섞이게 한다.
+      final ctx = AudioContext(
+        iOS: AudioContextIOS(
+          category: AVAudioSessionCategory.playback,
+          options: const {AVAudioSessionOptions.mixWithOthers},
+        ),
+        android: const AudioContextAndroid(
+          isSpeakerphoneOn: false,
+          contentType: AndroidContentType.music,
+          usageType: AndroidUsageType.media,
+          audioFocus: AndroidAudioFocus.none,
         ),
       );
+      await AudioPlayer.global.setAudioContext(ctx);
+      // ★ #6 진짜 원인: 전역 setAudioContext는 '이미 생성된' 플레이어에는 적용되지
+      //   않는다(audioplayers_android가 생성 시점 컨텍스트를 복사·보관). 우리 플레이어는
+      //   전부 필드 초기화로 부팅 전에 만들어져 기본값(audioFocus: gain = 독점 포커스)을
+      //   그대로 갖고 있어, 새 재생마다 포커스를 가로채 앞 소리를 끊었다(폭죽 끊김).
+      //   → 각 플레이어에 컨텍스트를 직접 적용해야 비로소 동시 재생이 된다.
+      for (final p in _allPlayers) {
+        try {
+          await p.setAudioContext(ctx);
+        } catch (_) {}
+      }
     } catch (e) {
       debugPrint('RitualAudio boot 실패(무시): $e');
     }
   }
 
+  /// 컨텍스트(audioFocus 등)를 일괄 적용하기 위한 전체 플레이어 목록.
+  List<AudioPlayer> get _allPlayers => [
+        ..._ritualLoopPool,
+        _shotA,
+        _shotB,
+        ..._pullPool,
+        _emberLoop,
+        _skyA,
+        _skyB,
+        ..._fireworkPool,
+        ..._objetPool,
+        ..._chewyPool,
+        _rub,
+        ..._typePool,
+      ];
+
   Future<void> _safe(Future<void> Function() body) async {
+    if (_suspended) return; // 백그라운드면 새 재생 무시(#1).
     try {
       await _boot();
       await body();
@@ -163,6 +233,7 @@ class RitualAudio {
   }
 
   Future<void> _stopLoopManual() => _safe(() async {
+        _activeLoopStarter = null; // 지속 루프 종료 — 복원 대상 해제(#1 후속)
         _loopAsset = null;
         _loopCompleteSub?.cancel();
         _loopCompleteSub = null;
@@ -173,25 +244,37 @@ class RitualAudio {
 
   // ── 태우기 ───────────────────────────────────────────────────────────────
   /// 연소 시작 — fire.mp3 루프(volume 1.0). release+수동 반복(loop 모드 무음 버그 회피).
-  Future<void> startFire() => _startLoopManual('audio/fire.mp3', 1.0);
+  Future<void> startFire() {
+    _activeLoopStarter = startFire; // 백그라운드 복귀 복원용(#1 후속)
+    return _startLoopManual('audio/fire.mp3', 1.0);
+  }
 
   /// 연소 종료(전소) — fire 루프 정지.
   Future<void> stopFire() => _stopLoopManual();
 
   /// 전소 후 잔불 타닥타닥 여운 — crackle.wav 루프(volume 0.7).
-  Future<void> startEmberCrackle() => _safe(() async {
-        await _emberLoop.stop();
-        await _emberLoop.setReleaseMode(ReleaseMode.loop);
-        await _emberLoop.setVolume(0.7);
-        await _emberLoop.play(AssetSource('audio/crackle.wav'), volume: 0.7);
-      });
+  Future<void> startEmberCrackle() {
+    _activeLoopStarter = startEmberCrackle; // 백그라운드 복귀 복원용(#1 후속)
+    return _safe(() async {
+      await _emberLoop.stop();
+      await _emberLoop.setReleaseMode(ReleaseMode.loop);
+      await _emberLoop.setVolume(0.7);
+      await _emberLoop.play(AssetSource('audio/crackle.wav'), volume: 0.7);
+    });
+  }
 
   /// 잔불 여운 정지.
-  Future<void> stopEmberCrackle() => _safe(() => _emberLoop.stop());
+  Future<void> stopEmberCrackle() {
+    _activeLoopStarter = null; // 지속 루프 종료 — 복원 대상 해제(#1 후속)
+    return _safe(() => _emberLoop.stop());
+  }
 
   // ── 파쇄기 ───────────────────────────────────────────────────────────────
   /// 분쇄 시작 — shred.mp3 루프(volume 1.0). release+수동 반복(loop 모드 무음 버그 회피).
-  Future<void> startShred() => _startLoopManual('audio/shred.mp3', 1.0);
+  Future<void> startShred() {
+    _activeLoopStarter = startShred; // 백그라운드 복귀 복원용(#1 후속)
+    return _startLoopManual('audio/shred.mp3', 1.0);
+  }
 
   /// 분쇄 종료 — shred 루프 정지.
   Future<void> stopShred() => _stopLoopManual();
@@ -224,10 +307,25 @@ class RitualAudio {
   /// 일회성 채널(접기·발사음) 즉시 정지. 접기 완료~발사 전 무음 구간 보장에 사용.
   Future<void> stopShot() => _safe(() => _shotA.stop());
 
+  /// 당김 '도도도' 긴장 틱 — 비행기를 당기는 동안 일정 거리마다 호출(슬링샷 장전 긴장감).
+  /// 당김 세기 p(0~1)가 클수록 음정(playbackRate)·음량을 올려 "도→도↗→도↗" 빌드업.
+  Future<void> planePullTension(double p) => _safe(() async {
+        final v = p.clamp(0.0, 1.0);
+        final player = _pullPool[_pullIdx];
+        _pullIdx = (_pullIdx + 1) % _pullPool.length;
+        await player.setReleaseMode(ReleaseMode.release);
+        // 더 크게(0.8~1.0) + 음정 변화 폭을 넓혀(0.78~1.95) 게이지 따라 또렷이 상승.
+        await player.play(AssetSource('audio/pull_tension.wav'),
+            volume: 0.8 + v * 0.2);
+        await player.setPlaybackRate(0.78 + v * 1.17); // 세게 당길수록 음↑(체감 ↑)
+      });
+
   /// '하늘 두둥실' 포근한 앰비언트 — 두 플레이어 크로스페이드 더블버퍼로 끊김 없이
   /// 무한 루프. 비행음(whoosh)이 끝나는 즈음 호출하면 볼륨 0→0.5 페이드인(그라데이션)
   /// 으로 자연스럽게 이어진다. 이미 돌고 있으면(중복 호출) 무시한다.
-  Future<void> startSky() => _safe(() async {
+  Future<void> startSky() {
+    _activeLoopStarter = startSky; // 백그라운드 복귀 복원용(#1 후속)
+    return _safe(() async {
         if (_skyRunning) return;
         _skyRunning = true;
         _skyUseA = true;
@@ -240,11 +338,15 @@ class RitualAudio {
             const Duration(milliseconds: 1400), (t) => _skyFadeIn = t);
         _scheduleSkySwap();
       });
+  }
 
   /// 하늘 앰비언트 정지('처음으로' 탭 등) — 타이머·두 플레이어 모두 정리.
   Future<void> stopSky() => _safe(_stopSkyInternal);
 
   Future<void> _stopSkyInternal() async {
+    if (identical(_activeLoopStarter, startSky)) {
+      _activeLoopStarter = null; // 하늘 루프 종료 — 복원 대상 해제(#1 후속)
+    }
     _skyRunning = false;
     _skySwap?.cancel();
     _skyXfade?.cancel();
@@ -445,6 +547,7 @@ class RitualAudio {
 
   /// 화면 dispose 시 호출 — 잔여 루프/원샷/앰비언트 모두 정지(다음 의식으로 안 샘).
   Future<void> stopAll() => _safe(() async {
+        _activeLoopStarter = null; // 모든 지속 루프 종료 — 복원 대상 해제(#1 후속)
         _skyRunning = false;
         _skySwap?.cancel();
         _skyXfade?.cancel();
@@ -457,6 +560,9 @@ class RitualAudio {
         }
         await _shotA.stop();
         await _shotB.stop();
+        for (final p in _pullPool) {
+          await p.stop();
+        }
         await _emberLoop.stop();
         await _skyA.stop();
         await _skyB.stop();

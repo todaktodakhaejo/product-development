@@ -54,7 +54,7 @@ class HomeScreen extends StatefulWidget {
 enum _DragMode { none, stroke, roll }
 
 class _HomeScreenState extends State<HomeScreen>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late final Ticker _ticker;
   final ValueNotifier<int> _frame = ValueNotifier(0);
 
@@ -66,6 +66,9 @@ class _HomeScreenState extends State<HomeScreen>
 
   // 센서: 흔들기(GST-01)용 선형 가속도(중력 제거) 1개만 구독.
   StreamSubscription? _accelSub;
+  // 의식/글쓰기 화면이 홈 위에 떠 있는 동안 true — 그 사이 홈 흔들기를 끈다
+  // (의식 중 폰을 흔들어도 홈 말랑이가 움직이지 않게, 화면 독립 — #1 후속).
+  bool _navAway = false;
   // armed 게이트 제거(§1): 연속 흔들기에서 가속도가 임계 아래로 안 떨어져
   // 재발동이 막히던 문제 → 쿨다운(90ms)만으로 게이팅한다.
   DateTime _lastShake = DateTime.fromMillisecondsSinceEpoch(0);
@@ -176,13 +179,21 @@ class _HomeScreenState extends State<HomeScreen>
   // 하단 힌트 위치(바로 글쓰기 버튼 위에 띄움).
   static const double _kHintBottom = 88;
 
-  // 흔들기(GST-01) 선형 가속도 임계(m/s², §1 강화). userAccelerometer는 중력이
-  // 제거돼 정지 시 ≈0, 직선으로 흔들면 즉시 큰 값이 잡힌다. 임계를 낮춰(9) 쉽게
-  // 발동하고, 상한을 26으로 당겨 강도가 빨리 포화된다.
-  static const double kShakeOn = 9.0; // 발동 임계(12→9)
-  static const double kShakeMax = 26.0; // 정규화 상한(32→26)
+  // 흔들기(GST-01) 선형 가속도 임계(m/s²). userAccelerometer는 중력이 제거돼
+  // 정지 시 ≈0, 직선으로 흔들면 큰 값이 잡힌다. #5 둔감화(2026-06-14): 걷기 발구름
+  // 단발 스파이크(≈6~10)에도 발동하던 문제 → 임계를 9→14로 올려 '격한 흔들기'만
+  // 잡고, 상한도 26→34로 올려 raw 정규화가 새 바닥에 맞게 분포되게 한다.
+  static const double kShakeOn = 14.0; // 발동 임계(9→14, 둔감화)
+  static const double kShakeMax = 34.0; // 정규화 상한(26→34)
   static const Duration _shakeCooldown =
       Duration(milliseconds: 70); // 90→70 (v8 §2 연속 반응 즉각)
+
+  // #5 흔들기 무장(arming): 새 사이클은 짧은 창(_shakeArmWindow) 안에 임계 이상
+  // 샘플이 2회 이상 들어와야 시작한다 — 걷기 같은 '단발' 스파이크는 1회로 끝나
+  // 무장만 되고 발동되지 않는다(격하게 '흔들면' 짧은 시간에 여러 피크가 잡힌다).
+  // 사이클이 이미 진행 중이면 무장 게이트를 건너뛰어 즉각 반응을 유지한다.
+  DateTime _shakeArmTime = DateTime.fromMillisecondsSinceEpoch(0);
+  static const Duration _shakeArmWindow = Duration(milliseconds: 350);
 
   // 드래그 판별 임계(v6 §2 — 속도 기반). 거리·방향전환 기반 상수는 폐기.
   static const double kRollSpeed = 650; // px/s, 손가락 속도가 이를 넘으면 굴리기(900→650: 굴리기 시작 더 쉽게)
@@ -209,6 +220,7 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this); // 생명주기 관찰(#1 백그라운드 정지)
     _ticker = createTicker(_onTick)..start();
     _listenSensors();
     // 흘려보냄 횟수(releaseCount)·공 놀이 횟수(interactionCount) **둘 다 세션 한정** —
@@ -325,11 +337,20 @@ class _HomeScreenState extends State<HomeScreen>
         // 흔들면 90ms마다 계속 임펄스가 쌓여 공이 통통 튀고 벽에 부딪힌다.
         if (mag < kShakeOn) return;
         final now = DateTime.now();
+        // #5 무장 게이트: 흔들기 사이클이 아직 시작 전이면, '단발' 스파이크(걷기)는
+        // 무시하고 짧은 창 안에 두 번째 자격 샘플이 와야 발동한다(격한 흔들기만).
+        if (!_shakeCycleActive) {
+          if (now.difference(_shakeArmTime) > _shakeArmWindow) {
+            _shakeArmTime = now; // 첫 자격 샘플 — 무장만, 이번엔 발동 안 함.
+            return;
+          }
+          // 창 안 두 번째 자격 샘플 → 격한 흔들기로 확정, 아래로 진행해 발동.
+        }
         if (now.difference(_lastShake) < _shakeCooldown) return;
         _lastShake = now;
 
         // 임펄스/진동 공통 세기 raw(v9 §1): 흔든 가속도를 0~1로 정규화한 단일 값.
-        // kShakeOn=9, kShakeMax=26이므로 raw = ((mag-9)/(26-9)).clamp(0,1). 임펄스 하한
+        // kShakeOn=14, kShakeMax=34이므로 raw = ((mag-14)/(34-14)).clamp(0,1). 임펄스 하한
         // 적용 전 값이며, 아래 임펄스(하한 0.25)와 진동 3단(0.40/0.72)이 모두 이 raw를
         // 공유해 모션 세기와 진동 세기가 함께 변한다.
         final raw =
@@ -793,15 +814,45 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   void _goToWriting() {
+    // 의식/글쓰기 동안 홈 흔들기 비활성화(#1 후속): 의식 중 폰을 흔들어도 홈
+    // 말랑이가 움직이지 않게 한다. 복귀 시 다시 구독한다(아래 .then).
+    _navAway = true;
+    _accelSub?.cancel();
+    _accelSub = null;
     // 복귀 시(글쓰기 취소/뒤로) 홈을 멘트 화면으로 복원(§6 보강). 카운트 증가는
     // 의식 완료 감지(_onSessionChanged)에서만 일어나므로 여기선 UI만 초기화.
     Navigator.of(context)
         .push(MaterialPageRoute(builder: (_) => const WritingScreen()))
-        .then((_) => _restoreHomeInitial());
+        .then((_) {
+      if (!mounted) return;
+      _navAway = false;
+      _restoreHomeInitial();
+      if (_accelSub == null) _listenSensors(); // 홈 복귀 → 흔들기 재구독
+    });
+  }
+
+  /// #1 백그라운드 진입 시 흔들기 가속도 센서 구독을 끊어, 앱을 꺼도 폰을 흔들면
+  /// 공이 반응하거나 진동이 나지 않게 한다(오디오·진동 정지는 app.dart가 전역 처리).
+  /// 포그라운드 복귀 시 다시 구독한다. 손 떨림 누적도 함께 정리한다.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached) {
+      _accelSub?.cancel();
+      _accelSub = null;
+      _shakeEndTimer?.cancel();
+      RitualAudio.instance.stopRub(); // 문지르기 루프가 떠 있으면 정지
+    } else if (state == AppLifecycleState.resumed) {
+      // 홈이 최상위일 때만 재구독(의식/글쓰기 중 복귀면 _navAway=true라 건너뜀 — #1 후속).
+      if (_accelSub == null && !_navAway) _listenSensors();
+    }
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _session?.removeListener(_onSessionChanged);
     _ticker.dispose();
     _accelSub?.cancel();

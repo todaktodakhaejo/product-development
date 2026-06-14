@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import 'core/analytics.dart';
+import 'core/haptics.dart';
+import 'core/ritual_audio.dart';
 import 'features/home/home_screen.dart';
 import 'features/onboarding/onboarding_screen.dart';
 import 'services/storage_service.dart';
@@ -33,16 +35,24 @@ class _EmotionResolutionAppState extends State<EmotionResolutionApp>
     WidgetsBinding.instance.addObserver(this);
   }
 
-  /// 앱 생명주기로 세션 경계를 잡는다(분석 session_summary용).
-  /// - 백그라운드(paused)로 가면 현재 세션을 1건으로 요약 전송.
-  /// - 다시 포그라운드(resumed)로 오면 새 세션 시작(session_started).
+  /// 앱 생명주기로 세션 경계를 잡고(분석 session_summary용), 백그라운드 진입 시
+  /// 소리·진동을 전역 정지한다(#1: 앱을 꺼도 소리·진동·흔들기가 남지 않게).
+  /// - 백그라운드(paused/hidden/detached): 세션 요약 전송 + 오디오 stopAll + 햅틱 suspend.
+  /// - 포그라운드(resumed): 새 세션 시작 + 오디오·햅틱 재개(자동 재생은 하지 않음).
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
     if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden ||
         state == AppLifecycleState.detached) {
       widget.analytics.endSession();
+      // 돌던 지속 루프(잔불·하늘 등)를 기억해 두고 모든 소리를 멈춘 뒤 재생을 막는다.
+      RitualAudio.instance.suspendForBackground();
+      Haptics.instance.setSuspended(true);
     } else if (state == AppLifecycleState.resumed) {
+      Haptics.instance.setSuspended(false);
+      // 백그라운드 직전 돌던 지속 사운드(잔불 타닥·하늘 두둥실)를 다시 재생한다(#1 후속).
+      RitualAudio.instance.resumeFromBackground();
       widget.analytics.sessionStarted();
     }
   }
