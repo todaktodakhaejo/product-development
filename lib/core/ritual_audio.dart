@@ -157,11 +157,16 @@ class RitualAudio {
             category: AVAudioSessionCategory.playback,
             options: const {AVAudioSessionOptions.mixWithOthers},
           ),
+          // #6: 폭죽처럼 빠르게 겹치는 SFX가 서로 끊기지 않게 '미디어' 컨텍스트로.
+          // 기존 sonification(알림음류)+gainTransientMayDuck은 안드로이드가 소리를
+          // 알림처럼 한 번에 하나만 내보내거나, 새 재생이 오디오 포커스를 가져가며 앞
+          // 소리를 덕킹/중단시켜 폭죽이 끊겼다(보이스를 늘려도 동일). media+music+
+          // focus 없음으로 바꿔 여러 스트림이 게임 SFX처럼 자유롭게 동시에 섞이게 한다.
           android: const AudioContextAndroid(
             isSpeakerphoneOn: false,
-            contentType: AndroidContentType.sonification,
-            usageType: AndroidUsageType.assistanceSonification,
-            audioFocus: AndroidAudioFocus.gainTransientMayDuck,
+            contentType: AndroidContentType.music,
+            usageType: AndroidUsageType.media,
+            audioFocus: AndroidAudioFocus.none,
           ),
         ),
       );
