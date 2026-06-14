@@ -1,7 +1,7 @@
 name: emotion_resolution_app
 description: "감정을 흘려보내며 해소하는 앱 (Emotion Resolution App)"
 publish_to: "none"
-version: 0.1.23+24
+version: 0.1.24+25
 
 environment:
   # Color.withValues / 최신 위젯 API 사용 → Flutter 3.27+ (Dart 3.6+)
@@ -60,6 +60,8 @@ flutter:
     - assets/audio/sky_float.wav
     # 태우기 전소 후 — 잔불 타닥타닥 여운 루프(합성 생성).
     - assets/audio/crackle.wav
+    # 말랑이 누르기(press) 시작음 — 사용자 제공 영상에서 추출(트림·노멀라이즈).
+    - assets/audio/press.wav
     # 오브제(공) 만지기 — slime 스퀴시 6슬라이스 + squelch(릴리스) 3슬라이스.
     - assets/audio/slime_0.wav
     - assets/audio/slime_1.wav
