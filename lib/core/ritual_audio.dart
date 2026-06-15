@@ -86,6 +86,9 @@ class RitualAudio {
   // 지연 최소화 위해 프리로드(ReleaseMode.stop + setSource) 후 seek(0)+resume로 재생.
   final AudioPlayer _press = AudioPlayer(playerId: 'objet_press');
   bool _pressWarmed = false;
+  // 말랑이 떼기(release) 전용 효과음(사용자 제공 영상 추출, release.wav). 동일 프리로드 패턴.
+  final AudioPlayer _release = AudioPlayer(playerId: 'objet_release');
+  bool _releaseWarmed = false;
   // 쫀득·몰캉 스트레치(떡 늘어나는) 레이어 풀 — slime과 동시에 깔리도록 별도 채널.
   final List<AudioPlayer> _chewyPool = [
     AudioPlayer(playerId: 'chewy_0'),
@@ -186,6 +189,7 @@ class RitualAudio {
         } catch (_) {}
       }
       await _warmPress(); // 누르기음 프리로드(첫 누르기부터 지연 없이)
+      await _warmRelease(); // 떼기음 프리로드
     } catch (e) {
       debugPrint('RitualAudio boot 실패(무시): $e');
     }
@@ -205,6 +209,7 @@ class RitualAudio {
         ..._chewyPool,
         _rub,
         _press,
+        _release,
         ..._typeVoices,
       ];
 
@@ -463,6 +468,24 @@ class RitualAudio {
     } catch (_) {}
   }
 
+  /// 말랑이 떼기(release) 소리 — 사용자 제공 영상에서 추출한 release.wav 1종(프리로드+재생).
+  Future<void> objetRelease({double gain = 1.0}) => _safe(() async {
+        await _warmRelease();
+        await _release.setVolume(gain.clamp(0.0, 1.0));
+        await _release.seek(Duration.zero);
+        await _release.resume();
+      });
+
+  /// release.wav를 전용 플레이어에 1회 프리로드(idempotent).
+  Future<void> _warmRelease() async {
+    if (_releaseWarmed) return;
+    _releaseWarmed = true;
+    try {
+      await _release.setReleaseMode(ReleaseMode.stop);
+      await _release.setSource(AssetSource('audio/release.wav'));
+    } catch (_) {}
+  }
+
   /// 공 만지기 — slime 스퀴시 슬라이스 random 재생(round-robin). throttle=true면
   /// 연속 제스처(쓰다듬기·굴리기) 스팸을 막기 위해 ~70ms 간격 제한.
   Future<void> objetSquish({double gain = 0.9, bool throttle = false}) {
@@ -633,6 +656,7 @@ class RitualAudio {
           await p.stop();
         }
         await _press.stop();
+        await _release.stop();
         for (final p in _chewyPool) {
           await p.stop();
         }

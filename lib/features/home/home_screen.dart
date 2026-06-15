@@ -696,9 +696,8 @@ class _HomeScreenState extends State<HomeScreen>
       if (ball.hitTest(_downPos)) {
         ball.pressEnd();
         Haptics.instance.pressRelease();
-        // 떼는 순간 "뽁" 팝: squelch + 쫀득 mochi 레이어를 겹쳐 통통 튀는 손맛(ⓔ).
-        RitualAudio.instance.objetSquelch();
-        RitualAudio.instance.objetStretch(gain: 0.7);
+        // 떼는 순간 소리(사용자 제공 영상 추출). 기존 squelch+mochi 레이어에서 교체.
+        RitualAudio.instance.objetRelease();
         _analytics?.gesturePerformed(
             'press', (e.timeStamp - _pressDownTime).inMilliseconds);
       }
