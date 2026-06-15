@@ -83,7 +83,9 @@ const double _kDrawVisualMax = 370;
 /// draw 벡터의 보조 혼합용 던지기 속도 정규화 분모(놓는 손짓 속도 가미).
 const double _kFlickSpan = 2600;
 /// 발사 기본 상향 바이어스(거의 수직으로 당겨도 위 하늘로 솟게). 0~1.
-const double _kUpwardBias = 0.55;
+/// 조준/발사 방향의 수직(위)에서의 최대 편향 = 45°(sin 45°). 좌우로 많이 당겨도
+/// 화살표·발사 각도가 수직에서 최대 45°까지만 벌어지게 클램프한다(#7 사용자 요청).
+const double _kMaxAimSin = 0.70710678; // sin(45°)
 
 // done 하늘 씬: 하늘 그라데이션·햇무리 제거(사용자 요청) — 원래 다크 배경 위에
 // 구름만 천천히 떠다닌다(그라데이션/햇무리 색 상수도 함께 제거).
@@ -263,12 +265,10 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
 
   void _onPullUpdate(DragUpdateDetails d) {
     if (_phase != _Phase.folded) return;
-    // ── draw-back 누적: 손가락 따라 비행기를 당긴다 ──
-    // 주로 아래(몸 쪽, +dy)로 당기는 의도. 위로 미는 성분(-dy)은 절반만 반영해
-    //  '아래로 장전' 느낌을 유지(위로 밀어 발사를 약화시키는 역장전 방지).
-    var delta = d.delta;
-    if (delta.dy < 0) delta = Offset(delta.dx, delta.dy * 0.5);
-    var next = _drawOffset + delta;
+    // ── draw-back 누적: 손가락을 그대로 따라 비행기를 당긴다 ──
+    // #7: 비행기가 손가락 바로 아래에 오도록 좌우·상하 모두 1:1로 추종한다(상한 내).
+    //  (기존엔 위로 미는 성분 -dy를 절반만 반영해 손가락과 어긋났음 — 제거.)
+    var next = _drawOffset + d.delta;
     // 시각 이동 상한(화면 밖으로 끌려나가지 않게). 길이만 클램프(방향 유지).
     if (next.distance > _kDrawVisualMax) {
       next = next / next.distance * _kDrawVisualMax;
@@ -347,11 +347,8 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
       final m = launch.distance;
       if (m > 0) launch = launch / m; // 재정규화.
     }
-    // ── 상향 바이어스: 거의 수직으로 당겨도 위 하늘로 솟게 -y 성분 보강 ──
-    launch = Offset(launch.dx * (1 - _kUpwardBias),
-        launch.dy * (1 - _kUpwardBias) - _kUpwardBias);
-    final lm = launch.distance;
-    _flyDir = lm > 0 ? launch / lm : const Offset(0, -1);
+    // ── 방향: 가로는 당김을 충실히 반영(수직에서 최대 45°), 세로는 항상 위로 솟게 ──
+    _flyDir = _launchDirFrom(launch);
 
     // ── 세기 = 당긴 거리 정규화(많이 당길수록 멀리). 발사 임팩트 강도에도 사용 ──
     _flySpeed =
@@ -454,14 +451,18 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     final draw = _drawOffset;
     final dd = draw.distance;
     if (dd < _kDrawMin) return (dir: const Offset(0, -1), power: 0);
-    var l = -draw / dd;
-    l = Offset(
-        l.dx * (1 - _kUpwardBias), l.dy * (1 - _kUpwardBias) - _kUpwardBias);
-    final m = l.distance;
     return (
-      dir: m > 0 ? l / m : const Offset(0, -1),
+      dir: _launchDirFrom(-draw / dd),
       power: ((dd - _kDrawMin) / _kDrawSpan).clamp(0.0, 1.0),
     );
+  }
+
+  /// 발사/조준 단위방향. [opp]=당김 반대 단위벡터(+flick). 가로는 당김을 충실히
+  /// 반영하되 수직(위)에서 ±45°로 클램프하고, 세로는 항상 위로(하늘로 솟게) — #7.
+  Offset _launchDirFrom(Offset opp) {
+    final ax = opp.dx.clamp(-_kMaxAimSin, _kMaxAimSin);
+    final up = sqrt(1 - ax * ax);
+    return Offset(ax, -up);
   }
 
   @override
@@ -760,23 +761,34 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     //  당기지 않으면 정지 다트, 약투 후엔 _recoil 스프링으로 제자리 복귀.
     if (_phase == _Phase.folded) {
       const glyph = PaperPlaneGlyph(size: _kGlyphSize, shadow: true);
+      final dd = _drawOffset.distance;
       // 당긴 거리(0~1, 시각 상한 기준). 장전 scale/tilt 강도.
-      final loaded = (_drawOffset.distance / _kDrawVisualMax).clamp(0.0, 1.0);
+      final loaded = (dd / _kDrawVisualMax).clamp(0.0, 1.0);
 
       // v2(사용자 요청): 당기는 동안 '덜덜 떨림' 제거 — 손가락 따라 깔끔하게 당겨졌다
       //  놓으면 날아간다. 장전감은 미세 scale(압축) + 발사 방향으로 코 살짝 기울임만.
       final loadScale = 1.0 - loaded * 0.06; // 당길수록 살짝 작아짐(장전 압축).
-      // 발사 방향(=당김 반대)으로 코를 살짝 기울임. 거의 수직 당김이면 0에 수렴.
+      // #7: 당김 '방향'의 가로 성분(dx/거리, -1~1)으로 Y축 유사 3D 회전. 전체 당김거리
+      //  대비가 아니라 '방향' 기준이라, 슬링샷처럼 주로 아래로 당겨도 좌우 성분이 바로
+      //  반영돼 또렷이 입체로 돈다. 왼쪽으로 가면 오른쪽 면, 오른쪽으로 가면 왼쪽 면이 보임.
+      final yawN = dd > 0.001 ? (_drawOffset.dx / dd).clamp(-1.0, 1.0) : 0.0;
+      final yaw = yawN * (42 * pi / 180); // 최대 ~42°(가로로 당길수록 크게 돎)
+      // 발사 방향(=당김 반대)으로 코를 살짝 기울임(기존 Z 틸트, 약하게).
       final tiltSign = _drawOffset.dx == 0 ? 0.0 : -_drawOffset.dx.sign;
-      final loadTilt = tiltSign * loaded * (5 * pi / 180);
+      final loadTilt = tiltSign * loaded * (3 * pi / 180);
+      final m = Matrix4.identity()
+        ..setEntry(3, 2, 0.003) // 원근감(perspective) 강화 — 3D 입체감 또렷하게
+        ..rotateY(yaw)
+        ..rotateZ(loadTilt);
 
       if (_drawOffset == Offset.zero && !_pulling) return glyph;
       return Transform.translate(
         offset: _drawOffset,
-        child: Transform.rotate(
-          angle: loadTilt,
-          child: Transform.scale(
-            scale: loadScale,
+        child: Transform.scale(
+          scale: loadScale,
+          child: Transform(
+            alignment: Alignment.center,
+            transform: m,
             child: glyph,
           ),
         ),
