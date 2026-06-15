@@ -761,16 +761,18 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     //  당기지 않으면 정지 다트, 약투 후엔 _recoil 스프링으로 제자리 복귀.
     if (_phase == _Phase.folded) {
       const glyph = PaperPlaneGlyph(size: _kGlyphSize, shadow: true);
+      final dd = _drawOffset.distance;
       // 당긴 거리(0~1, 시각 상한 기준). 장전 scale/tilt 강도.
-      final loaded = (_drawOffset.distance / _kDrawVisualMax).clamp(0.0, 1.0);
+      final loaded = (dd / _kDrawVisualMax).clamp(0.0, 1.0);
 
       // v2(사용자 요청): 당기는 동안 '덜덜 떨림' 제거 — 손가락 따라 깔끔하게 당겨졌다
       //  놓으면 날아간다. 장전감은 미세 scale(압축) + 발사 방향으로 코 살짝 기울임만.
       final loadScale = 1.0 - loaded * 0.06; // 당길수록 살짝 작아짐(장전 압축).
-      // #7: 좌우로 당긴 정도(-1~1) → Y축 유사 3D 회전. 왼쪽으로 가면 비행기 오른쪽 면이,
-      //  오른쪽으로 가면 왼쪽 면이 더 보이게 살짝 돌아간다(평면 → 입체감). 원근감 포함.
-      final yawN = (_drawOffset.dx / _kDrawVisualMax).clamp(-1.0, 1.0);
-      final yaw = yawN * (38 * pi / 180); // 최대 ~38°(좌우로 당기면 또렷이 입체로 돌아감)
+      // #7: 당김 '방향'의 가로 성분(dx/거리, -1~1)으로 Y축 유사 3D 회전. 전체 당김거리
+      //  대비가 아니라 '방향' 기준이라, 슬링샷처럼 주로 아래로 당겨도 좌우 성분이 바로
+      //  반영돼 또렷이 입체로 돈다. 왼쪽으로 가면 오른쪽 면, 오른쪽으로 가면 왼쪽 면이 보임.
+      final yawN = dd > 0.001 ? (_drawOffset.dx / dd).clamp(-1.0, 1.0) : 0.0;
+      final yaw = yawN * (42 * pi / 180); // 최대 ~42°(가로로 당길수록 크게 돎)
       // 발사 방향(=당김 반대)으로 코를 살짝 기울임(기존 Z 틸트, 약하게).
       final tiltSign = _drawOffset.dx == 0 ? 0.0 : -_drawOffset.dx.sign;
       final loadTilt = tiltSign * loaded * (3 * pi / 180);
