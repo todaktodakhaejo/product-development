@@ -83,7 +83,9 @@ const double _kDrawVisualMax = 370;
 /// draw 벡터의 보조 혼합용 던지기 속도 정규화 분모(놓는 손짓 속도 가미).
 const double _kFlickSpan = 2600;
 /// 발사 기본 상향 바이어스(거의 수직으로 당겨도 위 하늘로 솟게). 0~1.
-const double _kUpwardBias = 0.55;
+/// 조준/발사 방향의 수직(위)에서의 최대 편향 = 45°(sin 45°). 좌우로 많이 당겨도
+/// 화살표·발사 각도가 수직에서 최대 45°까지만 벌어지게 클램프한다(#7 사용자 요청).
+const double _kMaxAimSin = 0.70710678; // sin(45°)
 
 // done 하늘 씬: 하늘 그라데이션·햇무리 제거(사용자 요청) — 원래 다크 배경 위에
 // 구름만 천천히 떠다닌다(그라데이션/햇무리 색 상수도 함께 제거).
@@ -345,11 +347,8 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
       final m = launch.distance;
       if (m > 0) launch = launch / m; // 재정규화.
     }
-    // ── 상향 바이어스: 거의 수직으로 당겨도 위 하늘로 솟게 -y 성분 보강 ──
-    launch = Offset(launch.dx * (1 - _kUpwardBias),
-        launch.dy * (1 - _kUpwardBias) - _kUpwardBias);
-    final lm = launch.distance;
-    _flyDir = lm > 0 ? launch / lm : const Offset(0, -1);
+    // ── 방향: 가로는 당김을 충실히 반영(수직에서 최대 45°), 세로는 항상 위로 솟게 ──
+    _flyDir = _launchDirFrom(launch);
 
     // ── 세기 = 당긴 거리 정규화(많이 당길수록 멀리). 발사 임팩트 강도에도 사용 ──
     _flySpeed =
@@ -452,14 +451,18 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
     final draw = _drawOffset;
     final dd = draw.distance;
     if (dd < _kDrawMin) return (dir: const Offset(0, -1), power: 0);
-    var l = -draw / dd;
-    l = Offset(
-        l.dx * (1 - _kUpwardBias), l.dy * (1 - _kUpwardBias) - _kUpwardBias);
-    final m = l.distance;
     return (
-      dir: m > 0 ? l / m : const Offset(0, -1),
+      dir: _launchDirFrom(-draw / dd),
       power: ((dd - _kDrawMin) / _kDrawSpan).clamp(0.0, 1.0),
     );
+  }
+
+  /// 발사/조준 단위방향. [opp]=당김 반대 단위벡터(+flick). 가로는 당김을 충실히
+  /// 반영하되 수직(위)에서 ±45°로 클램프하고, 세로는 항상 위로(하늘로 솟게) — #7.
+  Offset _launchDirFrom(Offset opp) {
+    final ax = opp.dx.clamp(-_kMaxAimSin, _kMaxAimSin);
+    final up = sqrt(1 - ax * ax);
+    return Offset(ax, -up);
   }
 
   @override
@@ -767,12 +770,12 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
       // #7: 좌우로 당긴 정도(-1~1) → Y축 유사 3D 회전. 왼쪽으로 가면 비행기 오른쪽 면이,
       //  오른쪽으로 가면 왼쪽 면이 더 보이게 살짝 돌아간다(평면 → 입체감). 원근감 포함.
       final yawN = (_drawOffset.dx / _kDrawVisualMax).clamp(-1.0, 1.0);
-      final yaw = yawN * (26 * pi / 180); // 최대 ~26°(약간 돌아감)
+      final yaw = yawN * (38 * pi / 180); // 최대 ~38°(좌우로 당기면 또렷이 입체로 돌아감)
       // 발사 방향(=당김 반대)으로 코를 살짝 기울임(기존 Z 틸트, 약하게).
       final tiltSign = _drawOffset.dx == 0 ? 0.0 : -_drawOffset.dx.sign;
       final loadTilt = tiltSign * loaded * (3 * pi / 180);
       final m = Matrix4.identity()
-        ..setEntry(3, 2, 0.0013) // 원근감(perspective)
+        ..setEntry(3, 2, 0.003) // 원근감(perspective) 강화 — 3D 입체감 또렷하게
         ..rotateY(yaw)
         ..rotateZ(loadTilt);
 
