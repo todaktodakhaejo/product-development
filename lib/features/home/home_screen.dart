@@ -779,7 +779,7 @@ class _HomeScreenState extends State<HomeScreen>
     RitualAudio.instance.stopRub();
     ball.stretchStart(pa, pb);
     Haptics.instance.fire(HapticLevel.light);
-    RitualAudio.instance.objetStretch(gain: 0.6); // 떡 늘어나는 쫀득 레이어
+    RitualAudio.instance.objetStretchSfx(); // 늘리기 시작음(사용자 제공 영상 추출)
   }
 
   /// 스트레치 중 두 손가락의 현재 좌표로 늘림 세기·축을 갱신한다.
@@ -795,9 +795,10 @@ class _HomeScreenState extends State<HomeScreen>
     ball.stretchUpdate(pa, pb);
     // 분석용: 제스처 중 도달한 최대 늘림(along) 추적.
     if (ball.stretchAlong > _stretchPeakAlong) _stretchPeakAlong = ball.stretchAlong;
+    // 늘리는 중 반복 사운드 제거 — 새 늘리기음(stretch.wav, 0.93s)은 시작 시 1회만
+    // 재생한다(반복 재생하면 긴 음이 서로 잘려 끊겨 들림). 2026-06-15.
     if ((ball.stretchAlong - _lastStretchSoundAlong).abs() > 0.06) {
       _lastStretchSoundAlong = ball.stretchAlong;
-      RitualAudio.instance.objetStretch(gain: 0.45);
     }
   }
 
@@ -808,7 +809,7 @@ class _HomeScreenState extends State<HomeScreen>
     _stretchA = null;
     _stretchB = null;
     Haptics.instance.pressRelease();
-    RitualAudio.instance.objetSquelch();
+    RitualAudio.instance.objetRelease(); // 늘리고 뗄 때 = 새 떼기음(release.wav)
     // #4: 한 손가락만 떨어지고 주 포인터가 아직 공 위에 남아 있으면, 그 손가락의 드래그
     // 추적을 '현재 위치에서' 새로 시작한다. 늘리는 동안 주 손가락이 시작점에서 멀어져
     // net이 커진 상태라, 리셋하지 않으면 곧바로 굴리기로 잡혀 공이 손가락으로 튄다.

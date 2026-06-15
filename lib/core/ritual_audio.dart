@@ -89,6 +89,9 @@ class RitualAudio {
   // 말랑이 떼기(release) 전용 효과음(사용자 제공 영상 추출, release.wav). 동일 프리로드 패턴.
   final AudioPlayer _release = AudioPlayer(playerId: 'objet_release');
   bool _releaseWarmed = false;
+  // 말랑이 늘리기(stretch) 전용 효과음(사용자 제공 영상 추출, stretch.wav). 동일 프리로드 패턴.
+  final AudioPlayer _stretchSfx = AudioPlayer(playerId: 'objet_stretch_sfx');
+  bool _stretchSfxWarmed = false;
   // 쫀득·몰캉 스트레치(떡 늘어나는) 레이어 풀 — slime과 동시에 깔리도록 별도 채널.
   final List<AudioPlayer> _chewyPool = [
     AudioPlayer(playerId: 'chewy_0'),
@@ -190,6 +193,7 @@ class RitualAudio {
       }
       await _warmPress(); // 누르기음 프리로드(첫 누르기부터 지연 없이)
       await _warmRelease(); // 떼기음 프리로드
+      await _warmStretchSfx(); // 늘리기음 프리로드
     } catch (e) {
       debugPrint('RitualAudio boot 실패(무시): $e');
     }
@@ -210,6 +214,7 @@ class RitualAudio {
         _rub,
         _press,
         _release,
+        _stretchSfx,
         ..._typeVoices,
       ];
 
@@ -486,6 +491,24 @@ class RitualAudio {
     } catch (_) {}
   }
 
+  /// 말랑이 늘리기(stretch) 소리 — 사용자 제공 영상 추출 stretch.wav(늘리기 시작 시 1회).
+  Future<void> objetStretchSfx({double gain = 1.0}) => _safe(() async {
+        await _warmStretchSfx();
+        await _stretchSfx.setVolume(gain.clamp(0.0, 1.0));
+        await _stretchSfx.seek(Duration.zero);
+        await _stretchSfx.resume();
+      });
+
+  /// stretch.wav를 전용 플레이어에 1회 프리로드(idempotent).
+  Future<void> _warmStretchSfx() async {
+    if (_stretchSfxWarmed) return;
+    _stretchSfxWarmed = true;
+    try {
+      await _stretchSfx.setReleaseMode(ReleaseMode.stop);
+      await _stretchSfx.setSource(AssetSource('audio/stretch.wav'));
+    } catch (_) {}
+  }
+
   /// 공 만지기 — slime 스퀴시 슬라이스 random 재생(round-robin). throttle=true면
   /// 연속 제스처(쓰다듬기·굴리기) 스팸을 막기 위해 ~70ms 간격 제한.
   Future<void> objetSquish({double gain = 0.9, bool throttle = false}) {
@@ -657,6 +680,7 @@ class RitualAudio {
         }
         await _press.stop();
         await _release.stop();
+        await _stretchSfx.stop();
         for (final p in _chewyPool) {
           await p.stop();
         }
