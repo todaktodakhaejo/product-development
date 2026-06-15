@@ -263,12 +263,10 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
 
   void _onPullUpdate(DragUpdateDetails d) {
     if (_phase != _Phase.folded) return;
-    // ── draw-back 누적: 손가락 따라 비행기를 당긴다 ──
-    // 주로 아래(몸 쪽, +dy)로 당기는 의도. 위로 미는 성분(-dy)은 절반만 반영해
-    //  '아래로 장전' 느낌을 유지(위로 밀어 발사를 약화시키는 역장전 방지).
-    var delta = d.delta;
-    if (delta.dy < 0) delta = Offset(delta.dx, delta.dy * 0.5);
-    var next = _drawOffset + delta;
+    // ── draw-back 누적: 손가락을 그대로 따라 비행기를 당긴다 ──
+    // #7: 비행기가 손가락 바로 아래에 오도록 좌우·상하 모두 1:1로 추종한다(상한 내).
+    //  (기존엔 위로 미는 성분 -dy를 절반만 반영해 손가락과 어긋났음 — 제거.)
+    var next = _drawOffset + d.delta;
     // 시각 이동 상한(화면 밖으로 끌려나가지 않게). 길이만 클램프(방향 유지).
     if (next.distance > _kDrawVisualMax) {
       next = next / next.distance * _kDrawVisualMax;
@@ -766,17 +764,26 @@ class _PaperPlaneRitualScreenState extends State<PaperPlaneRitualScreen>
       // v2(사용자 요청): 당기는 동안 '덜덜 떨림' 제거 — 손가락 따라 깔끔하게 당겨졌다
       //  놓으면 날아간다. 장전감은 미세 scale(압축) + 발사 방향으로 코 살짝 기울임만.
       final loadScale = 1.0 - loaded * 0.06; // 당길수록 살짝 작아짐(장전 압축).
-      // 발사 방향(=당김 반대)으로 코를 살짝 기울임. 거의 수직 당김이면 0에 수렴.
+      // #7: 좌우로 당긴 정도(-1~1) → Y축 유사 3D 회전. 왼쪽으로 가면 비행기 오른쪽 면이,
+      //  오른쪽으로 가면 왼쪽 면이 더 보이게 살짝 돌아간다(평면 → 입체감). 원근감 포함.
+      final yawN = (_drawOffset.dx / _kDrawVisualMax).clamp(-1.0, 1.0);
+      final yaw = yawN * (26 * pi / 180); // 최대 ~26°(약간 돌아감)
+      // 발사 방향(=당김 반대)으로 코를 살짝 기울임(기존 Z 틸트, 약하게).
       final tiltSign = _drawOffset.dx == 0 ? 0.0 : -_drawOffset.dx.sign;
-      final loadTilt = tiltSign * loaded * (5 * pi / 180);
+      final loadTilt = tiltSign * loaded * (3 * pi / 180);
+      final m = Matrix4.identity()
+        ..setEntry(3, 2, 0.0013) // 원근감(perspective)
+        ..rotateY(yaw)
+        ..rotateZ(loadTilt);
 
       if (_drawOffset == Offset.zero && !_pulling) return glyph;
       return Transform.translate(
         offset: _drawOffset,
-        child: Transform.rotate(
-          angle: loadTilt,
-          child: Transform.scale(
-            scale: loadScale,
+        child: Transform.scale(
+          scale: loadScale,
+          child: Transform(
+            alignment: Alignment.center,
+            transform: m,
             child: glyph,
           ),
         ),
