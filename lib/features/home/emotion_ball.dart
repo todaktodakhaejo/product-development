@@ -414,18 +414,21 @@ class EmotionBall {
     return pow(d, 1 / 0.7).toDouble() * _holdInDur;
   }
 
-  /// v11 §A-4: 누르기 해제 시 "쫀득 통통" 스프링 복원(낮은 damping 감쇠 진동).
-  /// 감쇠 정현파 0→1. 표준 elasticOut보다 **decay를 낮추고(2^-6.5t) 주기를 넓혀
-  /// (period 0.62)** 1~2회 또렷한 오버슈트 wobble을 남긴다 — 떼는 순간 본체가
-  /// 통통 튀며 평상으로 돌아오는 슬라임 느낌. _releaseDepth*(1-_springBack)로 써서
-  /// 현재 깊이에서부터 0으로 차오르며 통통댄다.
+  /// v11 §A-4 → v21: 누르기/늘리기 해제 시 "쫀득 통통" 스프링 복원(감쇠 정현파 0→1).
+  ///
+  /// v20까지는 decay 2^-6.5t·period 0.62라 오버슈트가 -0.27까지 깊고, 그 뒤로도
+  /// +0.17/-0.x로 2~3회 또렷이 출렁였다. 늘리기/누르기를 떼면 본체가 평상보다 한참
+  /// 부풀었다 다시 들어갔다 또 부푸는 "튕겨 돌아오는" 비현실감을 줬다(사용자 피드백).
+  /// → decay를 키우고(2^-9t) 주기를 좁혀(0.55) **첫 오버슈트를 ~-0.21로 줄이고
+  /// 이후 반동을 거의 없앤다**(2차 lobe +0.07로 미미). 통통은 살리되 한 번만 또렷이
+  /// 튀고 곧 "물 흐르듯" 가라앉는 자연 감쇠 — 과한 오버슈트/다회 wobble 제거.
   static double _springBack(double t) {
     if (t <= 0) return 0;
     if (t >= 1) return 1;
-    const period = 0.62; // 넓은 주기 → wobble 적게(1~2회) 또렷하게
+    const period = 0.55; // 좁힌 주기 → 잔진동(2차 lobe) 거의 소멸
     const s = period / 4;
-    // 2^-6.5t: elasticOut(2^-10t)보다 천천히 감쇠 → 낮은 damping(쫀득) 체감.
-    return pow(2, -6.5 * t).toDouble() *
+    // 2^-9t: v20(2^-6.5t)보다 빠른 감쇠 → 첫 통통 한 번만 또렷, 곧 잦아듦.
+    return pow(2, -9.0 * t).toDouble() *
             sin((t - s) * (2 * pi) / period) +
         1;
   }
@@ -577,10 +580,12 @@ class EmotionBall {
       // 오버슈트(_curDepth가 0 아래로) → 본체가 평상보다 더 부풀었다 돌아오는
       // "쫀득 통통". painter가 음수 pressDepth를 부풂(역방향 squash)으로 해석한다.
       _curDepth = _releaseDepth * (1 - _springBack(t));
-      // v20 §3(ⓐ): 떼는 순간 "뽁" 팝 강화 — 오버슈트(음수=부풂) 구간을 1.7배 증폭해
-      // 본체가 더 통통 튀어 오르게 한다(누르기 인터랙션 보강, 사용자 피드백). 침몰(양수)은
-      // 그대로 두고 부풂만 키운다. painter/셰이더는 pressPop으로 이 부풂을 전역 swell로 그린다.
-      if (_curDepth < 0) _curDepth *= 1.7;
+      // v20 §3(ⓐ): 떼는 순간 "뽁" 팝 — 오버슈트(음수=부풂) 구간을 증폭해 본체가
+      // 통통 튀어 오르게 한다(누르기 인터랙션 보강). v21: _springBack을 더 빠르게
+      // 감쇠(첫 오버슈트 -0.27→-0.21)시켰으므로, 떼는 팝 자체 세기는 유지되도록
+      // 증폭을 1.7→1.85로 살짝 올려 보정한다(누르기 팝은 사용자가 원한 결이라 유지).
+      // 침몰(양수)은 그대로 두고 부풂만 키운다. painter/셰이더가 pressPop으로 그린다.
+      if (_curDepth < 0) _curDepth *= 1.85;
       if (t >= 1.0) {
         _curDepth = 0;
         _releaseT = -1;
@@ -628,10 +633,18 @@ class EmotionBall {
     // 중력(기울기) 적용
     vel += gravity * dt;
 
-    // ── 2단 마찰(v3 §5): 빠르면 활발히 튀게 약감속, 느리면 부드럽게 잦아듦 ──
-    // v2(1.0/3.2)에서 완화 → 흔들기·fling이 미끄러지듯 ~1.2s에 멈춤.
+    // ── 연속 마찰(v3 §5 → v21): 빠르면 약감속(미끄러지듯), 느리면 부드럽게 잦아듦 ──
+    // v20까지는 _kFastSpeed(900)를 경계로 friction이 0.9↔1.7로 "딱" 바뀌어, fling이
+    // 그 속도를 지나는 순간 감속이 갑자기 ~2배 세지며 "탁 멈춰 제자리로 잡히는" 듯한
+    // 비현실감을 줬다(사용자 피드백: 놓으면 부자연스럽게 정착). → 두 마찰값을 속도에
+    // 따라 부드럽게 보간(smoothstep)해 감속이 끊김 없이 이어지게 한다. 빠른 구간은
+    // 그대로 미끄러지고, 느려질수록 점진적으로 마찰이 차올라 "물 흐르듯" 정착한다.
     final speed = vel.distance;
-    final friction = speed > _kFastSpeed ? 0.9 : 1.7;
+    // 전이 구간 [_kSlowSpeed, _kFastSpeed]에서 0→1로 부드럽게: 빠르면 0(약감속 0.9),
+    // 느리면 1(감속 1.7). 경계 밖은 clamp라 항등.
+    final tx = ((speed - _kSlowSpeed) / (_kFastSpeed - _kSlowSpeed)).clamp(0.0, 1.0);
+    final smooth = tx * tx * (3 - 2 * tx); // smoothstep
+    final friction = 1.7 + (0.9 - 1.7) * smooth; // 1.7(느림)→0.9(빠름)
     vel *= (1 - friction * dt);
 
     final step = vel * dt;
@@ -642,10 +655,19 @@ class EmotionBall {
 
     final collided = _collideWalls();
 
-    // ── 정지 임계(snap-to-stop, v3 §5): 거의 멈췄을 때만 살짝 정리(10px/s) ──
+    // ── 정지 임계(snap-to-stop, v3 §5 → v21): "탁 멈춤" 대신 마지막 한 뼘을 ease-out ──
+    // v20은 10px/s 미만이면 vel을 즉시 0으로 죽여, 아주 느리게 미끄러지던 공이 마지막에
+    // 한 프레임 "툭" 멈췄다(미세하지만 비현실적 정착). → 임계를 4px/s로 낮춰 진짜
+    // 보이지 않는 잔속만 정리하고, 그 위 저속 구간(_kStopSpeed~_kEaseSpeed)에서는
+    // 프레임당 추가 감쇠를 살짝 더 걸어 vel을 0으로 "흘려보낸다"(부드러운 ease-out).
     // 벽 충돌 직후 프레임은 제외(튕김 속도를 죽이지 않도록).
-    if (!collided && vel.distance < _kStopSpeed) {
-      vel = Offset.zero;
+    if (!collided) {
+      final s = vel.distance;
+      if (s < _kStopSpeed) {
+        vel = Offset.zero;
+      } else if (s < _kEaseSpeed) {
+        vel *= (1 - 4.0 * dt).clamp(0.0, 1.0); // 마지막 한 뼘만 부드럽게 추가 감쇠
+      }
     }
   }
 
@@ -661,9 +683,11 @@ class EmotionBall {
     }
   }
 
-  // 안정화 튜닝 상수(v3 §5, 실기기 체감 조정 대상)
-  static const double _kFastSpeed = 900; // px/s 초과 시 약감속(0.9)
-  static const double _kStopSpeed = 10; // px/s 미만 시 snap-to-stop(거의 멈췄을 때만)
+  // 안정화 튜닝 상수(v3 §5 / v21, 실기기 체감 조정 대상)
+  static const double _kFastSpeed = 900; // px/s 이상이면 약감속(friction 0.9)
+  static const double _kSlowSpeed = 120; // px/s 이하면 감속(1.7). 둘 사이는 smoothstep 보간
+  static const double _kEaseSpeed = 60; // px/s 미만 저속에서 마지막 한 뼘 추가 ease-out
+  static const double _kStopSpeed = 4; // px/s 미만 시 snap-to-stop(보이지 않는 잔속만)
 
   /// 벽 충돌 처리. 이번 프레임에 실제 반발(튕김)이 일어났으면 true.
   /// (정지 임계가 튕김 직후 속도를 죽이지 않도록 호출부가 참고.)
