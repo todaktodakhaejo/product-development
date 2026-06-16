@@ -39,8 +39,14 @@ out vec4 fragColor;
 // 본체 SDF·법선·함몰점을 이 공간에서 평가하면 화면엔 타원으로 늘어나 보인다.
 vec2 unstretch(vec2 v) {
   float ca = cos(uStretchAng), sa = sin(uStretchAng);
+  // R(-ang): 늘림 축을 x로 정렬.
   vec2 vr = vec2(ca * v.x + sa * v.y, -sa * v.x + ca * v.y);
-  return vec2(vr.x / uStretchAlong, vr.y / uStretchCross);
+  // along/cross로 나눠 원형 공간으로 환원.
+  vr = vec2(vr.x / uStretchAlong, vr.y / uStretchCross);
+  // R(+ang): 다시 화면 축으로 회전해 되돌린다(켤레 변환). along=cross=1이면 전체가
+  // 항등이 되어 '원형일 때 음영이 손가락 각도만큼 돌아가 있던→복귀 시 뚝 풀리던' 점프를
+  // 없앤다(스프링백 오버슈트로 임계를 넘나들어도 연속). 실루엣 타원은 그대로 유지.
+  return vec2(ca * vr.x - sa * vr.y, sa * vr.x + ca * vr.y);
 }
 
 void main() {
