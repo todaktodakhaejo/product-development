@@ -53,6 +53,13 @@ class EmotionBall {
   Offset squashDir = const Offset(0, 1);
   double _wobblePhase = 0;
   double wobbleAmp = 0;
+  // v22: 누르고 뗄 때 전용 "젤리 출렁임" 채널(흔들기/굴리기 wobble과 분리).
+  // pressEnd가 깊이 비례로 [_pressWobbleAmp]를 채우고 [_pressWobblePhase]를 0으로
+  // 리셋해, 떼는 순간부터 coherent하게 2~3회 통통 흔들리다 ~0.9s에 잦아든다.
+  // 공용 wobble보다 진폭(±14%)이 크고 감쇠(1.1/s)가 느려 "확실히 보이는" 푸딩 출렁임.
+  // 분리 채널이라 흔들기·굴리기·충돌 출렁임 느낌은 그대로 유지된다(부작용 없음).
+  double _pressWobblePhase = 0;
+  double _pressWobbleAmp = 0;
 
   // ── 슬라임 호흡·blob 모핑 위상(v11 §A-2,3) ──────────────────────
   // update가 매 프레임 dt만큼 전진시키는 free-running 위상. painter가 읽어
@@ -238,12 +245,13 @@ class EmotionBall {
     _holding = false;
     _releaseDepth = _curDepth;
     _releaseT = 0;
-    // v21: 떼는 순간 전체 본체가 젤리처럼 출렁이게 — 기존 wobble 머신을 그대로
-    // 재사용해, 누른 깊이에 비례한 잔진동을 깨운다(깊게 누를수록 더 통통 튄다).
-    // 출렁임 축은 누른 방향(_pressDir)에 맞춰 "눌렀던 결"대로 떨리게 한다. 국소
-    // 덴트 복원(springBack)·팝 swell(pressPop) 위에 전역 wobble이 얹혀 "뽁→출렁".
+    // v22: 떼는 순간 전용 "젤리 출렁임" 채널 발화 — 깊이 비례 진폭으로 채우고
+    // 위상을 0으로 리셋해 coherent하게 2~3회 통통 흔들다 ~0.9s에 잦아든다. 출렁임
+    // 축은 누른 방향(_pressDir)에 맞춰 "눌렀던 결"대로 떨리게 한다. 국소 덴트 복원
+    // (springBack)·팝 swell(pressPop) 위에 전역 출렁임이 또렷이 얹혀 "뽁 → 출렁출렁".
     if (_pressDir != Offset.zero) squashDir = _pressDir;
-    _bumpWobble(min(0.85, _releaseDepth * 0.95));
+    _pressWobbleAmp = _releaseDepth.clamp(0.0, 1.0);
+    _pressWobblePhase = 0;
   }
 
   /// 누르기 침몰을 **즉시 0으로 리셋**(복원 elastic 팝 없이, v6 §3).
@@ -556,6 +564,9 @@ class EmotionBall {
     _breathePhase = (_breathePhase + dt * 2.5133) % (2 * pi);
     _morphPhase = (_morphPhase + dt * 0.9666) % (2 * pi);
     wobbleAmp = (wobbleAmp - dt * 1.4).clamp(0.0, 1.0);
+    // v22: 전용 젤리 출렁임 — 느린 감쇠(1.1/s≈0.9s)로 2~3회 통통, 위상 ~17rad/s(2.7Hz).
+    _pressWobblePhase += dt * 17.0;
+    _pressWobbleAmp = (_pressWobbleAmp - dt * 1.1).clamp(0.0, 1.0);
     squash = (squash - dt * 3.0).clamp(0.0, 1.0);
     // v12 §1: 쓰다듬기 흐름 벡터 시간 감쇠를 완화(6.0→2.6/s, 멈추면 ~0.9s에 잦아듦).
     // 손가락을 떼거나 멈추면 stretch+skew가 "급히 끊기지 않고" 부드럽게 평상 표면으로
@@ -730,7 +741,9 @@ class EmotionBall {
   /// 위상**으로 출렁여(가로 부풀면 세로 눌림) 쫀득한 슬라임 호흡을 만든다.
   /// 프로토타입 키프레임(scaleX 1↔1.04 / scaleY 1↔0.965) 느낌을 정현파로 근사.
   Offset get scale {
-    final w = sin(_wobblePhase) * wobbleAmp * 0.12;
+    // 공용 wobble(±12%, 빠른 감쇠) + v22 전용 젤리 출렁임(±14%, 느린 감쇠 2~3회).
+    final w = sin(_wobblePhase) * wobbleAmp * 0.12 +
+        sin(_pressWobblePhase) * _pressWobbleAmp * 0.14;
     // idle 호흡: 가로/세로가 어긋나 출렁이던(세로 한 번·가로 한 번 눌리던) 것을 폐기.
     // **균일 심장박동 펄스**로 교체 — 원형을 유지한 채 전체가 살짝 커졌다 작아졌다
     // "두둥실 몽글몽글". 진폭도 줄여(±2.2%) 가만히 있을 땐 차분하게.
