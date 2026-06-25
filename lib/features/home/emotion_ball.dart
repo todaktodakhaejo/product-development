@@ -238,6 +238,12 @@ class EmotionBall {
     _holding = false;
     _releaseDepth = _curDepth;
     _releaseT = 0;
+    // v21: 떼는 순간 전체 본체가 젤리처럼 출렁이게 — 기존 wobble 머신을 그대로
+    // 재사용해, 누른 깊이에 비례한 잔진동을 깨운다(깊게 누를수록 더 통통 튄다).
+    // 출렁임 축은 누른 방향(_pressDir)에 맞춰 "눌렀던 결"대로 떨리게 한다. 국소
+    // 덴트 복원(springBack)·팝 swell(pressPop) 위에 전역 wobble이 얹혀 "뽁→출렁".
+    if (_pressDir != Offset.zero) squashDir = _pressDir;
+    _bumpWobble(min(0.85, _releaseDepth * 0.95));
   }
 
   /// 누르기 침몰을 **즉시 0으로 리셋**(복원 elastic 팝 없이, v6 §3).
